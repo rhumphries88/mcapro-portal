@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Star, CheckCircle, Building2, ArrowRight } from 'lucide-react';
 import { getLenders, qualifyLenders, Lender as DBLender, Application as DBApplication } from '../lib/supabase';
+import type { CleanedMatch } from '../lib/parseLenderMatches';
 
 // Application interface matching the camelCase structure from ApplicationForm
 interface Application {
@@ -26,12 +27,13 @@ interface Application {
 
 interface LenderMatchesProps {
   application: Application | null;
+  matches?: CleanedMatch[];
   onLenderSelect: (lenderIds: string[]) => void;
   onBack: () => void;
 }
 
-const LenderMatches: React.FC<LenderMatchesProps> = ({ application, onLenderSelect, onBack }) => {
-  const [lenders, setLenders] = useState<DBLender[]>([]);
+const LenderMatches: React.FC<LenderMatchesProps> = ({ application, matches, onLenderSelect, onBack }) => {
+  const [lenders, setLenders] = useState<(DBLender & { match_score?: number; matchScore?: number })[]>([]);
   const [selectedLenderIds, setSelectedLenderIds] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -79,7 +81,21 @@ const LenderMatches: React.FC<LenderMatchesProps> = ({ application, onLenderSele
         };
         
         const qualifiedLenders = await qualifyLenders(lendersArray, dbApplication);
-        setLenders(qualifiedLenders);
+
+        // If cleaned matches provided, order lenders by response and attach match_score
+        if (Array.isArray(matches) && matches.length > 0) {
+          const byId = new Map(qualifiedLenders.map(l => [l.id, l] as const));
+          const ordered: (DBLender & { match_score?: number; matchScore?: number })[] = [];
+          for (const m of matches) {
+            const found = byId.get(m.lender_id);
+            if (found) {
+              ordered.push({ ...found, match_score: m.match_score });
+            }
+          }
+          setLenders(ordered);
+        } else {
+          setLenders(qualifiedLenders);
+        }
       } catch (error) {
         console.error('Error loading lenders:', error);
       } finally {
@@ -88,7 +104,7 @@ const LenderMatches: React.FC<LenderMatchesProps> = ({ application, onLenderSele
     };
 
     loadAndQualifyLenders();
-  }, [application]);
+  }, [application, matches]);
 
   const handleLenderToggle = (lenderId: string) => {
     setSelectedLenderIds(prev => 
@@ -183,7 +199,17 @@ const LenderMatches: React.FC<LenderMatchesProps> = ({ application, onLenderSele
               </div>
               <div className="flex items-center space-x-3">
                 <div className="text-right">
-                  <div className="text-lg font-bold text-emerald-600">95% Match</div>
+                  <div className="text-lg font-bold text-emerald-600">
+                    {(() => {
+                      const score = lender.match_score;
+                      if (typeof score === 'number') {
+                        const pct = score <= 1 ? Math.round(score * 100) : Math.round(score);
+                        return `${pct}% Match`;
+                      }
+                      const q = lender.matchScore;
+                      return typeof q === 'number' ? `${Math.round(q)}% Match` : 'Match';
+                    })()}
+                  </div>
                   <div className="text-sm text-gray-500">Qualification Score</div>
                 </div>
                 <div className={`w-6 h-6 rounded-full border-2 flex items-center justify-center ${

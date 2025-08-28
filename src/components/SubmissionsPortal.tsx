@@ -4,6 +4,7 @@ import ApplicationForm from './ApplicationForm';
 import LenderMatches from './LenderMatches';
 import SubmissionRecap from './SubmissionRecap';
 import SubmissionIntermediate from './SubmissionIntermediate';
+import { extractLenderMatches, type CleanedMatch } from '../lib/parseLenderMatches';
 
 // Broad application data type to interop with both LenderMatches and SubmissionRecap
 type AppData = {
@@ -87,6 +88,7 @@ const SubmissionsPortal: React.FC = () => {
   const [selectedLenders, setSelectedLenders] = useState<string[]>([]);
   const [intermediateLoading, setIntermediateLoading] = useState(false);
   const [intermediatePrefill, setIntermediatePrefill] = useState<Record<string, string | boolean> | null>(null);
+  const [cleanedMatches, setCleanedMatches] = useState<CleanedMatch[] | null>(null);
 
   // simple navigation helpers so Back returns to the real previous page
   const goTo = (next: 'application' | 'intermediate' | 'matches' | 'recap') => {
@@ -214,13 +216,23 @@ const SubmissionsPortal: React.FC = () => {
     // Fire-and-forget webhook with the full updated applications row
     (async () => {
       try {
-        await fetch('/webhook/applications/lenders', {
+        const resp = await fetch('/webhook/applications/lenders', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(updated),
         });
+        // Attempt to parse and extract cleaned matches
+        try {
+          const json = await resp.json();
+          const cleaned = extractLenderMatches(json);
+          setCleanedMatches(cleaned);
+        } catch (e) {
+          console.warn('Failed to parse cleaned matches from webhook response:', e);
+          setCleanedMatches(null);
+        }
       } catch (e) {
         console.warn('applications/lenders webhook failed:', e);
+        setCleanedMatches(null);
       } finally {
         goTo('matches');
       }
@@ -317,6 +329,7 @@ const SubmissionsPortal: React.FC = () => {
       ) : currentStep === 'matches' ? (
         <LenderMatches 
           application={application}
+          matches={cleanedMatches ?? undefined}
           onBack={goBack} 
           onLenderSelect={handleLendersSelected}
         />
