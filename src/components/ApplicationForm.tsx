@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { Upload, FileText, DollarSign, Building2, User, CheckCircle, FileCheck, Loader, AlertTriangle } from 'lucide-react';
+import { DollarSign, Building2, User, CheckCircle, FileCheck, Loader } from 'lucide-react';
+
 import { createApplication, Application as DBApplication } from '../lib/supabase';
 import { extractDataFromPDF } from '../lib/pdfExtractor';
-
 
 interface Application {
   id: string;
@@ -169,7 +169,9 @@ const ApplicationForm: React.FC<ApplicationFormProps> = ({ onSubmit, initialStep
   const [isExtracting, setIsExtracting] = useState(false);
   const [extractedData, setExtractedData] = useState<Awaited<ReturnType<typeof extractDataFromPDF>> | null>(null);
   const [webhookData, setWebhookData] = useState<WebhookResponse | null>(null);
-  const [webhookError, setWebhookError] = useState<string | null>(null);
+  // Removed webhookError state as it's not used in the new UI design
+  const [isDragging, setIsDragging] = useState(false);
+  const dragCounter = useRef(0);
   const [formData, setFormData] = useState({
     businessName: '',
     ownerName: '',
@@ -243,8 +245,6 @@ const ApplicationForm: React.FC<ApplicationFormProps> = ({ onSubmit, initialStep
 
   // Track the last values that were set by a webhook to detect user edits between webhook events
   const [lastWebhookValues, setLastWebhookValues] = useState<Record<string, string>>({});
-
-  const [uploadedFiles, setUploadedFiles] = useState<string[]>([]);
   const [errors, setErrors] = useState<{ [key: string]: string }>({});
   const [applicationDocument, setApplicationDocument] = useState<File | null>(null);
 
@@ -284,21 +284,26 @@ const ApplicationForm: React.FC<ApplicationFormProps> = ({ onSubmit, initialStep
     return new Set<string>(Object.keys(autoFields));
   }, [manualMode, autoFields]);
 
-  // Helpers for currency-like inputs: keep raw numeric in state, show formatted with commas
-  const sanitizeNumeric = (input: string) => {
-    // keep digits and a single dot
-    const cleaned = input.replace(/[^0-9.]/g, '');
-    const parts = cleaned.split('.');
-    const intPart = parts[0];
-    const decPart = parts.slice(1).join(''); // collapse extra dots
-    return decPart.length > 0 ? `${intPart}.${decPart}` : intPart;
-  };
-  const formatWithCommas = (raw: string) => {
-    if (!raw) return '';
-    const [i, d] = raw.split('.');
-    const withCommas = i.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
-    return d !== undefined ? `${withCommas}.${d}` : withCommas;
-  };
+  // Count only the visible inputs in the UI for the banner chip
+  const visiblePopulatedCount = useMemo(() => {
+    const visibleKeys = new Set<string>([
+      'businessName',
+      'industry',
+      'businessType',
+      'ein',
+      'yearsInBusiness',
+      'numberOfEmployees',
+      'ownerName',
+      'email',
+      'phone',
+      'address',
+      'annualRevenue',
+    ]);
+    let count = 0;
+    visibleKeys.forEach(k => { if (populatedFields.has(k)) count++; });
+    return count;
+  }, [populatedFields]);
+
 
 
   const webhookNotifiedRef = useRef(false);
@@ -561,9 +566,8 @@ const ApplicationForm: React.FC<ApplicationFormProps> = ({ onSubmit, initialStep
                 };
                 const docList: string[] = (() => {
                   const fromState = (formData.documents as unknown as string[]) || [];
-                  const fromUploads = Array.isArray(uploadedFiles) ? uploadedFiles : [];
                   const fromSelected = applicationDocument?.name ? [applicationDocument.name] : [];
-                  const merged = [...fromSelected, ...fromUploads, ...fromState].filter(Boolean);
+                  const merged = [...fromSelected, ...fromState].filter(Boolean);
                   return merged.length > 0 ? merged : [];
                 })();
                 const prefill: Partial<Application> = {
@@ -603,7 +607,7 @@ const ApplicationForm: React.FC<ApplicationFormProps> = ({ onSubmit, initialStep
         }
       } catch (error) {
         console.error('Error processing extracted response:', error);
-        setWebhookError('Failed to process extracted data. Please fill the form manually.');
+        console.warn('Failed to process extracted data. Please fill the form manually.');
       }
     };
 
@@ -614,7 +618,7 @@ const ApplicationForm: React.FC<ApplicationFormProps> = ({ onSubmit, initialStep
     return () => {
       window.removeEventListener('message', handleWebhookResponse);
     };
-  }, [currentStep, lastWebhookValues, industries, businessTypes, manualMode, reviewMode, formData, onReadyForForm, uploadedFiles, applicationDocument?.name]);
+  }, [currentStep, lastWebhookValues, industries, businessTypes, manualMode, reviewMode, formData, onReadyForForm, applicationDocument?.name]);
 
   const extractDataFromDocument = async (file: File) => {
     setIsExtracting(true);
@@ -673,9 +677,8 @@ const ApplicationForm: React.FC<ApplicationFormProps> = ({ onSubmit, initialStep
             if (!webhookNotifiedRef.current) {
               const docList: string[] = (() => {
                 const fromState = (formData.documents as unknown as string[]) || [];
-                const fromUploads = Array.isArray(uploadedFiles) ? uploadedFiles : [];
                 const fromSelected = applicationDocument?.name ? [applicationDocument.name] : [];
-                const merged = [...fromSelected, ...fromUploads, ...fromState].filter(Boolean);
+                const merged = [...fromSelected, ...fromState].filter(Boolean);
                 return merged.length > 0 ? merged : [];
               })();
               const withDocs = { ...prefill, documents: docList } as Partial<Application>;
@@ -703,27 +706,49 @@ const ApplicationForm: React.FC<ApplicationFormProps> = ({ onSubmit, initialStep
     }
   };
 
+  // Drag and drop handlers (reuse the same extraction flow)
+  const handleDragEnter = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounter.current += 1;
+    setIsDragging(true);
+  };
+
+  const handleDragOver = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    e.dataTransfer.dropEffect = 'copy';
+    if (!isDragging) setIsDragging(true);
+  };
+
+  const handleDragLeave = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounter.current = Math.max(0, dragCounter.current - 1);
+    if (dragCounter.current === 0) setIsDragging(false);
+  };
+
+  const handleDrop = async (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+    dragCounter.current = 0;
+    const file = e.dataTransfer.files?.[0];
+    if (!file) return;
+    const name = file.name.toLowerCase();
+    const ok = name.endsWith('.pdf') || name.endsWith('.doc') || name.endsWith('.docx') || file.type === 'application/pdf';
+    if (!ok) return;
+    setApplicationDocument(file);
+    await extractDataFromDocument(file);
+  };
+
   const validateForm = () => {
     const newErrors: { [key: string]: string } = {};
     
     // Required fields validation
     if (!formData.businessName) newErrors.businessName = 'Business name is required';
     if (!formData.ownerName) newErrors.ownerName = 'Owner name is required';
-    
-    // Email validation
-    if (!formData.email) {
-      newErrors.email = 'Email is required';
-    } else if (!/^\S+@\S+\.\S+$/.test(formData.email)) {
-      newErrors.email = 'Please enter a valid email address';
-    }
-    
-    // Phone validation
-    if (!formData.phone) {
-      newErrors.phone = 'Phone is required';
-    } else if (!/^[0-9\-()+ .]+$/.test(formData.phone)) {
-      newErrors.phone = 'Please enter a valid phone number';
-    }
-    
+
     // Industry validation
     if (!formData.industry) {
       newErrors.industry = 'Please select an industry';
@@ -739,21 +764,6 @@ const ApplicationForm: React.FC<ApplicationFormProps> = ({ onSubmit, initialStep
       newErrors.yearsInBusiness = 'Years in business is required';
     } else if (Number(formData.yearsInBusiness) < 0) {
       newErrors.yearsInBusiness = 'Years in business must be a positive number';
-    }
-    
-    // Financial validations
-    if (!formData.requestedAmount || Number(formData.requestedAmount) < 10000) {
-      newErrors.requestedAmount = 'Requested amount must be at least $10,000';
-    }
-    
-    if (!formData.averageMonthlyRevenue || Number(formData.averageMonthlyRevenue) < 10000) {
-      newErrors.averageMonthlyRevenue = 'Monthly revenue must be at least $10,000';
-    }
-    
-    if (!formData.creditScore) {
-      newErrors.creditScore = 'Credit score is required';
-    } else if (Number(formData.creditScore) < 300 || Number(formData.creditScore) > 850) {
-      newErrors.creditScore = 'Credit score must be between 300-850';
     }
     
     setErrors(newErrors);
@@ -794,9 +804,9 @@ const ApplicationForm: React.FC<ApplicationFormProps> = ({ onSubmit, initialStep
             },
             financialInfo: {
               annualRevenue: Number(formData.annualRevenue),
-              averageMonthlyRevenue: Number(formData.averageMonthlyRevenue),
-              averageMonthlyDeposits: Number(formData.averageMonthlyDeposits),
-              existingDebt: Number(formData.existingDebt),
+              averageMonthlyRevenue: Number(formData.averageMonthlyRevenue) || 0,
+              averageMonthlyDeposits: Number(formData.averageMonthlyDeposits) || 0,
+              existingDebt: Number(formData.existingDebt) || 0,
             },
             documents: formData.documents,
           };
@@ -817,13 +827,13 @@ const ApplicationForm: React.FC<ApplicationFormProps> = ({ onSubmit, initialStep
           years_in_business: Number(formData.yearsInBusiness),
           number_of_employees: Number(formData.numberOfEmployees),
           annual_revenue: Number(formData.annualRevenue),
-          monthly_revenue: Number(formData.averageMonthlyRevenue),
-          monthly_deposits: Number(formData.averageMonthlyDeposits),
-          existing_debt: Number(formData.existingDebt),
-          credit_score: Number(formData.creditScore),
-          requested_amount: Number(formData.requestedAmount),
+          monthly_revenue: Number(formData.averageMonthlyRevenue) || 0,
+          monthly_deposits: Number(formData.averageMonthlyDeposits) || 0,
+          existing_debt: Number(formData.existingDebt) || 0,
+          credit_score: Number(formData.creditScore) || 0,
+          requested_amount: Number(formData.requestedAmount) || 0,
           status: 'submitted',
-          documents: uploadedFiles
+          documents: formData.documents,
         };
 
         const savedApplication = await createApplication(applicationData);
@@ -852,9 +862,9 @@ const ApplicationForm: React.FC<ApplicationFormProps> = ({ onSubmit, initialStep
           },
           financialInfo: {
             annualRevenue: savedApplication.annual_revenue,
-            averageMonthlyRevenue: savedApplication.monthly_revenue,
-            averageMonthlyDeposits: savedApplication.monthly_deposits,
-            existingDebt: savedApplication.existing_debt
+            averageMonthlyRevenue: savedApplication.monthly_revenue ?? 0,
+            averageMonthlyDeposits: savedApplication.monthly_deposits ?? 0,
+            existingDebt: savedApplication.existing_debt ?? 0,
           },
           documents: savedApplication.documents
         };
@@ -875,18 +885,6 @@ const ApplicationForm: React.FC<ApplicationFormProps> = ({ onSubmit, initialStep
     handleSubmitApplication();
   };
 
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files;
-    if (files) {
-      const fileNames = Array.from(files).map(file => file.name);
-      setUploadedFiles(prev => [...prev, ...fileNames]);
-    }
-  };
-
-  const removeFile = (fileName: string) => {
-    setUploadedFiles(prev => prev.filter(file => file !== fileName));
-  };
-
   // Document Upload Step
   if (currentStep === 'upload') {
     return (
@@ -898,48 +896,56 @@ const ApplicationForm: React.FC<ApplicationFormProps> = ({ onSubmit, initialStep
 
         <div className="p-8">
           {!isExtracting ? (
-            <div className="border-2 border-dashed border-gray-300 rounded-lg p-12">
-              <div className="text-center">
-                <FileText className="w-16 h-16 text-gray-400 mx-auto mb-6" />
-                <div className="text-lg font-medium text-gray-900 mb-2">
-                  Upload Your Application Document
+            <div
+              className={`relative p-10 border-2 border-dashed rounded-3xl text-center transition-all duration-300 bg-gradient-to-br from-gray-50/50 via-white to-blue-50/30 hover:border-blue-400 hover:bg-gradient-to-br hover:from-blue-50/50 hover:to-indigo-50/50 hover:shadow-lg hover:scale-[1.01] ${
+                isDragging ? 'border-blue-500 ring-4 ring-blue-400/30' : 'border-gray-300'
+              }`}
+              onDragEnter={handleDragEnter}
+              onDragOver={handleDragOver}
+              onDragLeave={handleDragLeave}
+              onDrop={handleDrop}
+              aria-label="Drop your application document here"
+            >
+              <div className="relative">
+                <div className="p-4 bg-gradient-to-br from-blue-100 to-indigo-100 rounded-2xl w-fit mx-auto mb-6 shadow-sm">
+                  <FileCheck className="w-8 h-8 text-blue-600" />
                 </div>
-                <p className="text-gray-600 mb-6">
-                  Supported formats: PDF, DOC, DOCX. We'll automatically extract your business information.
+                <h3 className="text-xl font-bold text-gray-900 mb-3">
+                  Upload Application Document
+                </h3>
+                <p className="text-sm text-gray-600 mb-8 max-w-md mx-auto leading-relaxed">
+                  We'll automatically extract your business information from PDF, DOC, or DOCX files.
                 </p>
-                <div className="text-sm text-gray-600">
-                  <label htmlFor="document-upload" className="relative cursor-pointer bg-blue-600 text-white px-6 py-3 rounded-lg font-medium hover:bg-blue-700 focus-within:outline-none focus-within:ring-2 focus-within:ring-offset-2 focus-within:ring-blue-500 transition-colors">
-                    <span>Choose Application File</span>
-                    <input 
-                      id="document-upload" 
-                      name="document-upload" 
-                      type="file" 
-                      className="sr-only" 
-                      accept=".pdf,.doc,.docx"
-                      onChange={handleDocumentUpload} 
-                    />
-                  </label>
-                  <p className="mt-4 text-xs text-gray-500">
-                    Maximum file size: 10MB
-                  </p>
-                </div>
+                <label className="cursor-pointer inline-flex items-center gap-3 px-8 py-4 rounded-2xl bg-gradient-to-r from-blue-600 to-indigo-600 text-white font-bold hover:from-blue-700 hover:to-indigo-700 focus:outline-none focus:ring-4 focus:ring-blue-500/40 transition-all duration-200 shadow-lg hover:shadow-xl hover:scale-105">
+                  <FileCheck className="w-5 h-5" />
+                  Choose Application File
+                  <input 
+                    id="document-upload" 
+                    name="document-upload" 
+                    type="file" 
+                    className="sr-only" 
+                    accept=".pdf,.doc,.docx"
+                    onChange={handleDocumentUpload} 
+                  />
+                </label>
+                <p className="text-xs text-gray-500 mt-4 font-medium">PDF, DOC, DOCX files only, max 10MB</p>
               </div>
             </div>
           ) : (
-            <div className="text-center py-12">
-              <Loader className="w-12 h-12 text-blue-600 mx-auto mb-4 animate-spin" />
-              <h3 className="text-lg font-medium text-gray-900 mb-2">Processing Your Document</h3>
-              <p className="text-gray-600 mb-4">
+            <div className="flex flex-col items-center justify-center py-12 text-center">
+              <div className="p-4 bg-gradient-to-br from-blue-100 to-indigo-100 rounded-2xl mb-6 shadow-sm">
+                <Loader className="w-8 h-8 text-blue-600 animate-spin" />
+              </div>
+              <h3 className="text-xl font-bold text-gray-900 mb-3">Processing Your Document</h3>
+              <p className="text-gray-600 mb-6 max-w-md leading-relaxed">
                 We're extracting information from your application document...
               </p>
-              <div className="max-w-md mx-auto">
-                <div className="bg-gray-200 rounded-full h-2">
-                  <div className="bg-blue-600 h-2 rounded-full animate-pulse" style={{ width: '60%' }}></div>
+              <div className="max-w-md mx-auto w-full">
+                <div className="bg-gray-200 rounded-full h-3">
+                  <div className="bg-gradient-to-r from-blue-600 to-indigo-600 h-3 rounded-full animate-pulse transition-all duration-300" style={{ width: '60%' }}></div>
                 </div>
-                <p className="text-sm text-gray-500 mt-2">This usually takes 30-60 seconds</p>
+                <p className="text-sm text-gray-500 mt-3 font-medium">This usually takes 30-60 seconds</p>
               </div>
-              
-              {/* Secondary waiting panel removed to keep a single loading UI */}
             </div>
           )}
 
@@ -950,7 +956,7 @@ const ApplicationForm: React.FC<ApplicationFormProps> = ({ onSubmit, initialStep
                 setCurrentStep('form');
                 setExtractedData(null);
                 setWebhookData(null);
-                setWebhookError(null);
+                // Webhook error handling removed for cleaner UI
                 setApplicationDocument(null);
                 setAutoFields({});
               }}
@@ -964,32 +970,18 @@ const ApplicationForm: React.FC<ApplicationFormProps> = ({ onSubmit, initialStep
     );
   }
   return (
-    <div className="bg-white rounded-xl shadow-lg">
-      <div className="px-8 py-6 border-b border-gray-200">
-        <div className="flex items-center justify-between">
-          <div>
-            <h2 className="text-2xl font-bold text-gray-900">Merchant Cash Advance Application</h2>
-            <p className="text-gray-600 mt-1">
-              {(extractedData || webhookData) ? 'Review and confirm the extracted information' : 'Please fill out all required information to get matched with qualified lenders'}
-            </p>
-          </div>
-          {(reviewMode || extractedData) && (
-            <div className="flex items-center text-green-600">
-              <FileCheck className="w-5 h-5 mr-2" />
-              <span className="text-sm font-medium">Data extracted from document</span>
-            </div>
-          )}
-          {webhookError && (
-            <div className="flex items-center text-red-600">
-              <AlertTriangle className="w-5 h-5 mr-2" />
-              <span className="text-sm font-medium">{webhookError}</span>
-            </div>
-          )}
+    <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
+      <div className="bg-white rounded-xl border border-gray-200 shadow-sm">
+        <div className="px-8 py-6 border-b border-gray-200">
+          <h2 className="text-2xl font-bold text-gray-900">Merchant Cash Advance Application</h2>
+          <p className="text-gray-600 mt-1">
+            {(extractedData || webhookData) ? 'Review and confirm the extracted information' : 'Please fill out all required information to get matched with qualified lenders'}
+          </p>
         </div>
         {(applicationDocument || reviewMode) && (
           <div className="mt-3 p-3 bg-blue-50 rounded-lg">
             <div className="flex items-center w-full">
-              <FileText className="w-4 h-4 text-blue-600 mr-2" />
+              <FileCheck className="w-4 h-4 text-blue-600 mr-2" />
               {(() => {
                 const name = reviewMode ? (reviewDocName ?? '') : (applicationDocument?.name ?? '');
                 return (
@@ -1011,8 +1003,8 @@ const ApplicationForm: React.FC<ApplicationFormProps> = ({ onSubmit, initialStep
                     setFormData({
                       businessName: '', ownerName: '', email: '', phone: '', address: '', ein: '',
                       businessType: '', industry: '', yearsInBusiness: '', numberOfEmployees: '',
-                      annualRevenue: '', averageMonthlyRevenue: '', averageMonthlyDeposits: '',
-                      existingDebt: '', creditScore: '', requestedAmount: '', documents: []
+                      annualRevenue: '', averageMonthlyRevenue: '', averageMonthlyDeposits: '', existingDebt: '', creditScore: '', requestedAmount: '',
+                      documents: []
                     });
                   }
                 }}
@@ -1023,123 +1015,183 @@ const ApplicationForm: React.FC<ApplicationFormProps> = ({ onSubmit, initialStep
             </div>
           </div>
         )}
-      </div>
       
       <form onSubmit={handleSubmit} className="p-8">
         
-        {/* Webhook Data Summary - show when fields were populated */}
-        {populatedFields.size > 0 && (
-          <div className="mb-6 p-4 bg-green-50 border border-green-200 rounded-lg">
-            <div className="flex items-center mb-2">
-              <CheckCircle className="w-5 h-5 mr-2 text-green-600" />
-              <h4 className="font-medium text-green-800">Data automatically populated</h4>
+        {/* Data Extraction Banner */}
+        {visiblePopulatedCount > 0 && (
+          <div className="mb-8 relative overflow-hidden rounded-2xl border border-emerald-200 bg-gradient-to-br from-emerald-50 via-green-50 to-teal-50 p-6 shadow-lg">
+            <div className="absolute inset-0 bg-gradient-to-r from-emerald-100/20 to-teal-100/20 opacity-50"></div>
+            <div className="relative flex items-start gap-4">
+              <div className="flex-shrink-0 p-3 bg-gradient-to-br from-emerald-100 to-green-100 rounded-2xl shadow-sm border border-emerald-200">
+                <CheckCircle className="w-6 h-6 text-emerald-700" />
+              </div>
+              <div className="flex-1">
+                <h4 className="text-lg font-bold text-emerald-900 mb-2">Data Extraction Complete</h4>
+                <p className="text-emerald-800 font-medium mb-2">
+                  {visiblePopulatedCount} fields automatically populated from your documents
+                </p>
+                <p className="text-sm text-emerald-700 leading-relaxed">
+                  Review the highlighted fields below. All information can be edited if needed.
+                </p>
+              </div>
+              <div className="flex-shrink-0">
+                <span className="inline-flex items-center px-4 py-2 rounded-full text-sm font-bold bg-gradient-to-r from-emerald-100 to-green-100 text-emerald-800 border border-emerald-200 shadow-sm">
+                  {visiblePopulatedCount} Fields
+                </span>
+              </div>
             </div>
-            <p className="text-green-700 text-sm">
-              {populatedFields.size} fields were automatically populated from extracted data.
-              You can review and edit any information as needed.
-            </p>
           </div>
         )}
         {/* Business Information Section */}
         <div className="mb-8">
-          <h3 className="text-lg font-semibold text-gray-900 mb-4 flex items-center">
-            <Building2 className="w-5 h-5 mr-2 text-blue-600" />
-            Business Information
-          </h3>
+          <div className="mb-6">
+            <div className="flex items-center gap-3 mb-2">
+              <div className="p-2 bg-gradient-to-br from-blue-100 to-indigo-100 rounded-xl shadow-sm border border-blue-200">
+                <Building2 className="w-5 h-5 text-blue-700" />
+              </div>
+              <h3 className="text-xl font-bold text-gray-900">Business Information</h3>
+            </div>
+            <p className="text-sm text-gray-600 ml-12">Basic details about your business</p>
+          </div>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             <div>
-              <label htmlFor="businessName" className="block text-sm font-medium text-gray-700 mb-1">Business Name*</label>
-              <input
-                type="text"
-                id="businessName"
-                value={formData.businessName}
-                onChange={(e) => setFormData({...formData, businessName: e.target.value})}
-                className={`w-full px-4 py-2 border ${errors.businessName ? 'border-red-500' : 'border-gray-300'} rounded-lg focus:ring-blue-500 focus:border-blue-500 ${populatedFields.has('businessName') ? 'bg-green-50 border-green-300' : ''}`}
-              />
-              {populatedFields.has('businessName') && (
-                <div className="flex items-center mt-1 text-xs text-green-600">
-                  <CheckCircle className="w-3 h-3 mr-1" />
-                  <span>Auto-populated from extracted data</span>
-                </div>
-              )}
+              <div className="relative">
+                <label className="block text-sm font-bold text-gray-800 mb-2" htmlFor="businessName">Business Name</label>
+                <input
+                  type="text"
+                  id="businessName"
+                  value={formData.businessName}
+                  onChange={(e) => setFormData({...formData, businessName: e.target.value})}
+                  className={`w-full rounded-xl border-2 px-4 py-3 text-gray-900 font-medium transition-all duration-200 focus:outline-none ${
+                    populatedFields.has('businessName') 
+                      ? 'border-emerald-300 bg-gradient-to-r from-emerald-50 to-green-50 ring-2 ring-emerald-200/50 shadow-sm focus:border-emerald-400 focus:ring-emerald-300/50' 
+                      : 'border-gray-200 bg-white hover:border-gray-300 focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 shadow-sm hover:shadow-sm'
+                  }`}
+                />
+                {populatedFields.has('businessName') && (
+                  <div className="mt-2 flex items-center gap-2 text-emerald-700 text-xs font-medium">
+                    <div className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse"></div>
+                    <span>Extracted from documents</span>
+                  </div>
+                )}
+              </div>
               {errors.businessName && <p className="mt-1 text-sm text-red-600">{errors.businessName}</p>}
             </div>
-            <div>
-              <label htmlFor="industry" className="block text-sm font-medium text-gray-700 mb-1">Industry*</label>
+            <div className="relative">
+              <label className="block text-sm font-bold text-gray-800 mb-2" htmlFor="industry">Industry*</label>
               <select
                 id="industry"
                 value={formData.industry}
                 onChange={(e) => setFormData({...formData, industry: e.target.value})}
-                className={`w-full px-4 py-2 border ${errors.industry ? 'border-red-500' : 'border-gray-300'} rounded-lg focus:ring-blue-500 focus:border-blue-500 ${populatedFields.has('industry') ? 'bg-green-50 border-green-300' : ''}`}
+                className={`w-full rounded-xl border-2 px-4 py-3 text-gray-900 font-medium transition-all duration-200 focus:outline-none ${
+                  populatedFields.has('industry') 
+                    ? 'border-emerald-300 bg-gradient-to-r from-emerald-50 to-green-50 ring-2 ring-emerald-200/50 shadow-sm focus:border-emerald-400 focus:ring-emerald-300/50' 
+                    : errors.industry 
+                    ? 'border-red-300 bg-white focus:border-red-500 focus:ring-2 focus:ring-red-500/20 shadow-sm'
+                    : 'border-gray-200 bg-white hover:border-gray-300 focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 shadow-sm hover:shadow-sm'
+                }`}
               >
                 <option value="">Select Industry</option>
                 {industries.map((industry) => (
                   <option key={industry} value={industry}>{industry}</option>
                 ))}
               </select>
+              {populatedFields.has('industry') && (
+                <div className="mt-2 flex items-center gap-2 text-emerald-700 text-xs font-medium">
+                  <div className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse"></div>
+                  <span>Extracted from documents</span>
+                </div>
+              )}
               {errors.industry && <p className="mt-1 text-sm text-red-600">{errors.industry}</p>}
             </div>
-            <div>
-              <label htmlFor="businessType" className="block text-sm font-medium text-gray-700 mb-1">Business Type*</label>
+            <div className="relative">
+              <label className="block text-sm font-bold text-gray-800 mb-2" htmlFor="businessType">Business Type*</label>
               <select
                 id="businessType"
                 value={formData.businessType}
                 onChange={(e) => setFormData({...formData, businessType: e.target.value})}
-                className={`w-full px-4 py-2 border ${errors.businessType ? 'border-red-500' : 'border-gray-300'} rounded-lg focus:ring-blue-500 focus:border-blue-500 ${populatedFields.has('businessType') ? 'bg-green-50 border-green-300' : ''}`}
+                className={`w-full rounded-xl border-2 px-4 py-3 text-gray-900 font-medium transition-all duration-200 focus:outline-none ${
+                  populatedFields.has('businessType') 
+                    ? 'border-emerald-300 bg-gradient-to-r from-emerald-50 to-green-50 ring-2 ring-emerald-200/50 shadow-sm focus:border-emerald-400 focus:ring-emerald-300/50' 
+                    : errors.businessType 
+                    ? 'border-red-300 bg-white focus:border-red-500 focus:ring-2 focus:ring-red-500/20 shadow-sm'
+                    : 'border-gray-200 bg-white hover:border-gray-300 focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 shadow-sm hover:shadow-sm'
+                }`}
               >
                 <option value="">Select Business Type</option>
                 {businessTypes.map((type) => (
                   <option key={type} value={type}>{type}</option>
                 ))}
               </select>
+              {populatedFields.has('businessType') && (
+                <div className="mt-2 flex items-center gap-2 text-emerald-700 text-xs font-medium">
+                  <div className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse"></div>
+                  <span>Extracted from documents</span>
+                </div>
+              )}
               {errors.businessType && <p className="mt-1 text-sm text-red-600">{errors.businessType}</p>}
             </div>
-            <div>
-              <label htmlFor="ein" className="block text-sm font-medium text-gray-700 mb-1">EIN</label>
+            <div className="relative">
+              <label className="block text-sm font-bold text-gray-800 mb-2" htmlFor="ein">EIN</label>
               <input
                 type="text"
                 id="ein"
                 value={formData.ein}
                 onChange={(e) => setFormData({...formData, ein: e.target.value})}
-                className={`w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500 ${populatedFields.has('ein') ? 'bg-green-50 border-green-300' : ''}`}
+                className={`w-full rounded-xl border-2 px-4 py-3 text-gray-900 font-medium transition-all duration-200 focus:outline-none ${
+                  populatedFields.has('ein') 
+                    ? 'border-emerald-300 bg-gradient-to-r from-emerald-50 to-green-50 ring-2 ring-emerald-200/50 shadow-sm focus:border-emerald-400 focus:ring-emerald-300/50' 
+                    : 'border-gray-200 bg-white hover:border-gray-300 focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 shadow-sm hover:shadow-sm'
+                }`}
               />
               {populatedFields.has('ein') && (
-                <div className="flex items-center mt-1 text-xs text-green-600">
-                  <CheckCircle className="w-3 h-3 mr-1" />
-                  <span>Auto-populated from extracted data</span>
+                <div className="mt-2 flex items-center gap-2 text-emerald-700 text-xs font-medium">
+                  <div className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse"></div>
+                  <span>Extracted from documents</span>
                 </div>
               )}
             </div>
-            <div>
-              <label htmlFor="yearsInBusiness" className="block text-sm font-medium text-gray-700 mb-1">Years in Business*</label>
+            <div className="relative">
+              <label className="block text-sm font-bold text-gray-800 mb-2" htmlFor="yearsInBusiness">Years in Business*</label>
               <input
                 type="number"
                 id="yearsInBusiness"
                 value={formData.yearsInBusiness}
                 onChange={(e) => setFormData({...formData, yearsInBusiness: e.target.value})}
-                className={`w-full px-4 py-2 border ${errors.yearsInBusiness ? 'border-red-500' : 'border-gray-300'} rounded-lg focus:ring-blue-500 focus:border-blue-500 ${populatedFields.has('yearsInBusiness') ? 'bg-green-50 border-green-300' : ''}`}
+                className={`w-full rounded-xl border-2 px-4 py-3 text-gray-900 font-medium transition-all duration-200 focus:outline-none ${
+                  populatedFields.has('yearsInBusiness') 
+                    ? 'border-emerald-300 bg-gradient-to-r from-emerald-50 to-green-50 ring-2 ring-emerald-200/50 shadow-sm focus:border-emerald-400 focus:ring-emerald-300/50' 
+                    : errors.yearsInBusiness 
+                    ? 'border-red-300 bg-white focus:border-red-500 focus:ring-2 focus:ring-red-500/20 shadow-sm'
+                    : 'border-gray-200 bg-white hover:border-gray-300 focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 shadow-sm hover:shadow-sm'
+                }`}
               />
               {populatedFields.has('yearsInBusiness') && (
-                <div className="flex items-center mt-1 text-xs text-green-600">
-                  <CheckCircle className="w-3 h-3 mr-1" />
-                  <span>Auto-populated from extracted data</span>
+                <div className="mt-2 flex items-center gap-2 text-emerald-700 text-xs font-medium">
+                  <div className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse"></div>
+                  <span>Extracted from documents</span>
                 </div>
               )}
               {errors.yearsInBusiness && <p className="mt-1 text-sm text-red-600">{errors.yearsInBusiness}</p>}
             </div>
-            <div>
-              <label htmlFor="numberOfEmployees" className="block text-sm font-medium text-gray-700 mb-1">Number of Employees</label>
+            <div className="relative">
+              <label className="block text-sm font-bold text-gray-800 mb-2" htmlFor="numberOfEmployees">Number of Employees</label>
               <input
                 type="number"
                 id="numberOfEmployees"
                 value={formData.numberOfEmployees}
                 onChange={(e) => setFormData({...formData, numberOfEmployees: e.target.value})}
-                className={`w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500 ${populatedFields.has('numberOfEmployees') ? 'bg-green-50 border-green-300' : ''}`}
+                className={`w-full rounded-xl border-2 px-4 py-3 text-gray-900 font-medium transition-all duration-200 focus:outline-none ${
+                  populatedFields.has('numberOfEmployees') 
+                    ? 'border-emerald-300 bg-gradient-to-r from-emerald-50 to-green-50 ring-2 ring-emerald-200/50 shadow-sm focus:border-emerald-400 focus:ring-emerald-300/50' 
+                    : 'border-gray-200 bg-white hover:border-gray-300 focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 shadow-sm hover:shadow-sm'
+                }`}
               />
               {populatedFields.has('numberOfEmployees') && (
-                <div className="flex items-center mt-1 text-xs text-green-600">
-                  <CheckCircle className="w-3 h-3 mr-1" />
-                  <span>Auto-populated from extracted data</span>
+                <div className="mt-2 flex items-center gap-2 text-emerald-700 text-xs font-medium">
+                  <div className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse"></div>
+                  <span>Extracted from documents</span>
                 </div>
               )}
             </div>
@@ -1148,75 +1200,102 @@ const ApplicationForm: React.FC<ApplicationFormProps> = ({ onSubmit, initialStep
 
         {/* Contact Information Section */}
         <div className="mb-8">
-          <h3 className="text-lg font-semibold text-gray-900 mb-4 flex items-center">
-            <User className="w-5 h-5 mr-2 text-blue-600" />
-            Contact Information
-          </h3>
+          <div className="mb-6">
+            <div className="flex items-center gap-3 mb-2">
+              <div className="p-2 bg-gradient-to-br from-purple-100 to-violet-100 rounded-xl shadow-sm border border-purple-200">
+                <User className="w-5 h-5 text-purple-700" />
+              </div>
+              <h3 className="text-xl font-bold text-gray-900">Contact Information</h3>
+            </div>
+            <p className="text-sm text-gray-600 ml-12">Owner and business contact details</p>
+          </div>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             <div>
-              <label htmlFor="ownerName" className="block text-sm font-medium text-gray-700 mb-1">Owner Name*</label>
-              <input
-                type="text"
-                id="ownerName"
-                value={formData.ownerName}
-                onChange={(e) => setFormData({...formData, ownerName: e.target.value})}
-                className={`w-full px-4 py-2 border ${errors.ownerName ? 'border-red-500' : 'border-gray-300'} rounded-lg focus:ring-blue-500 focus:border-blue-500 ${populatedFields.has('ownerName') ? 'bg-green-50 border-green-300' : ''}`}
-              />
-              {populatedFields.has('ownerName') && (
-                <div className="flex items-center mt-1 text-xs text-green-600">
-                  <CheckCircle className="w-3 h-3 mr-1" />
-                  <span>Auto-populated from extracted data</span>
-                </div>
-              )}
+              <div className="relative">
+                <label className="block text-sm font-bold text-gray-800 mb-2" htmlFor="ownerName">Owner Name</label>
+                <input
+                  type="text"
+                  id="ownerName"
+                  value={formData.ownerName}
+                  onChange={(e) => setFormData({...formData, ownerName: e.target.value})}
+                  className={`w-full rounded-xl border-2 px-4 py-3 text-gray-900 font-medium transition-all duration-200 focus:outline-none ${
+                    populatedFields.has('ownerName') 
+                      ? 'border-emerald-300 bg-gradient-to-r from-emerald-50 to-green-50 ring-2 ring-emerald-200/50 shadow-sm focus:border-emerald-400 focus:ring-emerald-300/50' 
+                      : 'border-gray-200 bg-white hover:border-gray-300 focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 shadow-sm hover:shadow-sm'
+                  }`}
+                />
+                {populatedFields.has('ownerName') && (
+                  <div className="mt-2 flex items-center gap-2 text-emerald-700 text-xs font-medium">
+                    <div className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse"></div>
+                    <span>Extracted from documents</span>
+                  </div>
+                )}
+              </div>
               {errors.ownerName && <p className="mt-1 text-sm text-red-600">{errors.ownerName}</p>}
             </div>
-            <div>
-              <label htmlFor="email" className="block text-sm font-medium text-gray-700 mb-1">Email*</label>
+            <div className="relative">
+              <label className="block text-sm font-bold text-gray-800 mb-2" htmlFor="email">Email*</label>
               <input
                 type="email"
                 id="email"
                 value={formData.email}
                 onChange={(e) => setFormData({...formData, email: e.target.value})}
-                className={`w-full px-4 py-2 border ${errors.email ? 'border-red-500' : 'border-gray-300'} rounded-lg focus:ring-blue-500 focus:border-blue-500 ${populatedFields.has('email') ? 'bg-green-50 border-green-300' : ''}`}
+                className={`w-full rounded-xl border-2 px-4 py-3 text-gray-900 font-medium transition-all duration-200 focus:outline-none ${
+                  populatedFields.has('email') 
+                    ? 'border-emerald-300 bg-gradient-to-r from-emerald-50 to-green-50 ring-2 ring-emerald-200/50 shadow-sm focus:border-emerald-400 focus:ring-emerald-300/50' 
+                    : errors.email 
+                    ? 'border-red-300 bg-white focus:border-red-500 focus:ring-2 focus:ring-red-500/20 shadow-sm'
+                    : 'border-gray-200 bg-white hover:border-gray-300 focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 shadow-sm hover:shadow-sm'
+                }`}
               />
               {populatedFields.has('email') && (
-                <div className="flex items-center mt-1 text-xs text-green-600">
-                  <CheckCircle className="w-3 h-3 mr-1" />
-                  <span>Auto-populated from extracted data</span>
+                <div className="mt-2 flex items-center gap-2 text-emerald-700 text-xs font-medium">
+                  <div className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse"></div>
+                  <span>Extracted from documents</span>
                 </div>
               )}
               {errors.email && <p className="mt-1 text-sm text-red-600">{errors.email}</p>}
             </div>
-            <div>
-              <label htmlFor="phone" className="block text-sm font-medium text-gray-700 mb-1">Phone*</label>
+            <div className="relative">
+              <label className="block text-sm font-bold text-gray-800 mb-2" htmlFor="phone">Phone*</label>
               <input
                 type="tel"
                 id="phone"
                 value={formData.phone}
                 onChange={(e) => setFormData({...formData, phone: e.target.value})}
-                className={`w-full px-4 py-2 border ${errors.phone ? 'border-red-500' : 'border-gray-300'} rounded-lg focus:ring-blue-500 focus:border-blue-500 ${populatedFields.has('phone') ? 'bg-green-50 border-green-300' : ''}`}
+                className={`w-full rounded-xl border-2 px-4 py-3 text-gray-900 font-medium transition-all duration-200 focus:outline-none ${
+                  populatedFields.has('phone') 
+                    ? 'border-emerald-300 bg-gradient-to-r from-emerald-50 to-green-50 ring-2 ring-emerald-200/50 shadow-sm focus:border-emerald-400 focus:ring-emerald-300/50' 
+                    : errors.phone 
+                    ? 'border-red-300 bg-white focus:border-red-500 focus:ring-2 focus:ring-red-500/20 shadow-sm'
+                    : 'border-gray-200 bg-white hover:border-gray-300 focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 shadow-sm hover:shadow-sm'
+                }`}
               />
               {populatedFields.has('phone') && (
-                <div className="flex items-center mt-1 text-xs text-green-600">
-                  <CheckCircle className="w-3 h-3 mr-1" />
-                  <span>Auto-populated from extracted data</span>
+                <div className="mt-2 flex items-center gap-2 text-emerald-700 text-xs font-medium">
+                  <div className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse"></div>
+                  <span>Extracted from documents</span>
                 </div>
               )}
               {errors.phone && <p className="mt-1 text-sm text-red-600">{errors.phone}</p>}
             </div>
-            <div>
-              <label htmlFor="address" className="block text-sm font-medium text-gray-700 mb-1">Business Address</label>
+            <div className="relative">
+              <label className="block text-sm font-bold text-gray-800 mb-2" htmlFor="address">Business Address</label>
               <input
                 type="text"
                 id="address"
                 value={formData.address}
                 onChange={(e) => setFormData({...formData, address: e.target.value})}
-                className={`w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500 ${populatedFields.has('address') ? 'bg-green-50 border-green-300' : ''}`}
+                className={`w-full rounded-xl border-2 px-4 py-3 text-gray-900 font-medium transition-all duration-200 focus:outline-none ${
+                  populatedFields.has('address') 
+                    ? 'border-emerald-300 bg-gradient-to-r from-emerald-50 to-green-50 ring-2 ring-emerald-200/50 shadow-sm focus:border-emerald-400 focus:ring-emerald-300/50' 
+                    : 'border-gray-200 bg-white hover:border-gray-300 focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 shadow-sm hover:shadow-sm'
+                }`}
               />
               {populatedFields.has('address') && (
-                <div className="flex items-center mt-1 text-xs text-green-600">
-                  <CheckCircle className="w-3 h-3 mr-1" />
-                  <span>Auto-populated from extracted data</span>
+                <div className="mt-2 flex items-center gap-2 text-emerald-700 text-xs font-medium">
+                  <div className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse"></div>
+                  <span>Extracted from documents</span>
                 </div>
               )}
             </div>
@@ -1225,213 +1304,62 @@ const ApplicationForm: React.FC<ApplicationFormProps> = ({ onSubmit, initialStep
 
         {/* Financial Information Section */}
         <div className="mb-8">
-          <h3 className="text-lg font-semibold text-gray-900 mb-4 flex items-center">
-            <DollarSign className="w-5 h-5 mr-2 text-blue-600" />
-            Financial Information
-          </h3>
+          <div className="mb-6">
+            <div className="flex items-center gap-3 mb-2">
+              <div className="p-2 bg-gradient-to-br from-green-100 to-emerald-100 rounded-xl shadow-sm border border-green-200">
+                <DollarSign className="w-5 h-5 text-green-700" />
+              </div>
+              <h3 className="text-xl font-bold text-gray-900">Financial Information</h3>
+            </div>
+            <p className="text-sm text-gray-600 ml-12">Annual revenue and financial metrics</p>
+          </div>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             <div>
-              <label htmlFor="annualRevenue" className="block text-sm font-medium text-gray-700 mb-1">Annual Revenue</label>
               <div className="relative">
-                <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                  <span className="text-gray-500">$</span>
+                <label className="block text-sm font-bold text-gray-800 mb-2" htmlFor="annualRevenue">Annual Revenue</label>
+                <div className="relative">
+                  <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
+                    <span className="text-gray-500 font-medium">$</span>
+                  </div>
+                  <input
+                    type="number"
+                    id="annualRevenue"
+                    value={formData.annualRevenue}
+                    onChange={(e) => setFormData({...formData, annualRevenue: e.target.value})}
+                    className={`w-full pl-8 pr-4 py-3 rounded-xl border-2 text-gray-900 font-medium transition-all duration-200 focus:outline-none ${
+                      populatedFields.has('annualRevenue') 
+                        ? 'border-emerald-300 bg-gradient-to-r from-emerald-50 to-green-50 ring-2 ring-emerald-200/50 shadow-sm focus:border-emerald-400 focus:ring-emerald-300/50' 
+                        : 'border-gray-200 bg-white hover:border-gray-300 focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 shadow-sm hover:shadow-sm'
+                    }`}
+                  />
                 </div>
-                <input
-                  type="number"
-                  id="annualRevenue"
-                  value={formData.annualRevenue}
-                  onChange={(e) => setFormData({...formData, annualRevenue: e.target.value})}
-                  className={`w-full pl-8 px-4 py-2 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500 ${populatedFields.has('annualRevenue') ? 'bg-green-50 border-green-300' : ''}`}
-                />
+                {populatedFields.has('annualRevenue') && (
+                  <div className="mt-2 flex items-center gap-2 text-emerald-700 text-xs font-medium">
+                    <div className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse"></div>
+                    <span>Extracted from documents</span>
+                  </div>
+                )}
               </div>
-              {populatedFields.has('annualRevenue') && (
-                <div className="flex items-center mt-1 text-xs text-green-600">
-                  <CheckCircle className="w-3 h-3 mr-1" />
-                  <span>Auto-populated from extracted data</span>
-                </div>
-              )}
-            </div>
-            <div>
-              <label htmlFor="averageMonthlyRevenue" className="block text-sm font-medium text-gray-700 mb-1">Average Monthly Revenue*</label>
-              <div className="relative">
-                <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                  <span className="text-gray-500">$</span>
-                </div>
-                <input
-                  type="text"
-                  id="averageMonthlyRevenue"
-                  value={formatWithCommas(formData.averageMonthlyRevenue)}
-                  onChange={(e) => setFormData({
-                    ...formData,
-                    averageMonthlyRevenue: sanitizeNumeric(e.target.value)
-                  })}
-                  className={`w-full pl-8 px-4 py-2 border ${errors.averageMonthlyRevenue ? 'border-red-500' : 'border-gray-300'} rounded-lg focus:ring-blue-500 focus:border-blue-500 ${populatedFields.has('averageMonthlyRevenue') ? 'bg-green-50 border-green-300' : ''}`}
-                  inputMode="decimal"
-                />
-              </div>
-              {populatedFields.has('averageMonthlyRevenue') && (
-                <div className="flex items-center mt-1 text-xs text-green-600">
-                  <CheckCircle className="w-3 h-3 mr-1" />
-                  <span>Auto-populated from extracted data</span>
-                </div>
-              )}
-              {errors.averageMonthlyRevenue && <p className="mt-1 text-sm text-red-600">{errors.averageMonthlyRevenue}</p>}
-            </div>
-            <div>
-              <label htmlFor="averageMonthlyDeposits" className="block text-sm font-medium text-gray-700 mb-1">Average Monthly Deposits</label>
-              <div className="relative">
-                <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                  <span className="text-gray-500">$</span>
-                </div>
-                <input
-                  type="text"
-                  id="averageMonthlyDeposits"
-                  value={formatWithCommas(formData.averageMonthlyDeposits)}
-                  onChange={(e) => setFormData({
-                    ...formData,
-                    averageMonthlyDeposits: sanitizeNumeric(e.target.value)
-                  })}
-                  className={`w-full pl-8 px-4 py-2 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500 ${populatedFields.has('averageMonthlyDeposits') ? 'bg-green-50 border-green-300' : ''}`}
-                  inputMode="decimal"
-                />
-              </div>
-              {populatedFields.has('averageMonthlyDeposits') && (
-                <div className="flex items-center mt-1 text-xs text-green-600">
-                  <CheckCircle className="w-3 h-3 mr-1" />
-                  <span>Auto-populated from extracted data</span>
-                </div>
-              )}
-            </div>
-            <div>
-              <label htmlFor="existingDebt" className="block text-sm font-medium text-gray-700 mb-1">Existing Business Debt</label>
-              <div className="relative">
-                <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                  <span className="text-gray-500">$</span>
-                </div>
-                <input
-                  type="text"
-                  id="existingDebt"
-                  value={formatWithCommas(formData.existingDebt)}
-                  onChange={(e) => setFormData({
-                    ...formData,
-                    existingDebt: sanitizeNumeric(e.target.value)
-                  })}
-                  className={`w-full pl-8 px-4 py-2 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500 ${populatedFields.has('existingDebt') ? 'bg-green-50 border-green-300' : ''}`}
-                  inputMode="decimal"
-                />
-              </div>
-              {populatedFields.has('existingDebt') && (
-                <div className="flex items-center mt-1 text-xs text-green-600">
-                  <CheckCircle className="w-3 h-3 mr-1" />
-                  <span>Auto-populated from extracted data</span>
-                </div>
-              )}
-            </div>
-            <div>
-              <label htmlFor="creditScore" className="block text-sm font-medium text-gray-700 mb-1">Credit Score*</label>
-              <input
-                type="number"
-                id="creditScore"
-                value={formData.creditScore}
-                onChange={(e) => setFormData({...formData, creditScore: e.target.value})}
-                className={`w-full px-4 py-2 border ${errors.creditScore ? 'border-red-500' : 'border-gray-300'} rounded-lg focus:ring-blue-500 focus:border-blue-500 ${populatedFields.has('creditScore') ? 'bg-green-50 border-green-300' : ''}`}
-                min="300"
-                max="850"
-              />
-              {populatedFields.has('creditScore') && (
-                <div className="flex items-center mt-1 text-xs text-green-600">
-                  <CheckCircle className="w-3 h-3 mr-1" />
-                  <span>Auto-populated from extracted data</span>
-                </div>
-              )}
-              {errors.creditScore && <p className="mt-1 text-sm text-red-600">{errors.creditScore}</p>}
-            </div>
-            <div>
-              <label htmlFor="requestedAmount" className="block text-sm font-medium text-gray-700 mb-1">Requested Amount*</label>
-              <div className="relative">
-                <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                  <span className="text-gray-500">$</span>
-                </div>
-                <input
-                  type="number"
-                  id="requestedAmount"
-                  value={formData.requestedAmount}
-                  onChange={(e) => setFormData({...formData, requestedAmount: e.target.value})}
-                  className={`w-full pl-8 px-4 py-2 border ${errors.requestedAmount ? 'border-red-500' : 'border-gray-300'} rounded-lg focus:ring-blue-500 focus:border-blue-500 ${populatedFields.has('requestedAmount') ? 'bg-green-50 border-green-300' : ''}`}
-                  min="10000"
-                />
-              </div>
-              {populatedFields.has('requestedAmount') && (
-                <div className="flex items-center mt-1 text-xs text-green-600">
-                  <CheckCircle className="w-3 h-3 mr-1" />
-                  <span>Auto-populated from extracted data</span>
-                </div>
-              )}
-              {errors.requestedAmount && <p className="mt-1 text-sm text-red-600">{errors.requestedAmount}</p>}
             </div>
           </div>
         </div>
 
-        {/* Additional Documents */}
-        <div className="mb-8">
-          <h3 className="text-lg font-semibold text-gray-900 mb-4 flex items-center">
-            <Upload className="w-5 h-5 mr-2 text-blue-600" />
-            Additional Documents
-          </h3>
-          <div className="border-2 border-dashed border-gray-300 rounded-lg p-6">
-            <div className="text-center">
-              <Upload className="w-8 h-8 text-gray-400 mx-auto mb-2" />
-              <div className="text-sm text-gray-600 mb-2">
-                Upload additional supporting documents (bank statements, tax returns, etc.)
-              </div>
-              <label htmlFor="file-upload" className="relative cursor-pointer bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-700 focus-within:outline-none focus-within:ring-2 focus-within:ring-offset-2 focus-within:ring-blue-500 transition-colors">
-                <span>Choose Files</span>
-                <input 
-                  id="file-upload" 
-                  name="file-upload" 
-                  type="file" 
-                  className="sr-only" 
-                  multiple
-                  onChange={handleFileUpload} 
-                />
-              </label>
-            </div>
-            
-            {uploadedFiles.length > 0 && (
-              <div className="mt-4">
-                <h4 className="text-sm font-medium text-gray-700 mb-2">Uploaded Files:</h4>
-                <div className="space-y-2">
-                  {uploadedFiles.map((fileName, index) => (
-                    <div key={index} className="flex items-center justify-between bg-gray-50 px-3 py-2 rounded">
-                      <div className="flex items-center">
-                        <FileText className="w-4 h-4 text-gray-500 mr-2" />
-                        <span className="text-sm text-gray-700">{fileName}</span>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => removeFile(fileName)}
-                        className="text-red-500 hover:text-red-700 text-sm"
-                      >
-                        Remove
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-          </div>
-        </div>
+        
 
         {/* Submit Button */}
-        <div className="flex justify-end pt-6 border-t border-gray-200">
+        <div className="flex justify-end pt-8 mt-8 border-t border-gray-100">
           <button
             type="submit"
-            className="bg-blue-600 text-white px-8 py-3 rounded-lg font-medium hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 transition-colors"
+            className="inline-flex items-center gap-3 px-8 py-4 rounded-2xl font-bold text-lg shadow-lg transition-all duration-200 focus:outline-none focus:ring-4 bg-gradient-to-r from-blue-600 to-indigo-600 text-white hover:from-blue-700 hover:to-indigo-700 hover:shadow-xl hover:scale-105 focus:ring-blue-500/40"
           >
             Submit Application
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7l5 5m0 0l-5 5m5-5H6" />
+            </svg>
           </button>
         </div>
       </form>
+    </div>
     </div>
   );
 };
