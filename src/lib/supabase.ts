@@ -321,3 +321,28 @@ export const qualifyLenders = (lenders: Lender[], application: Application): (Le
     return { ...lender, qualified, matchScore: Math.max(0, matchScore) }
   })
 }
+
+// Deferred MCA results
+export interface McaResult {
+  job_id: string
+  status: 'pending' | 'processing' | 'completed' | 'failed'
+  result_json?: unknown
+  error?: string
+  application_id?: string
+  statement_date?: string
+  created_at?: string
+  updated_at?: string
+}
+
+export const getMcaResult = async (jobId: string): Promise<McaResult | null> => {
+  const { data, error } = await supabase
+    .from('mca_results')
+    .select('*')
+    .eq('job_id', jobId)
+    .order('updated_at', { ascending: false })
+    .limit(1)
+    .maybeSingle()
+
+  if (error) throw error
+  return (data as unknown as McaResult) ?? null
+}

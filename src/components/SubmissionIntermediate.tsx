@@ -1,16 +1,14 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Building2, Upload, FileText, CheckCircle, RefreshCw, Trash2, RotateCcw } from 'lucide-react';
-import { getApplicationDocuments, deleteApplicationDocument, deleteApplicationDocumentByAppAndDate, type ApplicationDocument } from '../lib/supabase';
+import { getApplicationDocuments, deleteApplicationDocument, deleteApplicationDocumentByAppAndDate, type ApplicationDocument, getMcaResult, type McaResult } from '../lib/supabase';
 
-// Webhook to receive raw bank statement uploads (moved from extractor)
+
 const NEW_DEAL_WEBHOOK_URL = '/webhook/newDeal';
-// Webhook to update applications when user proceeds to lender matches
-const UPDATING_APPLICATIONS_WEBHOOK_URL = '/webhook/updatingApplications';
-// Absolute webhook to receive the raw PDF + metadata immediately upon upload
-const DOCUMENT_FILE_WEBHOOK_URL = 'https://primary-production-c8d0.up.railway.app/webhook/mca';
 
-// Lightweight details page shown after application submit and before lender matches
-// Styled to match project cards/buttons and the reference layout (two-column inputs + blue primary button)
+const UPDATING_APPLICATIONS_WEBHOOK_URL = '/webhook/updatingApplications';
+const DOCUMENT_FILE_WEBHOOK_URL = 'https://primary-production-c8d0.up.railway.app/webhook/documentFile';
+
+const MCA_WEBHOOK_URL = '/webhook/mca';
 
 type Props = {
   onContinue: (details: Record<string, string | boolean>) => void;
@@ -18,6 +16,24 @@ type Props = {
   // Optional prefill hooks if we want to seed values from application
   initial?: Partial<Record<string, string | boolean>>;
   loading?: boolean;
+};
+
+// Structured type based on MCA webhook response sample
+type MCASummaryItem = {
+  FUNDER: string;
+  AMOUNT: string;
+  'DAILY/WEEKLY Debit': string;
+  NOTES: string;
+};
+
+// Generic monthly table row: keys and values are strings
+type MCAMonthlyRow = Record<string, string>;
+
+// Full parsed MCA payload we care about per document
+type MCAParsed = {
+  monthly_table?: MCAMonthlyRow[];
+  mca_summary?: MCASummaryItem[];
+  fraud_flags?: string[];
 };
 
 const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, loading }) => {
@@ -119,6 +135,93 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
     } finally {
       setDbDocsLoading(false);
     }
+  };
+
+  // Start polling Supabase for MCA results for a given jobId and attach to this dateKey when complete
+  const startMcaPolling = (dateKey: string, jobId: string) => {
+    // Save initial job status
+    setPerDocMcaJobs(prev => ({ ...prev, [dateKey]: { jobId, status: 'pending' } }));
+
+    const startedAt = Date.now();
+    const maxMs = 5 * 60 * 1000; // 5 minutes
+    const intervalMs = 3000; // 3s polling
+
+    const timer = window.setInterval(async () => {
+      // Stop if exceeded time budget
+      if (Date.now() - startedAt > maxMs) {
+        window.clearInterval(timer);
+        setPerDocMcaJobs(prev => ({ ...prev, [dateKey]: { jobId, status: 'failed', error: 'timeout' } }));
+        return;
+      }
+
+      try {
+        const row = await getMcaResult(jobId);
+        if (!row) return; // not yet persisted
+
+        // Update status
+        setPerDocMcaJobs(prev => ({ ...prev, [dateKey]: { jobId, status: row.status as McaResult['status'], error: row.error } }));
+
+        if (row.status === 'completed') {
+          // Attach result payload to this doc
+          const parsed = row.result_json as unknown;
+          if (parsed && typeof parsed === 'object') {
+            // Normalize same as immediate path
+            const root: unknown = Array.isArray(parsed) ? (parsed as unknown[])[0] : parsed;
+            if (root && typeof root === 'object') {
+              const obj = root as Record<string, unknown>;
+              const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
+              const getField = (o: Record<string, unknown>, target: string) => {
+                const keys = Object.keys(o);
+                const match = keys.find(k => norm(k) === norm(target));
+                return match ? (o as Record<string, unknown>)[match] : undefined;
+              };
+              const monthlyRaw = getField(obj, 'monthly_table');
+              const monthly_table: MCAMonthlyRow[] | undefined = Array.isArray(monthlyRaw)
+                ? (monthlyRaw as unknown[]).map((r) => {
+                    const rec = r as Record<string, unknown>;
+                    const out: Record<string, string> = {};
+                    Object.keys(rec).forEach((k) => { out[k] = String(rec[k] ?? ''); });
+                    return out;
+                  })
+                : undefined;
+              const summaryRaw = getField(obj, 'mca_summary');
+              let mca_summary: MCASummaryItem[] | undefined = undefined;
+              if (Array.isArray(summaryRaw)) {
+                mca_summary = (summaryRaw as unknown[]).map((row) => {
+                  const r = row as Record<string, unknown>;
+                  return {
+                    FUNDER: String(r.FUNDER ?? ''),
+                    AMOUNT: String(r.AMOUNT ?? ''),
+                    'DAILY/WEEKLY Debit': String((r as Record<string, unknown>)['DAILY/WEEKLY Debit'] ?? ''),
+                    NOTES: String(r.NOTES ?? ''),
+                  } as MCASummaryItem;
+                });
+              } else if (summaryRaw && typeof summaryRaw === 'object') {
+                const r = summaryRaw as Record<string, unknown>;
+                mca_summary = [{
+                  FUNDER: String(r.FUNDER ?? ''),
+                  AMOUNT: String(r.AMOUNT ?? ''),
+                  'DAILY/WEEKLY Debit': String((r as Record<string, unknown>)['DAILY/WEEKLY Debit'] ?? ''),
+                  NOTES: String(r.NOTES ?? ''),
+                }];
+              }
+              const flagsRaw = getField(obj, 'fraud_flags');
+              const fraud_flags: string[] | undefined = Array.isArray(flagsRaw)
+                ? (flagsRaw as unknown[]).map((x) => String(x))
+                : undefined;
+              const payload: MCAParsed = { monthly_table, mca_summary, fraud_flags };
+              setPerDocMcaData((prev: Record<string, MCAParsed>) => ({ ...prev, [dateKey]: payload }));
+            }
+          }
+          window.clearInterval(timer);
+        } else if (row.status === 'failed') {
+          window.clearInterval(timer);
+        }
+      } catch (e) {
+        // Keep polling despite transient errors
+        console.warn('[MCA polling] Error while polling job', jobId, e);
+      }
+    }, intervalMs);
   };
 
   // Populate per-document details (by dateKey) from webhook payload
@@ -225,6 +328,10 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
   const [dbDocsLoading, setDbDocsLoading] = useState(false);
   // Per-document extracted details keyed by dateKey
   const [perDocDetails, setPerDocDetails] = useState<Record<string, Record<string, string | boolean>>>({});
+  // Per-document MCA payload keyed by dateKey
+  const [perDocMcaData, setPerDocMcaData] = useState<Record<string, MCAParsed>>({});
+  // Track MCA job status per document (by dateKey)
+  const [perDocMcaJobs, setPerDocMcaJobs] = useState<Record<string, { jobId: string; status: 'pending' | 'processing' | 'completed' | 'failed'; error?: string }>>({});
   // Track which item is being replaced (db/local)
   const [replaceTarget, setReplaceTarget] = useState<null | { source: 'db' | 'local'; dateKey: string; docId?: string }>(null);
   // Track which completed document card is expanded to show inline Financial Details
@@ -232,6 +339,13 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
 
   // Create a ref for the replace file input
   const replaceFileInputRef = useRef<HTMLInputElement>(null);
+
+  // Reference perDocMcaJobs so it's not flagged as unused and provide useful debug info
+  useEffect(() => {
+    if (Object.keys(perDocMcaJobs).length) {
+      console.debug('[MCA jobs updated]', perDocMcaJobs);
+    }
+  }, [perDocMcaJobs]);
 
   // Helper to flatten nested objects into dot.notation keys for easy lookup
   const flattenObject = (obj: unknown, prefix = ''): Record<string, unknown> => {
@@ -461,8 +575,7 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
     }, 200);
 
     try {
-      // No need to prepare a file URL for the document webhook anymore
-      // Upload with date tag to the internal newDeal webhook (non-blocking for overall flow)
+      // 1) Send to NEW_DEAL_WEBHOOK_URL (extract business/financial fields)
       try {
         const form = new FormData();
         form.append('file', file, file.name);
@@ -471,7 +584,7 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
         const resp = await fetchWithTimeout(NEW_DEAL_WEBHOOK_URL, {
           method: 'POST',
           body: form,
-          timeoutMs: 20000, // allow a bit more time for processing
+          timeoutMs: 20000,
         });
 
         if (resp.ok) {
@@ -499,21 +612,133 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
         console.warn('newDeal webhook timed out or failed; continuing upload flow:', err);
       }
 
-      // Send the document file to DOCUMENT_FILE_WEBHOOK_URL (external) via multipart/form-data with metadata
+      // 2) Send to MCA_WEBHOOK_URL (deferred processing friendly)
       try {
-        // Prefer the Applications table primary key (application record id)
+        const formMca = new FormData();
+        formMca.append('file', file, file.name);
+        formMca.append('statementDate', dateKey);
+
+        const respMca = await fetchWithTimeout(MCA_WEBHOOK_URL, {
+          method: 'POST',
+          body: formMca,
+          timeoutMs: 60000,
+        });
+        console.log('[MCA webhook] Response status:', respMca.status, respMca.statusText);
+
+        if (respMca.status === 202) {
+          // Acknowledged for background processing
+          try {
+            const ack = await respMca.clone().json().catch(() => null) as unknown;
+            console.log('[MCA webhook] Accepted for background processing. Ack:', ack);
+            if (ack && typeof ack === 'object') {
+              const a = ack as Record<string, unknown>;
+              const jobId = (a.jobId as string) || (a.job_id as string) || (a.id as string) || '';
+              if (jobId) {
+                startMcaPolling(dateKey, jobId);
+              }
+            }
+          } catch {
+            // ignore parse failures; background processing continues
+          }
+        } else if (respMca.ok) {
+          try {
+            const ct = respMca.headers.get('content-type') || '';
+            let parsed: unknown = undefined;
+            if (ct.includes('application/json')) {
+              parsed = await respMca.json();
+            } else {
+              const text = await respMca.text();
+              try { parsed = JSON.parse(text); } catch { parsed = undefined; }
+            }
+            if (parsed) {
+              console.log('[MCA webhook] Parsed payload:', parsed);
+              // Normalize payload: support both object and array-of-one formats
+              const root: unknown = Array.isArray(parsed) ? parsed[0] : parsed;
+              if (root && typeof root === 'object') {
+                const obj = root as Record<string, unknown>;
+                const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
+                const getField = (o: Record<string, unknown>, target: string) => {
+                  const keys = Object.keys(o);
+                  const match = keys.find(k => norm(k) === norm(target));
+                  return match ? (o as Record<string, unknown>)[match] : undefined;
+                };
+
+                // monthly_table
+                const monthlyRaw = getField(obj, 'monthly_table');
+                const monthly_table: MCAMonthlyRow[] | undefined = Array.isArray(monthlyRaw)
+                  ? (monthlyRaw as unknown[]).map((r) => {
+                      const rec = r as Record<string, unknown>;
+                      const out: Record<string, string> = {};
+                      Object.keys(rec).forEach((k) => { out[k] = String(rec[k] ?? ''); });
+                      return out;
+                    })
+                  : undefined;
+
+                // mca_summary
+                const summaryRaw = getField(obj, 'mca_summary');
+                let mca_summary: MCASummaryItem[] | undefined = undefined;
+                if (Array.isArray(summaryRaw)) {
+                  mca_summary = (summaryRaw as unknown[]).map((row) => {
+                    const r = row as Record<string, unknown>;
+                    return {
+                      FUNDER: String(r.FUNDER ?? ''),
+                      AMOUNT: String(r.AMOUNT ?? ''),
+                      'DAILY/WEEKLY Debit': String((r as Record<string, unknown>)['DAILY/WEEKLY Debit'] ?? ''),
+                      NOTES: String(r.NOTES ?? ''),
+                    } as MCASummaryItem;
+                  });
+                } else if (summaryRaw && typeof summaryRaw === 'object') {
+                  const r = summaryRaw as Record<string, unknown>;
+                  mca_summary = [{
+                    FUNDER: String(r.FUNDER ?? ''),
+                    AMOUNT: String(r.AMOUNT ?? ''),
+                    'DAILY/WEEKLY Debit': String((r as Record<string, unknown>)['DAILY/WEEKLY Debit'] ?? ''),
+                    NOTES: String(r.NOTES ?? ''),
+                  }];
+                }
+
+                // fraud_flags
+                const flagsRaw = getField(obj, 'fraud_flags');
+                const fraud_flags: string[] | undefined = Array.isArray(flagsRaw)
+                  ? (flagsRaw as unknown[]).map((x) => String(x))
+                  : undefined;
+
+                const payload: MCAParsed = { monthly_table, mca_summary, fraud_flags };
+                console.log('[MCA webhook] Storing full MCA payload for', dateKey, payload);
+                setPerDocMcaData((prev: Record<string, MCAParsed>) => ({ ...prev, [dateKey]: payload }));
+                console.log('[MCA webhook] Stored payload mca_summary length:', Array.isArray(mca_summary) ? mca_summary.length : 0);
+              } else {
+                console.log('[MCA webhook] Parsed payload root is not an object');
+              }
+            }
+          } catch (e) {
+            console.warn('Unable to parse MCA webhook response:', e);
+          }
+        }
+      } catch (err: unknown) {
+        const name = (typeof err === 'object' && err && 'name' in err) ? (err as { name?: string }).name : undefined;
+        if (name === 'AbortError') {
+          console.info('[MCA webhook] Request aborted/timeout (AbortError). Continuing without blocking.', err);
+        } else {
+          console.warn('MCA webhook failed; continuing upload flow:', err);
+        }
+      }
+
+      // 3) Send metadata to DOCUMENT_FILE_WEBHOOK_URL for authoritative record
+      try {
         const appId = (details.id as string) || (initial?.id as string) || (details.applicationId as string) || (initial?.applicationId as string) || '';
-        const form2 = new FormData();
-        form2.append('file', file, file.name);
-        form2.append('application_id', appId);
-        form2.append('statement_date', dateKey);
-        form2.append('file_name', file.name);
-        form2.append('file_size', String(file.size));
-        form2.append('file_type', file.type || 'application/pdf');
+        const payload = {
+          application_id: appId,
+          file_name: file.name,
+          file_size: file.size,
+          file_type: file.type || 'application/pdf',
+          statement_date: dateKey,
+        } as const;
 
         const resp2 = await fetchWithTimeout(DOCUMENT_FILE_WEBHOOK_URL, {
           method: 'POST',
-          body: form2,
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
           timeoutMs: 30000,
         });
 
@@ -526,7 +751,6 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
             if (typeof u === 'string' && u) fileUrl = u;
           }
         } else {
-          // Try parse text to JSON
           const t2 = await resp2.text();
           try {
             const data2 = JSON.parse(t2);
@@ -537,7 +761,6 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
           }
         }
 
-        // Use file URL only if the document webhook returns one for UI linking
         clearInterval(progressInterval);
         setUploadProgress(prev => {
           const next = new Map(prev);
@@ -553,7 +776,7 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
           });
         }, 500);
       } catch (e) {
-        console.warn('external document webhook call failed; marking completed without URL:', e);
+        console.warn('documentFile webhook call failed; marking completed without URL:', e);
         clearInterval(progressInterval);
         setUploadProgress(prev => {
           const next = new Map(prev);
@@ -1294,6 +1517,115 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                                         <Input label="Current Position Count" name="currentPositionCount" type="text" inputMode="decimal" {...bind('currentPositionCount')} />
                                         <Input label="Holdback" name="holdback" type="text" inputMode="decimal" {...bind('holdback')} />
                                       </div>
+                                      {/* MCA Data (full payload from MCA webhook) */}
+                                      {(() => {
+                                        const data = perDocMcaData[item.dateKey];
+                                        if (data) {
+                                          console.log('[MCA render]', {
+                                            dateKey: item.dateKey,
+                                            monthlyLen: Array.isArray(data.monthly_table) ? data.monthly_table.length : 0,
+                                            summaryLen: Array.isArray(data.mca_summary) ? data.mca_summary.length : 0,
+                                            flagsLen: Array.isArray(data.fraud_flags) ? data.fraud_flags.length : 0,
+                                          });
+                                        }
+                                        if (!data) return null;
+                                        return (
+                                          <div className="mt-8 space-y-8">
+                                            {/* Monthly Table */}
+                                            {Array.isArray(data.monthly_table) && data.monthly_table.length > 0 && (
+                                              <div className="bg-gradient-to-br from-slate-50 to-gray-50 rounded-2xl p-6 border border-slate-200 shadow-sm">
+                                                <div className="mb-6 flex items-center gap-4">
+                                                  <div className="p-3 bg-gradient-to-br from-blue-500 to-indigo-600 rounded-xl shadow-lg">
+                                                    <Building2 className="w-6 h-6 text-white" />
+                                                  </div>
+                                                  <div>
+                                                    <h4 className="text-xl font-bold text-gray-900">Monthly Analysis</h4>
+                                                    <p className="text-sm text-gray-600">Financial performance overview</p>
+                                                  </div>
+                                                </div>
+                                                <div className="grid gap-4">
+                                                  {data.monthly_table.map((row: Record<string, string>, idx: number) => (
+                                                    <div key={idx} className="bg-white rounded-xl border border-gray-200 p-6 shadow-sm hover:shadow-md transition-shadow">
+                                                      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                                                        {Object.entries(row).map(([k, v]) => (
+                                                          <div key={k} className="space-y-1">
+                                                            <div className="text-xs font-semibold text-gray-500 uppercase tracking-wide">{k.replace(/_/g, ' ')}</div>
+                                                            <div className="text-lg font-bold text-gray-900">{v || '—'}</div>
+                                                          </div>
+                                                        ))}
+                                                      </div>
+                                                    </div>
+                                                  ))}
+                                                </div>
+                                              </div>
+                                            )}
+
+                                            {/* MCA Summary */}
+                                            {Array.isArray(data.mca_summary) && data.mca_summary.length > 0 && (
+                                              <div className="bg-gradient-to-br from-amber-50 to-orange-50 rounded-2xl p-6 border border-amber-200 shadow-sm">
+                                                <div className="mb-6 flex items-center gap-4">
+                                                  <div className="p-3 bg-gradient-to-br from-amber-500 to-orange-600 rounded-xl shadow-lg">
+                                                    <Building2 className="w-6 h-6 text-white" />
+                                                  </div>
+                                                  <div>
+                                                    <h4 className="text-xl font-bold text-gray-900">MCA Opportunities</h4>
+                                                    <p className="text-sm text-gray-600">Merchant cash advance options</p>
+                                                  </div>
+                                                </div>
+                                                <div className="space-y-4">
+                                                  {data.mca_summary.map((row: MCASummaryItem, idx: number) => (
+                                                    <div key={idx} className="bg-white rounded-xl border border-amber-200 p-6 shadow-sm hover:shadow-md transition-all duration-200">
+                                                      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                                                        <div className="space-y-1">
+                                                          <div className="text-xs font-semibold text-amber-600 uppercase tracking-wide">Funder</div>
+                                                          <div className="text-lg font-bold text-gray-900">{row.FUNDER || 'Not specified'}</div>
+                                                        </div>
+                                                        <div className="space-y-1">
+                                                          <div className="text-xs font-semibold text-amber-600 uppercase tracking-wide">Amount</div>
+                                                          <div className="text-lg font-bold text-green-700">{row.AMOUNT || 'Not specified'}</div>
+                                                        </div>
+                                                        <div className="space-y-1">
+                                                          <div className="text-xs font-semibold text-amber-600 uppercase tracking-wide">Daily/Weekly Debit</div>
+                                                          <div className="text-lg font-bold text-blue-700">{row['DAILY/WEEKLY Debit'] || 'Not specified'}</div>
+                                                        </div>
+                                                      </div>
+                                                      {row.NOTES && row.NOTES.trim() && (
+                                                        <div className="mt-4 pt-4 border-t border-amber-100">
+                                                          <div className="text-xs font-semibold text-amber-600 uppercase tracking-wide mb-2">Additional Notes</div>
+                                                          <div className="text-sm text-gray-700 leading-relaxed bg-amber-50 rounded-lg p-3">{row.NOTES}</div>
+                                                        </div>
+                                                      )}
+                                                    </div>
+                                                  ))}
+                                                </div>
+                                              </div>
+                                            )}
+
+                                            {/* Fraud Flags */}
+                                            {Array.isArray(data.fraud_flags) && data.fraud_flags.length > 0 && (
+                                              <div className="bg-gradient-to-br from-red-50 to-rose-50 rounded-2xl p-6 border border-red-200 shadow-sm">
+                                                <div className="mb-6 flex items-center gap-4">
+                                                  <div className="p-3 bg-gradient-to-br from-red-500 to-rose-600 rounded-xl shadow-lg">
+                                                    <Building2 className="w-6 h-6 text-white" />
+                                                  </div>
+                                                  <div>
+                                                    <h4 className="text-xl font-bold text-gray-900">Risk Assessment</h4>
+                                                    <p className="text-sm text-gray-600">Identified potential concerns</p>
+                                                  </div>
+                                                </div>
+                                                <div className="space-y-3">
+                                                  {data.fraud_flags.map((flag: string, idx: number) => (
+                                                    <div key={idx} className="bg-white rounded-lg border border-red-200 p-4 flex items-start gap-3 shadow-sm">
+                                                      <div className="w-2 h-2 bg-red-500 rounded-full mt-2 flex-shrink-0"></div>
+                                                      <div className="text-sm text-gray-800 leading-relaxed">{flag}</div>
+                                                    </div>
+                                                  ))}
+                                                </div>
+                                              </div>
+                                            )}
+                                          </div>
+                                        );
+                                      })()}
                                       {/* Per-document footer action at bottom of financial details */}
                                       <div className="flex items-center justify-end pt-4 mt-2">
                                         <button
