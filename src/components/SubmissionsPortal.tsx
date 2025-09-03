@@ -1,4 +1,4 @@
-import React, { useState, type ComponentProps } from 'react';
+import React, { useEffect, useState, type ComponentProps } from 'react';
 import { CheckCircle } from 'lucide-react';
 import ApplicationForm from './ApplicationForm';
 import BankStatement from './BankStatement';
@@ -6,6 +6,7 @@ import LenderMatches from './LenderMatches';
 import SubmissionRecap from './SubmissionRecap';
 import SubmissionIntermediate from './SubmissionIntermediate';
 import { extractLenderMatches, type CleanedMatch } from '../lib/parseLenderMatches';
+import { createApplication, getApplicationById, type Application as DBApplication } from '../lib/supabase';
 
 // Type aliases used across this file
 type ReviewInitialType = ComponentProps<typeof ApplicationForm>['reviewInitial'];
@@ -132,7 +133,13 @@ type FormApplication = {
   documents: string[];
 };
 
-const SubmissionsPortal: React.FC = () => {
+type SubmissionsPortalProps = {
+  initialStep?: 'application' | 'bank' | 'intermediate' | 'matches' | 'recap';
+  initialApplicationId?: string;
+  lockedLenderIds?: string[];
+};
+
+const SubmissionsPortal: React.FC<SubmissionsPortalProps> = ({ initialStep, initialApplicationId, lockedLenderIds = [] }) => {
   const [currentStep, setCurrentStep] = useState<'application' | 'bank' | 'intermediate' | 'matches' | 'recap'>('application');
   const [prevStep, setPrevStep] = useState<'application' | 'bank' | 'intermediate' | 'matches' | 'recap' | null>(null);
   const [application, setApplication] = useState<AppData | null>(null);
@@ -141,6 +148,65 @@ const SubmissionsPortal: React.FC = () => {
   const [intermediateLoading, setIntermediateLoading] = useState(false);
   const [intermediatePrefill, setIntermediatePrefill] = useState<Record<string, string | boolean> | null>(null);
   const [cleanedMatches, setCleanedMatches] = useState<CleanedMatch[] | null>(null);
+
+  // If requested, preload an application by ID and open Matches directly
+  useEffect(() => {
+    (async () => {
+      if (initialStep === 'matches' && initialApplicationId) {
+        try {
+          const db = await getApplicationById(initialApplicationId);
+          if (db) {
+            const mapped: AppData = {
+              id: db.id,
+              businessName: db.business_name,
+              monthlyRevenue: db.monthly_revenue,
+              timeInBusiness: db.years_in_business,
+              creditScore: db.credit_score,
+              industry: db.industry,
+              requestedAmount: db.requested_amount,
+              status: (db.status as AppData['status']),
+              ownerName: db.owner_name,
+              email: db.email,
+              phone: db.phone,
+              address: db.address,
+              ein: db.ein,
+              businessType: db.business_type,
+              yearsInBusiness: db.years_in_business,
+              numberOfEmployees: db.number_of_employees,
+              annualRevenue: db.annual_revenue,
+              monthlyDeposits: db.monthly_deposits,
+              existingDebt: db.existing_debt,
+              documents: db.documents ?? [],
+              contactInfo: {
+                ownerName: db.owner_name,
+                email: db.email,
+                phone: db.phone,
+                address: db.address,
+              },
+              businessInfo: {
+                ein: db.ein,
+                businessType: db.business_type,
+                yearsInBusiness: db.years_in_business,
+                numberOfEmployees: db.number_of_employees,
+              },
+              financialInfo: {
+                annualRevenue: db.annual_revenue,
+                averageMonthlyRevenue: db.monthly_revenue,
+                averageMonthlyDeposits: db.monthly_deposits,
+                existingDebt: db.existing_debt,
+              },
+            };
+            setApplication(mapped);
+            setCurrentStep('matches');
+          }
+        } catch (e) {
+          console.warn('Failed to preload application for matches:', e);
+        }
+      }
+    })();
+  }, [initialStep, initialApplicationId]);
+
+  
 
   // Always pass BankStatement an object compatible with its 'application' prop
   const toBankAppFromFlat = (flat: AppData | null): BankApplicationType => {
@@ -228,42 +294,185 @@ const SubmissionsPortal: React.FC = () => {
       businessInfo: appData.businessInfo,
       financialInfo: appData.financialInfo,
     };
+    // At this point ApplicationForm has already saved to DB and provided a UUID in appData.id
+    // Just store it and continue the flow.
     setApplication(mapped);
     setIntermediateLoading(true);
     setIntermediatePrefill(null);
-    // After submitting the application, move to the new Bank Statement step
+    // Navigate to Bank step immediately
     goTo('bank');
 
     // Call webhook here using the passed PDF, showing loading while we await
     (async () => {
       try {
-        if (extra?.pdfFile) {
+        if (extra?.pdfFile && !intermediatePrefill) {
+          console.log('[newDeal] starting POST to /webhook/newDeal with file:', {
+            name: extra.pdfFile.name,
+            size: extra.pdfFile.size,
+            type: extra.pdfFile.type,
+          });
+          // Use Vite proxy in development to avoid CORS; backend path remains the same
           const url = '/webhook/newDeal';
           const form = new FormData();
           form.append('file', extra.pdfFile, extra.pdfFile.name);
           const resp = await fetch(url, { method: 'POST', body: form });
-          let data: Record<string, unknown> | null = null;
-          try { data = await resp.json(); } catch { data = null; }
+          console.log('[newDeal] response status:', resp.status, resp.statusText);
+          console.log('[newDeal] response content-type:', resp.headers ? resp.headers.get('content-type') : '(no headers)');
+          // Be tolerant to non-JSON and CORS middleware that strips content-type
+          let src: Record<string, unknown> = {};
+          let raw: unknown = {};
+          try {
+            const text = await resp.text();
+            console.log('[newDeal] raw body:', text);
+            if (text) {
+              try {
+                raw = JSON.parse(text);
+              } catch {
+                // Try to find first JSON object substring
+                // Prefer array capture first; then fallback to object capture
+                const arrMatch = text.match(/\[[\s\S]*?\]/);
+                const objMatch = text.match(/\{[\s\S]*\}/);
+                if (arrMatch) {
+                  try { raw = JSON.parse(arrMatch[0]); } catch { raw = {}; }
+                } else if (objMatch) {
+                  try { raw = JSON.parse(objMatch[0]); } catch { raw = {}; }
+                } else {
+                  raw = {};
+                }
+              }
+            }
+          } catch {
+            raw = {};
+          }
+          // If n8n responded with an array, use the first item
+          if (Array.isArray(raw)) {
+            console.log('[newDeal] parsed array length:', raw.length);
+          }
+          if (Array.isArray(raw) && raw.length > 0 && typeof raw[0] === 'object' && raw[0] !== null) {
+            src = raw[0] as Record<string, unknown>;
+          } else if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+            src = raw as Record<string, unknown>;
+          } else {
+            src = {};
+          }
+          console.log('[newDeal] parsed normalized root object:', src);
 
-          const read = (src: Record<string, unknown>, key: string): string => {
-            const v = src[key];
-            if (typeof v === 'string') return v;
-            if (typeof v === 'number' || typeof v === 'boolean') return String(v);
+          // Log the exact expected keys if present
+          const preview = {
+            'Entity Type': (src['Entity Type'] as unknown) ?? null,
+            'State': (src['State'] as unknown) ?? null,
+            'Gross Annual Revenue': (src['Gross Annual Revenue'] as unknown) ?? null,
+            'Avg Daily Balance': (src['Avg Daily Balance'] as unknown) ?? null,
+            'Avg Monthly Deposit Count': (src['Avg Monthly Deposit Count'] as unknown) ?? null,
+            'NSF Count': (src['NSF Count'] as unknown) ?? null,
+            'Negative Days': (src['Negative Days'] as unknown) ?? null,
+            'Current Position Count': (src['Current Position Count'] as unknown) ?? null,
+            'Holdback': (src['Holdback'] as unknown) ?? null,
+          };
+          console.log('[newDeal] expected-key preview:', preview);
+
+          // Build a flattened, normalized key map to be resilient to nesting and label variants
+          const flat: Record<string, unknown> = {};
+          const flatten = (obj: unknown, prefix = '') => {
+            if (obj && typeof obj === 'object') {
+              for (const [k, v] of Object.entries(obj as Record<string, unknown>)) {
+                const key = prefix ? `${prefix}.${k}` : k;
+                if (v && typeof v === 'object' && !Array.isArray(v)) {
+                  flatten(v, key);
+                } else {
+                  flat[key] = v;
+                }
+              }
+            }
+          };
+          flatten(src);
+          const normalizeKey = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
+          const normMap: Record<string, unknown> = {};
+          for (const [k, v] of Object.entries({ ...src, ...flat })) {
+            normMap[normalizeKey(k)] = v as unknown;
+          }
+
+          // helpers for normalized lookup and numeric normalization
+          const readAnyNormalized = (keys: string[]): string => {
+            for (const k of keys) {
+              const nk = normalizeKey(k);
+              const v = normMap[nk];
+              if (v == null) continue;
+              if (typeof v === 'string') {
+                if (v.trim() !== '') return v;
+              } else if (typeof v === 'number' || typeof v === 'boolean') {
+                return String(v);
+              }
+            }
             return '';
           };
-          const src = data || {};
-          const normalized: Record<string, string | boolean> = {};
-          // Only specified fields
-          normalized.entityType = read(src, 'Entity Type');
-          normalized.state = read(src, 'State');
-          normalized.grossAnnualRevenue = read(src, 'Gross Annual Revenue');
-          normalized.avgDailyBalance = read(src, 'Avg Daily Balance');
-          normalized.avgMonthlyDepositCount = read(src, 'Avg Monthly Deposit Count');
-          normalized.nsfCount = read(src, 'NSF Count');
-          normalized.negativeDays = read(src, 'Negative Days');
-          normalized.currentPositionCount = read(src, 'Current Position Count');
-          normalized.holdback = read(src, 'Holdback');
+          const asNumberLike = (s: string): string => {
+            if (!s) return '';
+            const cleaned = s.replace(/[^0-9.-]/g, '');
+            return cleaned;
+          };
 
+          const normalized: Record<string, string | boolean> = {};
+          // 1) Prefer exact keys from n8n sample output for deterministic display
+          const direct = (k: string) => (typeof src[k] === 'string' || typeof src[k] === 'number' || typeof src[k] === 'boolean') ? String(src[k] as string | number | boolean) : '';
+          normalized.entityType = direct('Entity Type');
+          normalized.state = direct('State');
+          normalized.grossAnnualRevenue = asNumberLike(direct('Gross Annual Revenue'));
+          normalized.avgDailyBalance = asNumberLike(direct('Avg Daily Balance'));
+          normalized.avgMonthlyDepositCount = asNumberLike(direct('Avg Monthly Deposit Count'));
+          normalized.nsfCount = asNumberLike(direct('NSF Count'));
+          normalized.negativeDays = asNumberLike(direct('Negative Days'));
+          normalized.currentPositionCount = asNumberLike(direct('Current Position Count'));
+          normalized.holdback = asNumberLike(direct('Holdback'));
+
+          // 2) Fill any remaining gaps via normalized alias lookups
+          normalized.entityType = normalized.entityType || readAnyNormalized(['Entity Type','Business Type','Entity','Business Entity']);
+          normalized.state = normalized.state || readAnyNormalized(['State','Business State','Company State']);
+          normalized.grossAnnualRevenue = normalized.grossAnnualRevenue || asNumberLike(readAnyNormalized(['Gross Annual Revenue','Annual Revenue','Yearly Revenue','Gross Annual Sales']));
+          normalized.avgDailyBalance = normalized.avgDailyBalance || asNumberLike(readAnyNormalized(['Avg Daily Balance','Average Daily Balance']));
+          normalized.avgMonthlyDepositCount = normalized.avgMonthlyDepositCount || asNumberLike(readAnyNormalized(['Avg Monthly Deposit Count','Average Monthly Deposit Count']));
+          normalized.nsfCount = normalized.nsfCount || asNumberLike(readAnyNormalized(['NSF Count','NSF','NSFCount']));
+          normalized.negativeDays = normalized.negativeDays || asNumberLike(readAnyNormalized(['Negative Days','Days Negative']));
+          normalized.currentPositionCount = normalized.currentPositionCount || asNumberLike(readAnyNormalized(['Current Position Count','Positions','Current Positions']));
+          normalized.holdback = normalized.holdback || asNumberLike(readAnyNormalized(['Holdback','Hold Back','Hold-back']));
+
+          // Additional common keys
+          normalized.creditScore = asNumberLike(readAnyNormalized(['Credit Score','FICO','FICO Score']));
+          // Map time in business; prefer months; if years provided, convert to months if numeric
+          const tibRaw = readAnyNormalized(['Time in Biz','Time In Business','Months In Business','Years In Business']);
+          if (tibRaw) {
+            const num = Number(asNumberLike(tibRaw));
+            if (!isNaN(num)) {
+              // Heuristic: if <= 10, treat as years and convert to months; else assume already months
+              normalized.timeInBiz = String(num <= 10 ? Math.round(num * 12) : Math.round(num));
+            } else {
+              normalized.timeInBiz = tibRaw;
+            }
+          }
+          normalized.avgMonthlyRevenue = asNumberLike(readAnyNormalized(['Avg Monthly Revenue','Average Monthly Revenue','Monthly Revenue']));
+
+          // Fallbacks from the previous page/application if webhook didn't provide values
+          const ensure = (current: string | undefined, fallback: string | number | undefined) => {
+            if (current && String(current).trim() !== '') return current;
+            if (fallback === undefined || fallback === null) return '';
+            return typeof fallback === 'number' ? String(fallback) : String(fallback);
+          };
+          // entity type
+          normalized.entityType = ensure(normalized.entityType as string, mapped.businessType);
+          // state: try to parse from address if missing
+          if (!normalized.state || String(normalized.state).trim() === '') {
+            const addr = mapped.address || '';
+            const m = addr.match(/\b([A-Z]{2})\b(?:\s+\d{5}(?:-\d{4})?)?$/);
+            if (m) normalized.state = m[1];
+          }
+          // numeric fallbacks
+          normalized.grossAnnualRevenue = ensure(normalized.grossAnnualRevenue as string, mapped.annualRevenue);
+          normalized.avgMonthlyDepositCount = ensure(normalized.avgMonthlyDepositCount as string, mapped.monthlyDeposits);
+          normalized.creditScore = ensure(normalized.creditScore as string, mapped.creditScore);
+          normalized.timeInBiz = ensure(normalized.timeInBiz as string, mapped.timeInBusiness);
+          normalized.avgMonthlyRevenue = ensure(normalized.avgMonthlyRevenue as string, mapped.monthlyRevenue);
+
+          console.log('[newDeal] final normalized prefill:', normalized);
           setIntermediatePrefill(normalized);
         }
       } catch (err) {
@@ -304,6 +513,7 @@ const SubmissionsPortal: React.FC = () => {
       monthlyRevenue: isNaN(num(details.avgMonthlyRevenue)) ? application.monthlyRevenue : num(details.avgMonthlyRevenue),
       annualRevenue: isNaN(num(details.grossAnnualRevenue)) ? application.annualRevenue : num(details.grossAnnualRevenue),
       monthlyDeposits: isNaN(num(details.avgMonthlyDepositCount)) ? (application.monthlyDeposits ?? 0) : num(details.avgMonthlyDepositCount),
+      requestedAmount: isNaN(num(details.requestedAmount)) ? application.requestedAmount : num(details.requestedAmount),
       // keep others as-is
     };
 
@@ -314,18 +524,84 @@ const SubmissionsPortal: React.FC = () => {
       try {
         // Show loading screen on the intermediate page while matching webhook runs
         setIntermediateLoading(true);
+        // Ensure we have a valid UUID for application.id before notifying webhook
+        const isValidUUID = (v: unknown) =>
+          typeof v === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(v);
+        // Never create a new application here. Reuse existing id only.
+        let toSend: AppData = updated;
+        if (!isValidUUID(toSend.id)) {
+          // Try to use the applicationId coming from the Intermediate form initial
+          const possibleId = (details.applicationId as string) || application.id;
+          if (isValidUUID(possibleId)) {
+            toSend = { ...toSend, id: possibleId };
+            setApplication(prev => prev ? { ...prev, id: possibleId } : toSend);
+          } else {
+            console.warn('No valid application id available; skipping lenders webhook to avoid creating a new row.');
+            setIntermediateLoading(false);
+            return;
+          }
+        }
+        // Fetch the freshest row from DB after updatingApplications finished in the Intermediate step
+        let dbRow: DBApplication | null = null;
+        try {
+          dbRow = await getApplicationById(toSend.id);
+        } catch (e) {
+          console.warn('Failed to fetch latest application row; falling back to in-memory state:', e);
+        }
+
+        const payloadForLenders = dbRow ?? {
+          // minimal fallback mapping if DB fetch failed
+          id: toSend.id,
+          business_name: toSend.businessName,
+          owner_name: toSend.ownerName,
+          email: toSend.email,
+          phone: toSend.phone || '',
+          address: toSend.address || '',
+          ein: toSend.ein || '',
+          business_type: toSend.businessType || '',
+          industry: toSend.industry,
+          years_in_business: toSend.yearsInBusiness ?? toSend.timeInBusiness ?? 0,
+          number_of_employees: toSend.numberOfEmployees ?? 0,
+          annual_revenue: toSend.annualRevenue ?? 0,
+          monthly_revenue: toSend.monthlyRevenue ?? 0,
+          monthly_deposits: toSend.monthlyDeposits ?? 0,
+          existing_debt: toSend.existingDebt ?? 0,
+          credit_score: toSend.creditScore ?? 0,
+          requested_amount: toSend.requestedAmount ?? 0,
+          status: (toSend.status as DBApplication['status']) || 'submitted',
+          documents: Array.isArray(toSend.documents) ? toSend.documents : [],
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        } as unknown as DBApplication;
+
         const resp = await fetch('/webhook/applications/lenders', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(updated),
+          body: JSON.stringify(payloadForLenders),
         });
-        // Attempt to parse and extract cleaned matches
+        // Attempt to parse and extract cleaned matches safely
         try {
-          const json = await resp.json();
-          const cleaned = extractLenderMatches(json);
-          setCleanedMatches(cleaned);
+          if (!resp.ok) {
+            console.warn('applications/lenders webhook non-OK status:', resp.status, resp.statusText);
+            setCleanedMatches(null);
+          } else {
+            const text = await resp.text();
+            if (!text || text.trim().length === 0) {
+              // Empty body (e.g., 204 No Content or server returned nothing)
+              setCleanedMatches(null);
+            } else {
+              try {
+                const json = JSON.parse(text);
+                const cleaned = extractLenderMatches(json);
+                setCleanedMatches(cleaned);
+              } catch (e) {
+                console.warn('Failed to parse cleaned matches from webhook response:', e);
+                setCleanedMatches(null);
+              }
+            }
+          }
         } catch (e) {
-          console.warn('Failed to parse cleaned matches from webhook response:', e);
+          console.warn('Failed handling applications/lenders webhook response:', e);
           setCleanedMatches(null);
         }
       } catch (e) {
@@ -420,7 +696,9 @@ const SubmissionsPortal: React.FC = () => {
             // Mark step 1 as completed by creating an application draft from the prefill
             try {
               if (prefill) {
-                setApplication(appDataFromPrefill(prefill as NonNullable<ReviewInitialType>));
+                const mapped = appDataFromPrefill(prefill as NonNullable<ReviewInitialType>);
+                setApplication(mapped);
+                // If a PDF file is needed for webhook, it will be handled during onSubmit or Bank step.
               }
             } catch (e) {
               console.warn('Failed to map prefill to AppData:', e);
@@ -433,7 +711,98 @@ const SubmissionsPortal: React.FC = () => {
         />
       ) : currentStep === 'bank' ? (
         <BankStatement 
-          onContinue={() => goTo('intermediate')}
+          onContinue={async (updated) => {
+            // If the Bank step returns updated values (review form), merge them into application
+            if (updated) {
+              // prevent user interaction on next screen until ID is ready
+              setIntermediateLoading(true);
+              const merged: AppData = {
+                ...(application || appDataFromPrefill(updated as NonNullable<ReviewInitialType>)),
+                id: updated.id || application?.id || '',
+                businessName: updated.businessName || application?.businessName || '',
+                creditScore: Number(updated.creditScore ?? application?.creditScore ?? 0),
+                industry: updated.industry || application?.industry || '',
+                requestedAmount: Number(updated.requestedAmount ?? application?.requestedAmount ?? 0),
+                ownerName: updated.contactInfo?.ownerName || application?.ownerName || '',
+                email: updated.contactInfo?.email || application?.email || '',
+                phone: updated.contactInfo?.phone || application?.phone,
+                address: updated.contactInfo?.address || application?.address,
+                ein: updated.businessInfo?.ein || application?.ein,
+                businessType: updated.businessInfo?.businessType || application?.businessType,
+                yearsInBusiness: Number(updated.businessInfo?.yearsInBusiness ?? application?.yearsInBusiness ?? application?.timeInBusiness ?? 0),
+                numberOfEmployees: Number(updated.businessInfo?.numberOfEmployees ?? application?.numberOfEmployees ?? 0),
+                annualRevenue: Number(updated.financialInfo?.annualRevenue ?? application?.annualRevenue ?? 0),
+                monthlyRevenue: Number(updated.financialInfo?.averageMonthlyRevenue ?? application?.monthlyRevenue ?? 0),
+                monthlyDeposits: Number(updated.financialInfo?.averageMonthlyDeposits ?? application?.monthlyDeposits ?? 0),
+                existingDebt: Number(updated.financialInfo?.existingDebt ?? application?.existingDebt ?? 0),
+                documents: Array.isArray(updated.documents) ? updated.documents : (application?.documents ?? []),
+                status: (updated.status as AppData['status']) || application?.status,
+                contactInfo: {
+                  ownerName: updated.contactInfo?.ownerName || application?.contactInfo.ownerName || '',
+                  email: updated.contactInfo?.email || application?.contactInfo.email || '',
+                  phone: updated.contactInfo?.phone || application?.contactInfo.phone || '',
+                  address: updated.contactInfo?.address || application?.contactInfo.address || '',
+                },
+                businessInfo: {
+                  ein: updated.businessInfo?.ein || application?.businessInfo.ein || '',
+                  businessType: updated.businessInfo?.businessType || application?.businessInfo.businessType || '',
+                  yearsInBusiness: Number(updated.businessInfo?.yearsInBusiness ?? application?.businessInfo.yearsInBusiness ?? 0),
+                  numberOfEmployees: Number(updated.businessInfo?.numberOfEmployees ?? application?.businessInfo.numberOfEmployees ?? 0),
+                },
+                financialInfo: {
+                  annualRevenue: Number(updated.financialInfo?.annualRevenue ?? application?.financialInfo.annualRevenue ?? 0),
+                  averageMonthlyRevenue: Number(updated.financialInfo?.averageMonthlyRevenue ?? application?.financialInfo.averageMonthlyRevenue ?? 0),
+                  averageMonthlyDeposits: Number(updated.financialInfo?.averageMonthlyDeposits ?? application?.financialInfo.averageMonthlyDeposits ?? 0),
+                  existingDebt: Number(updated.financialInfo?.existingDebt ?? application?.financialInfo.existingDebt ?? 0),
+                },
+              };
+              // If no ID yet (e.g., user navigated via upload prefill without submitting form), create a draft in DB to get an ID
+              if (!merged.id || String(merged.id).trim() === '') {
+                try {
+                  const payload: Omit<DBApplication, 'id' | 'created_at' | 'updated_at'> = {
+                    business_name: merged.businessName,
+                    owner_name: merged.ownerName,
+                    email: merged.email,
+                    phone: merged.phone || '',
+                    address: merged.address || '',
+                    ein: merged.ein || '',
+                    business_type: merged.businessType || '',
+                    industry: merged.industry,
+                    years_in_business: merged.yearsInBusiness ?? merged.timeInBusiness ?? 0,
+                    number_of_employees: merged.numberOfEmployees ?? 0,
+                    annual_revenue: merged.annualRevenue ?? 0,
+                    monthly_revenue: merged.monthlyRevenue ?? 0,
+                    monthly_deposits: merged.monthlyDeposits ?? 0,
+                    existing_debt: merged.existingDebt ?? 0,
+                    credit_score: merged.creditScore ?? 0,
+                    requested_amount: merged.requestedAmount ?? 0,
+                    status: (merged.status as DBApplication['status']) || 'submitted',
+                    documents: Array.isArray(merged.documents) ? merged.documents : [],
+                  };
+                  console.log('[SubmissionsPortal] No application ID; creating draft in Supabase with:', payload);
+                  const saved = await createApplication(payload);
+                  console.log('[SubmissionsPortal] Draft created. New ID:', saved.id);
+                  const withId: AppData = { ...merged, id: saved.id };
+                  setApplication(withId);
+                  // now that we have an ID, proceed to intermediate
+                  goTo('intermediate');
+                } catch (err) {
+                  console.warn('Failed to create draft application before intermediate step:', err);
+                  setApplication(merged);
+                  goTo('intermediate');
+                }
+              } else {
+                setApplication(merged);
+                goTo('intermediate');
+              }
+              // Also keep bankPrefill aligned for future edits
+              setBankPrefill(updated as ReviewInitialType);
+              // stop loading after navigating
+              setIntermediateLoading(false);
+            } else {
+              goTo('intermediate');
+            }
+          }}
           onReplaceDocument={() => goTo('application')}
           application={bankPrefill ? toBankAppFromReview(bankPrefill as NonNullable<ReviewInitialType>) : toBankAppFromFlat(application)}
         />
@@ -446,9 +815,15 @@ const SubmissionsPortal: React.FC = () => {
             industry: (intermediatePrefill?.industry as string) ?? application?.industry ?? '',
             entityType: (intermediatePrefill?.entityType as string) ?? application?.businessType ?? '',
             state: (intermediatePrefill?.state as string) ?? '',
-            creditScore: (intermediatePrefill?.creditScore as string) ?? String(application?.creditScore ?? ''),
+            // Always prefer DB value saved on submit; only fall back to webhook if DB missing
+            creditScore: String(
+              application?.creditScore !== undefined && application?.creditScore !== null
+                ? application.creditScore
+                : (intermediatePrefill?.creditScore as string) ?? ''
+            ),
             timeInBiz: (intermediatePrefill?.timeInBiz as string) ?? String(application?.timeInBusiness ?? ''),
             avgMonthlyRevenue: (intermediatePrefill?.avgMonthlyRevenue as string) ?? String(application?.monthlyRevenue ?? ''),
+            requestedAmount: (intermediatePrefill?.requestedAmount as string) ?? String(application?.requestedAmount ?? ''),
             grossAnnualRevenue: (intermediatePrefill?.grossAnnualRevenue as string) ?? String(application?.annualRevenue ?? ''),
             avgDailyBalance: (intermediatePrefill?.avgDailyBalance as string) ?? '',
             avgMonthlyDepositCount: (intermediatePrefill?.avgMonthlyDepositCount as string) ?? String(application?.monthlyDeposits ?? ''),
@@ -469,6 +844,7 @@ const SubmissionsPortal: React.FC = () => {
           matches={cleanedMatches ?? undefined}
           onBack={goBack} 
           onLenderSelect={handleLendersSelected}
+          lockedLenderIds={lockedLenderIds}
         />
       ) : (
         <SubmissionRecap 

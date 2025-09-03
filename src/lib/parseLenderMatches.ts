@@ -1,44 +1,86 @@
 export type CleanedMatch = { lender_id: string; match_score: number };
 
 /**
- * Takes the webhook JSON (which includes `output` as a stringified JSON),
- * parses it, and returns only [{ lender_id, match_score }, ...] in order.
+ * Tolerant parser for lender matches returned by webhook.
+ * Accepts various shapes:
+ * - { output: stringifiedJson }
+ * - { output: { matches: [...] } }
+ * - { matches: [...] } or nested under data/result/payload
+ * - A raw JSON string (top-level) or an array of matches
+ * Returns [] instead of throwing when structure is not found.
  */
 export function extractLenderMatches(webhookResponse: unknown): CleanedMatch[] {
-  const topLevel =
-    typeof webhookResponse === 'string'
-      ? JSON.parse(webhookResponse)
-      : (webhookResponse as Record<string, unknown>);
+  const tryParseJson = (s: string): unknown => {
+    try {
+      return JSON.parse(s);
+    } catch {
+      // Try to extract first JSON object/array substring
+      const m = s.match(/(?:\{|\[)[\s\S]*(?:\}|\])/);
+      if (m) {
+        try { return JSON.parse(m[0]); } catch { void 0; }
+      }
+      return null;
+    }
+  };
 
-  const outputStr: unknown = topLevel?.output;
-  if (typeof outputStr !== 'string') {
-    throw new Error("Invalid webhook response: 'output' must be a string.");
+  const asObject = (v: unknown): Record<string, unknown> | null => {
+    return v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : null;
+  };
+
+  // Normalize top-level
+  let top: unknown = webhookResponse;
+  if (typeof top === 'string') {
+    const parsed = tryParseJson(top);
+    top = parsed ?? {};
+  }
+  const topObj = asObject(top) ?? {};
+
+  // Derive candidate containers where matches could live
+  let container: unknown = topObj;
+  const output = (topObj as Record<string, unknown>).output;
+  if (typeof output === 'string') {
+    const parsed = tryParseJson(output);
+    if (parsed) container = parsed;
+  } else if (output && typeof output === 'object') {
+    container = output;
   }
 
-  let parsedOutput: unknown;
-  try {
-    parsedOutput = JSON.parse(outputStr);
-  } catch {
-    throw new Error("Invalid 'output': not valid JSON.");
+  const cands: unknown[] = [
+    container,
+    (container as Record<string, unknown> | undefined)?.data,
+    (container as Record<string, unknown> | undefined)?.result,
+    (container as Record<string, unknown> | undefined)?.payload,
+    topObj,
+    topObj.data as unknown,
+    topObj.result as unknown,
+    topObj.payload as unknown,
+    (topObj as Record<string, unknown>).matches as unknown,
+  ].filter((x) => x !== undefined);
+
+  // If any candidate is already an array, assume it's the matches array
+  let matches: unknown = cands.find((x) => Array.isArray(x));
+  // Otherwise look for a .matches array on any object candidate
+  if (!matches) {
+    for (const cand of cands) {
+      const obj = asObject(cand);
+      if (obj && Array.isArray(obj.matches as unknown)) {
+        matches = obj.matches as unknown;
+        break;
+      }
+    }
   }
 
-  const po = parsedOutput as Record<string, unknown> | undefined;
-  const maybeMatches =
-    (po?.matches as unknown) ??
-    ((po?.data as Record<string, unknown> | undefined)?.matches as unknown) ??
-    ((po?.result as Record<string, unknown> | undefined)?.matches as unknown);
-
-  if (!Array.isArray(maybeMatches)) {
-    throw new Error("Parsed 'output' does not contain a valid 'matches' array.");
+  if (!Array.isArray(matches)) {
+    return [];
   }
 
-  const cleaned: CleanedMatch[] = (maybeMatches as Array<Record<string, unknown>>)
+  const cleaned: CleanedMatch[] = (matches as Array<Record<string, unknown>>)
     .map((m) => {
       const lender_id =
-        (m?.lender_id as string | undefined) ??
-        (m?.id as string | undefined) ??
-        (m?.lenderId as string | undefined) ??
-        (m?.lenderID as string | undefined) ??
+        (m?.lender_id as string | undefined) ||
+        (m?.id as string | undefined) ||
+        (m?.lenderId as string | undefined) ||
+        (m?.lenderID as string | undefined) ||
         null;
       const rawScore =
         (m?.match_score as unknown) ??

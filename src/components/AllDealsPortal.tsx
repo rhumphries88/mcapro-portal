@@ -8,7 +8,11 @@ type Deal = DBApplication & {
   lenderSubmissions: (DBLenderSubmission & { lender: { name: string } })[];
 };
 
-const AllDealsPortal: React.FC = () => {
+type AllDealsPortalProps = {
+  onEditDeal?: (params: { applicationId: string; lockedLenderIds: string[] }) => void;
+};
+
+const AllDealsPortal: React.FC<AllDealsPortalProps> = ({ onEditDeal }) => {
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const [selectedDeal, setSelectedDeal] = useState<Deal | null>(null);
@@ -111,6 +115,15 @@ const AllDealsPortal: React.FC = () => {
     submitted: deals.filter(d => d.status === 'submitted').length,
     approved: deals.filter(d => d.status === 'approved').length,
     declined: deals.filter(d => d.status === 'declined').length,
+  };
+
+  const handleEditDeal = (deal: Deal) => {
+    const lockedIds = Array.from(new Set(
+      (deal.lenderSubmissions || [])
+        .map((ls: DBLenderSubmission & { lender: { name: string } }) => ls.lender_id)
+        .filter((id: unknown): id is string => typeof id === 'string' && id.length > 0)
+    ));
+    onEditDeal?.({ applicationId: deal.id, lockedLenderIds: lockedIds });
   };
 
   const handleViewDetails = (deal: Deal) => {
@@ -319,7 +332,7 @@ const AllDealsPortal: React.FC = () => {
                       >
                         <Eye className="w-4 h-4" />
                       </button>
-                      <button className="text-blue-600 hover:text-blue-900">
+                      <button className="text-blue-600 hover:text-blue-900" onClick={() => handleEditDeal(deal)}>
                         <Edit className="w-4 h-4" />
                       </button>
                     </div>
@@ -443,7 +456,10 @@ const AllDealsPortal: React.FC = () => {
                   >
                     Close
                   </button>
-                  <button className="px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700">
+                  <button
+                    className="px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700"
+                    onClick={() => handleEditDeal(selectedDeal)}
+                  >
                     Edit Deal
                   </button>
                 </div>

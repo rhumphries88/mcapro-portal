@@ -262,6 +262,7 @@ const sendToWebhook = async (data: ExtractedData, file: File): Promise<void> => 
     } catch (e) {
       console.warn('Failed to dispatch webhook-response message:', e);
     }
+
   } catch (error) {
     console.error('Failed to send extracted data to server:', error);
     // We don't throw the error here to prevent blocking the PDF extraction process

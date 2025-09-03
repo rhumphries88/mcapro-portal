@@ -3,6 +3,7 @@ import { Upload, FileText, DollarSign, Building2, User, CheckCircle, FileCheck, 
 import { createApplication, Application as DBApplication } from '../lib/supabase';
 import { extractDataFromPDF } from '../lib/pdfExtractor';
 
+
 interface Application {
   id: string;
   businessName: string;

@@ -1,5 +1,6 @@
 import React, { type ComponentProps } from 'react';
 import ApplicationForm from './ApplicationForm';
+import { createApplication, updateApplication, type Application as DBApplication } from '../lib/supabase';
 
 // Keep this type minimal to avoid tight coupling; it matches what SubmissionsPortal passes
 type AppDataLike = {
@@ -32,7 +33,8 @@ type AppDataLike = {
 };
 
 interface BankStatementProps {
-  onContinue: () => void;
+  // Pass updated application values captured in review mode back to parent
+  onContinue: (updated?: ComponentProps<typeof ApplicationForm>['reviewInitial']) => void;
   application: AppDataLike | null;
   onReplaceDocument?: () => void;
 }
@@ -46,6 +48,51 @@ const BankStatement: React.FC<BankStatementProps> = ({ onContinue, application, 
     return parts[parts.length - 1];
   })();
 
+  // Persist the application when the user clicks the Submit button in Bank Statement step
+  const handleReviewSubmit: NonNullable<ComponentProps<typeof ApplicationForm>['onReviewSubmit']> = async (app) => {
+    let createdId: string | null = null;
+    try {
+      const dbPayload: Partial<DBApplication> = {
+        business_name: app.businessName,
+        owner_name: app.contactInfo?.ownerName ?? '',
+        email: app.contactInfo?.email ?? '',
+        phone: app.contactInfo?.phone ?? '',
+        address: app.contactInfo?.address ?? '',
+        ein: app.businessInfo?.ein ?? '',
+        business_type: app.businessInfo?.businessType ?? '',
+        industry: app.industry,
+        years_in_business: Number(app.businessInfo?.yearsInBusiness ?? app.timeInBusiness ?? 0) || 0,
+        number_of_employees: Number(app.businessInfo?.numberOfEmployees ?? 0) || 0,
+        annual_revenue: Number(app.financialInfo?.annualRevenue ?? 0) || 0,
+        monthly_revenue: Number(app.financialInfo?.averageMonthlyRevenue ?? app.monthlyRevenue ?? 0) || 0,
+        monthly_deposits: Number(app.financialInfo?.averageMonthlyDeposits ?? 0) || 0,
+        existing_debt: Number(app.financialInfo?.existingDebt ?? 0) || 0,
+        credit_score: Number(app.creditScore ?? 0) || 0,
+        requested_amount: Number(app.requestedAmount ?? 0) || 0,
+        status: (app.status as DBApplication['status']) ?? 'submitted',
+        documents: Array.isArray(app.documents) ? app.documents : [],
+      };
+
+      if (app.id) {
+        console.log('[BankStatement] Updating application id', app.id, 'with payload', dbPayload);
+        await updateApplication(app.id, dbPayload);
+      } else {
+        console.log('[BankStatement] Creating application with payload', dbPayload);
+        const created = await createApplication(dbPayload as Omit<DBApplication, 'id' | 'created_at' | 'updated_at'>);
+        console.log('[BankStatement] Created application id', created.id);
+        // Capture created ID to propagate back to parent
+        createdId = created.id;
+      }
+    } catch (e) {
+      console.error('[BankStatement] Failed to persist application on review submit:', e);
+      // Continue flow even if persistence fails to not block user
+    } finally {
+      // Return the latest form values to parent so it can update its application state
+      const next = { ...(app as ReviewInitialType), id: (app as ReviewInitialType)?.id || createdId || '' } as ReviewInitialType;
+      onContinue(next);
+    }
+  };
+
   return (
     <ApplicationForm
       key={JSON.stringify(application)}
@@ -54,7 +101,7 @@ const BankStatement: React.FC<BankStatementProps> = ({ onContinue, application, 
       reviewInitial={application as ReviewInitialType}
       reviewDocName={docName}
       onReplaceDocument={onReplaceDocument}
-      onReviewSubmit={() => onContinue()}
+      onReviewSubmit={handleReviewSubmit}
       onSubmit={() => { /* no-op in review mode */ }}
     />
   );

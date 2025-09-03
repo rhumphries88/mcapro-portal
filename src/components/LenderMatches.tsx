@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from 'react';
-import { Star, CheckCircle, Building2, ArrowRight } from 'lucide-react';
+import React, { useState, useEffect, useMemo } from 'react';
+import { Star, CheckCircle, Building2, ArrowRight, Lock } from 'lucide-react';
 import { getLenders, qualifyLenders, Lender as DBLender, Application as DBApplication } from '../lib/supabase';
 import type { CleanedMatch } from '../lib/parseLenderMatches';
 
@@ -30,12 +30,15 @@ interface LenderMatchesProps {
   matches?: CleanedMatch[];
   onLenderSelect: (lenderIds: string[]) => void;
   onBack: () => void;
+  lockedLenderIds?: string[];
 }
 
-const LenderMatches: React.FC<LenderMatchesProps> = ({ application, matches, onLenderSelect, onBack }) => {
+const LenderMatches: React.FC<LenderMatchesProps> = ({ application, matches, onLenderSelect, onBack, lockedLenderIds = [] }) => {
   const [lenders, setLenders] = useState<(DBLender & { match_score?: number; matchScore?: number })[]>([]);
   const [selectedLenderIds, setSelectedLenderIds] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
+
+  const lockedSet = useMemo(() => new Set(lockedLenderIds), [lockedLenderIds]);
 
   useEffect(() => {
     const loadAndQualifyLenders = async () => {
@@ -96,6 +99,13 @@ const LenderMatches: React.FC<LenderMatchesProps> = ({ application, matches, onL
         } else {
           setLenders(qualifiedLenders);
         }
+        // Preselect locked lenders
+        if (lockedLenderIds && lockedLenderIds.length > 0) {
+          setSelectedLenderIds(prev => Array.from(new Set([
+            ...lockedLenderIds,
+            ...prev
+          ])));
+        }
       } catch (error) {
         console.error('Error loading lenders:', error);
       } finally {
@@ -104,9 +114,10 @@ const LenderMatches: React.FC<LenderMatchesProps> = ({ application, matches, onL
     };
 
     loadAndQualifyLenders();
-  }, [application, matches]);
+  }, [application, matches, lockedLenderIds]);
 
   const handleLenderToggle = (lenderId: string) => {
+    if (lockedSet.has(lenderId)) return; // prevent toggling locked lenders
     setSelectedLenderIds(prev => 
       prev.includes(lenderId)
         ? prev.filter(id => id !== lenderId)
@@ -212,13 +223,19 @@ const LenderMatches: React.FC<LenderMatchesProps> = ({ application, matches, onL
                   </div>
                   <div className="text-sm text-gray-500">Qualification Score</div>
                 </div>
-                <div className={`w-6 h-6 rounded-full border-2 flex items-center justify-center ${
+                <div className={`w-auto h-6 px-2 rounded-full border-2 flex items-center justify-center gap-1 ${
                   selectedLenderIds.includes(lender.id)
-                    ? 'bg-emerald-500 border-emerald-500'
-                    : 'border-gray-300'
+                    ? 'bg-emerald-500 border-emerald-500 text-white'
+                    : 'border-gray-300 text-gray-500'
                 }`}>
                   {selectedLenderIds.includes(lender.id) && (
-                    <CheckCircle className="w-4 h-4 text-white" />
+                    <CheckCircle className="w-4 h-4" />
+                  )}
+                  {lockedSet.has(lender.id) && (
+                    <>
+                      <Lock className="w-3 h-3" />
+                      <span className="text-xs">Locked</span>
+                    </>
                   )}
                 </div>
               </div>

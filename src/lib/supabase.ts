@@ -14,6 +14,17 @@ if (!supabaseUrl || !supabaseAnonKey) {
   )
 }
 
+export const getApplicationById = async (id: string) => {
+  const { data, error } = await supabase
+    .from('applications')
+    .select('*')
+    .eq('id', id)
+    .single()
+
+  if (error) throw error
+  return data
+}
+
 export const supabase = createClient(supabaseUrl, supabaseAnonKey)
 
 // Database types
@@ -79,6 +90,19 @@ export interface LenderSubmission {
   notes?: string
   created_at: string
   updated_at: string
+}
+
+// Application document records (PDF uploads and parsed results)
+export interface ApplicationDocument {
+  id: string
+  application_id: string
+  file_name: string
+  file_size?: number
+  file_type?: string
+  statement_date?: string // ISO date string
+  file_url?: string
+  extracted_json?: unknown
+  created_at: string
 }
 
 // Application functions
@@ -174,9 +198,10 @@ export const createLenderSubmissions = async (applicationId: string, lenderIds: 
     status: 'pending' as const
   }))
 
+  // Use upsert to avoid 409 conflicts on unique (application_id, lender_id)
   const { data, error } = await supabase
     .from('lender_submissions')
-    .insert(submissions)
+    .upsert(submissions, { onConflict: 'application_id,lender_id', ignoreDuplicates: true })
     .select()
 
   if (error) throw error
@@ -206,6 +231,27 @@ export const updateLenderSubmission = async (id: string, updates: Partial<Lender
 
   if (error) throw error
   return data
+}
+
+// Application documents
+export const getApplicationDocuments = async (applicationId: string) => {
+  const { data, error } = await supabase
+    .from('application_documents')
+    .select('*')
+    .eq('application_id', applicationId)
+    .order('created_at', { ascending: false })
+
+  if (error) throw error
+  return data as ApplicationDocument[]
+}
+
+export const deleteApplicationDocument = async (id: string) => {
+  const { error } = await supabase
+    .from('application_documents')
+    .delete()
+    .eq('id', id)
+
+  if (error) throw error
 }
 
 // Qualification logic

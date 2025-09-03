@@ -1,4 +1,5 @@
 import { useState } from 'react';
+
 import { Building2 } from 'lucide-react';
 
 import SubmissionsPortal from './components/SubmissionsPortal';
@@ -7,6 +8,11 @@ import AllDealsPortal from './components/AllDealsPortal';
 
 function App() {
   const [currentPortal, setCurrentPortal] = useState<'submissions' | 'deals' | 'admin'>('submissions');
+  const [launchParams, setLaunchParams] = useState<{
+    initialStep?: 'application' | 'bank' | 'intermediate' | 'matches' | 'recap';
+    initialApplicationId?: string;
+    lockedLenderIds?: string[];
+  } | null>(null);
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -20,7 +26,10 @@ function App() {
             </div>
             <div className="flex flex-wrap gap-2">
               <button
-                onClick={() => setCurrentPortal('submissions')}
+                onClick={() => {
+                  setLaunchParams(null);
+                  setCurrentPortal('submissions');
+                }}
                 className={`px-4 py-2 rounded-lg font-medium text-sm transition-colors ${
                   currentPortal === 'submissions'
                     ? 'bg-blue-600 text-white'
@@ -30,7 +39,10 @@ function App() {
                 Submissions Portal
               </button>
               <button
-                onClick={() => setCurrentPortal('deals')}
+                onClick={() => {
+                  setLaunchParams(null);
+                  setCurrentPortal('deals');
+                }}
                 className={`px-4 py-2 rounded-lg font-medium text-sm transition-colors ${
                   currentPortal === 'deals'
                     ? 'bg-purple-600 text-white'
@@ -40,7 +52,10 @@ function App() {
                 All Deals
               </button>
               <button
-                onClick={() => setCurrentPortal('admin')}
+                onClick={() => {
+                  setLaunchParams(null);
+                  setCurrentPortal('admin');
+                }}
                 className={`px-4 py-2 rounded-lg font-medium text-sm transition-colors ${
                   currentPortal === 'admin'
                     ? 'bg-emerald-600 text-white'
@@ -55,8 +70,21 @@ function App() {
       </div>
 
       {/* Portal Content */}
-      {currentPortal === 'submissions' && <SubmissionsPortal />}
-      {currentPortal === 'deals' && <AllDealsPortal />}
+      {currentPortal === 'submissions' && (
+        <SubmissionsPortal
+          initialStep={launchParams?.initialStep}
+          initialApplicationId={launchParams?.initialApplicationId}
+          lockedLenderIds={launchParams?.lockedLenderIds}
+        />
+      )}
+      {currentPortal === 'deals' && (
+        <AllDealsPortal
+          onEditDeal={({ applicationId, lockedLenderIds }) => {
+            setLaunchParams({ initialStep: 'matches', initialApplicationId: applicationId, lockedLenderIds });
+            setCurrentPortal('submissions');
+          }}
+        />
+      )}
       {currentPortal === 'admin' && <AdminPortal />}
     </div>
   );
