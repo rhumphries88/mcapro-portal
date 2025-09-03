@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { Upload, FileText, DollarSign, Building2, User, CheckCircle, FileCheck, Loader, AlertTriangle } from 'lucide-react';
 import { createApplication, Application as DBApplication } from '../lib/supabase';
 import { extractDataFromPDF } from '../lib/pdfExtractor';
@@ -38,6 +38,15 @@ interface Application {
 
 interface ApplicationFormProps {
   onSubmit: (application: Application, extra?: { pdfFile?: File } | null) => void;
+  // Optional props to reuse this component as a review step (no DB insert)
+  initialStep?: 'upload' | 'form';
+  reviewMode?: boolean;
+  reviewInitial?: Partial<Application> | null;
+  onReviewSubmit?: (application: Application) => void;
+  onReadyForForm?: (prefill: Partial<Application>) => void;
+  // Review-mode header helpers
+  reviewDocName?: string | null;
+  onReplaceDocument?: () => void;
 }
 
 // Interface for webhook response data
@@ -153,8 +162,9 @@ interface WebhookResponse {
   [key: string]: string | number | boolean | Record<string, unknown> | undefined;
 }
 
-const ApplicationForm: React.FC<ApplicationFormProps> = ({ onSubmit }) => {
-  const [currentStep, setCurrentStep] = useState<'upload' | 'form'>('upload');
+const ApplicationForm: React.FC<ApplicationFormProps> = ({ onSubmit, initialStep = 'upload', reviewMode = false, reviewInitial = null, onReviewSubmit, onReadyForForm, reviewDocName, onReplaceDocument }) => {
+  const [currentStep, setCurrentStep] = useState<'upload' | 'form'>(initialStep);
+
   const [isExtracting, setIsExtracting] = useState(false);
   const [extractedData, setExtractedData] = useState<Awaited<ReturnType<typeof extractDataFromPDF>> | null>(null);
   const [webhookData, setWebhookData] = useState<WebhookResponse | null>(null);
@@ -178,7 +188,58 @@ const ApplicationForm: React.FC<ApplicationFormProps> = ({ onSubmit }) => {
     requestedAmount: '',
     documents: [] as string[]
   });
-  
+
+  // Prefill for review mode
+  useEffect(() => {
+    if (!reviewMode || !reviewInitial) return;
+    setFormData(prev => ({
+      ...prev,
+      businessName: reviewInitial.businessName ?? prev.businessName,
+      ownerName: reviewInitial.contactInfo?.ownerName ?? prev.ownerName,
+      email: reviewInitial.contactInfo?.email ?? prev.email,
+      phone: reviewInitial.contactInfo?.phone ?? prev.phone,
+      address: reviewInitial.contactInfo?.address ?? prev.address,
+      ein: reviewInitial.businessInfo?.ein ?? prev.ein,
+      businessType: reviewInitial.businessInfo?.businessType ?? prev.businessType,
+      industry: reviewInitial.industry ?? prev.industry,
+      yearsInBusiness: reviewInitial.businessInfo?.yearsInBusiness !== undefined ? String(reviewInitial.businessInfo.yearsInBusiness) : prev.yearsInBusiness,
+      numberOfEmployees: reviewInitial.businessInfo?.numberOfEmployees !== undefined ? String(reviewInitial.businessInfo.numberOfEmployees) : prev.numberOfEmployees,
+      annualRevenue: reviewInitial.financialInfo?.annualRevenue !== undefined ? String(reviewInitial.financialInfo.annualRevenue) : prev.annualRevenue,
+      averageMonthlyRevenue: reviewInitial.financialInfo?.averageMonthlyRevenue !== undefined ? String(reviewInitial.financialInfo.averageMonthlyRevenue) : prev.averageMonthlyRevenue,
+      averageMonthlyDeposits: reviewInitial.financialInfo?.averageMonthlyDeposits !== undefined ? String(reviewInitial.financialInfo.averageMonthlyDeposits) : prev.averageMonthlyDeposits,
+      existingDebt: reviewInitial.financialInfo?.existingDebt !== undefined ? String(reviewInitial.financialInfo.existingDebt) : prev.existingDebt,
+      creditScore: reviewInitial.creditScore !== undefined ? String(reviewInitial.creditScore) : prev.creditScore,
+      requestedAmount: reviewInitial.requestedAmount !== undefined ? String(reviewInitial.requestedAmount) : prev.requestedAmount,
+      documents: reviewInitial.documents ?? prev.documents,
+    }));
+    // Mark which fields are provided by reviewInitial so the green highlights and banner show up in Bank step
+    const provided: string[] = [];
+    if (reviewInitial.businessName) provided.push('businessName');
+    if (reviewInitial.contactInfo?.ownerName) provided.push('ownerName');
+    if (reviewInitial.contactInfo?.email) provided.push('email');
+    if (reviewInitial.contactInfo?.phone) provided.push('phone');
+    if (reviewInitial.contactInfo?.address) provided.push('address');
+    if (reviewInitial.businessInfo?.ein) provided.push('ein');
+    if (reviewInitial.businessInfo?.businessType) provided.push('businessType');
+    if (reviewInitial.industry) provided.push('industry');
+    if (reviewInitial.businessInfo?.yearsInBusiness !== undefined) provided.push('yearsInBusiness');
+    if (reviewInitial.businessInfo?.numberOfEmployees !== undefined) provided.push('numberOfEmployees');
+    if (reviewInitial.financialInfo?.annualRevenue !== undefined) provided.push('annualRevenue');
+    if (reviewInitial.financialInfo?.averageMonthlyRevenue !== undefined) provided.push('averageMonthlyRevenue');
+    if (reviewInitial.financialInfo?.averageMonthlyDeposits !== undefined) provided.push('averageMonthlyDeposits');
+    if (reviewInitial.financialInfo?.existingDebt !== undefined) provided.push('existingDebt');
+    if (reviewInitial.creditScore !== undefined) provided.push('creditScore');
+    if (reviewInitial.requestedAmount !== undefined) provided.push('requestedAmount');
+    if ((reviewInitial.documents ?? []).length > 0) provided.push('documents');
+    if (provided.length > 0) {
+      setAutoFields(prev => {
+        const next = { ...prev } as Record<string, true>;
+        provided.forEach(k => { next[k] = true; });
+        return next;
+      });
+    }
+  }, [reviewMode, reviewInitial]);
+
   // Track the last values that were set by a webhook to detect user edits between webhook events
   const [lastWebhookValues, setLastWebhookValues] = useState<Record<string, string>>({});
 
@@ -187,10 +248,34 @@ const ApplicationForm: React.FC<ApplicationFormProps> = ({ onSubmit }) => {
   const [applicationDocument, setApplicationDocument] = useState<File | null>(null);
 
   // Manual mode: set to true when user clicks "Skip and fill form manually"
-  const [manualMode, setManualMode] = useState(false);
+  const [manualMode] = useState(false);
 
   // Track which fields were auto-populated (used for green highlights and banner)
   const [autoFields, setAutoFields] = useState<Record<string, true>>({});
+
+  // In review mode (Bank Statement step), treat all fields as auto-populated so they render green
+  useEffect(() => {
+    if (reviewMode) {
+      setAutoFields({
+        businessName: true,
+        industry: true,
+        businessType: true,
+        yearsInBusiness: true,
+        numberOfEmployees: true,
+        ownerName: true,
+        email: true,
+        phone: true,
+        address: true,
+        ein: true,
+        annualRevenue: true,
+        averageMonthlyRevenue: true,
+        averageMonthlyDeposits: true,
+        existingDebt: true,
+        creditScore: true,
+        requestedAmount: true,
+      });
+    }
+  }, [reviewMode]);
 
   // Only fields set automatically (webhook or extraction) should be highlighted
   const populatedFields = useMemo(() => {
@@ -213,6 +298,9 @@ const ApplicationForm: React.FC<ApplicationFormProps> = ({ onSubmit }) => {
     const withCommas = i.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
     return d !== undefined ? `${withCommas}.${d}` : withCommas;
   };
+
+
+  const webhookNotifiedRef = useRef(false);
 
   const industries = useMemo(() => [
     'Retail', 'Restaurant', 'Healthcare', 'Construction', 'Professional Services',
@@ -443,9 +531,72 @@ const ApplicationForm: React.FC<ApplicationFormProps> = ({ onSubmit }) => {
             
             // populatedFields is used directly for UI; no state needed
             
-            // Move to form step if we're still on upload
-            if (currentStep === 'upload') {
-              setCurrentStep('form');
+            // After extraction/webhook while still on upload, notify parent with a prefill built directly from cleanedData
+            if (currentStep === 'upload' && !reviewMode) {
+              if (onReadyForForm) {
+                // Build prefill directly from cleanedData to avoid setState timing
+                const getValue = (keys: string[]): string | undefined => {
+                  for (const k of keys) {
+                    const v = normalizedCleaned.get(normalizeKey(k));
+                    if (v !== undefined && v !== null && `${v}`.trim() !== '') return `${v}`;
+                  }
+                  return undefined;
+                };
+                const mapToNormalizedOption = (value: string, options: string[]): string => {
+                  const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+                  const nv = norm(value);
+                  const direct = options.find(o => norm(o) === nv);
+                  if (direct) return direct;
+                  const prefix = options.find(o => nv.startsWith(norm(o)) || norm(o).startsWith(nv));
+                  return prefix || value;
+                };
+                const num = (v?: string) => {
+                  if (!v) return undefined as unknown as number;
+                  const cleaned = v.replace(/[^0-9.]/g, '');
+                  const parts = cleaned.split('.');
+                  const joined = parts.length > 2 ? `${parts[0]}.${parts.slice(1).join('')}` : cleaned;
+                  const n = Number(joined);
+                  return Number.isNaN(n) ? (undefined as unknown as number) : n;
+                };
+                const docList: string[] = (() => {
+                  const fromState = (formData.documents as unknown as string[]) || [];
+                  const fromUploads = Array.isArray(uploadedFiles) ? uploadedFiles : [];
+                  const fromSelected = applicationDocument?.name ? [applicationDocument.name] : [];
+                  const merged = [...fromSelected, ...fromUploads, ...fromState].filter(Boolean);
+                  return merged.length > 0 ? merged : [];
+                })();
+                const prefill: Partial<Application> = {
+                  businessName: getValue(['Business Name','business_name','businessName','company','Company Name','company_name']) || '',
+                  creditScore: num(getValue(['Credit Score','credit_score','creditScore','fico_score','credit_rating'])),
+                  industry: mapToNormalizedOption(getValue(['Industry','industry','business_industry','sector','business_sector']) || '', industries),
+                  requestedAmount: num(getValue(['Requested Amount','requested_amount','requestedAmount','loan_amount','funding_amount'])),
+                  contactInfo: {
+                    ownerName: getValue(['Owner Name','owner_name','ownerName','name','Name','full_name','Full Name']) || '',
+                    email: getValue(['Email','email','email_address','emailAddress','contact_email']) || '',
+                    phone: getValue(['Phone','phone','phone_number','phoneNumber','contact_phone','telephone']) || '',
+                    address: getValue(['Business Address','business_address','businessAddress','address','Address','location']) || '',
+                  },
+                  businessInfo: {
+                    ein: getValue(['EIN','ein','tax_id','taxId','employer_identification_number']) || '',
+                    businessType: mapToNormalizedOption(getValue(['Business Type','business_type','businessType','company_type','entity_type']) || '', businessTypes),
+                    yearsInBusiness: num(getValue(['Years in Business','years_in_business','yearsInBusiness','business_age','company_age'])),
+                    numberOfEmployees: num(getValue(['Number of Employees','number_of_employees','numberOfEmployees','employee_count','staff_count'])),
+                  },
+                  financialInfo: {
+                    annualRevenue: num(getValue(['Annual Revenue','annual_revenue','annualRevenue','yearly_revenue','revenue'])),
+                    averageMonthlyRevenue: num(getValue(['Average Monthly Revenue','average_monthly_revenue','averageMonthlyRevenue','monthly_revenue'])),
+                    averageMonthlyDeposits: num(getValue(['Average Monthly Deposits','average_monthly_deposits','averageMonthlyDeposits','monthly_deposits'])),
+                    existingDebt: num(getValue(['Existing Debt','existing_debt','existingDebt','current_debt','debt'])),
+                  },
+                  documents: docList,
+                };
+                // Notify parent with cleaned prefill and mark notified
+                onReadyForForm(prefill);
+                webhookNotifiedRef.current = true;
+              } else {
+                // No parent handler; fallback to local form rendering
+                setCurrentStep('form');
+              }
             }
           }
         }
@@ -462,7 +613,7 @@ const ApplicationForm: React.FC<ApplicationFormProps> = ({ onSubmit }) => {
     return () => {
       window.removeEventListener('message', handleWebhookResponse);
     };
-  }, [currentStep, lastWebhookValues, industries, businessTypes, manualMode]);
+  }, [currentStep, lastWebhookValues, industries, businessTypes, manualMode, reviewMode, formData, onReadyForForm, uploadedFiles, applicationDocument?.name]);
 
   const extractDataFromDocument = async (file: File) => {
     setIsExtracting(true);
@@ -479,6 +630,8 @@ const ApplicationForm: React.FC<ApplicationFormProps> = ({ onSubmit }) => {
         ...prev,
         ...filtered,
       }));
+      // Prepare a snapshot that reflects the merged values immediately
+      const mergedSnapshot = { ...formData, ...filtered };
       // Mark auto-populated fields if not in manual mode
       if (!manualMode) {
         setAutoFields(prev => {
@@ -487,11 +640,55 @@ const ApplicationForm: React.FC<ApplicationFormProps> = ({ onSubmit }) => {
           return updated;
         });
       }
-      setCurrentStep('form');
+      if (!reviewMode) {
+        if (onReadyForForm) {
+          const prefill: Partial<Application> = {
+            businessName: mergedSnapshot.businessName,
+            creditScore: Number(mergedSnapshot.creditScore) || undefined as unknown as number,
+            industry: mergedSnapshot.industry,
+            requestedAmount: Number(mergedSnapshot.requestedAmount) || undefined as unknown as number,
+            contactInfo: {
+              ownerName: mergedSnapshot.ownerName,
+              email: mergedSnapshot.email,
+              phone: mergedSnapshot.phone,
+              address: mergedSnapshot.address,
+            },
+            businessInfo: {
+              ein: mergedSnapshot.ein,
+              businessType: mergedSnapshot.businessType,
+              yearsInBusiness: mergedSnapshot.yearsInBusiness ? Number(mergedSnapshot.yearsInBusiness) : undefined as unknown as number,
+              numberOfEmployees: mergedSnapshot.numberOfEmployees ? Number(mergedSnapshot.numberOfEmployees) : undefined as unknown as number,
+            },
+            financialInfo: {
+              annualRevenue: mergedSnapshot.annualRevenue ? Number(mergedSnapshot.annualRevenue) : undefined as unknown as number,
+              averageMonthlyRevenue: mergedSnapshot.averageMonthlyRevenue ? Number(mergedSnapshot.averageMonthlyRevenue) : undefined as unknown as number,
+              averageMonthlyDeposits: mergedSnapshot.averageMonthlyDeposits ? Number(mergedSnapshot.averageMonthlyDeposits) : undefined as unknown as number,
+              existingDebt: mergedSnapshot.existingDebt ? Number(mergedSnapshot.existingDebt) : undefined as unknown as number,
+            },
+            documents: mergedSnapshot.documents,
+          };
+          // Fallback: notify parent only if webhook hasn't already notified within a short delay
+          setTimeout(() => {
+            if (!webhookNotifiedRef.current) {
+              const docList: string[] = (() => {
+                const fromState = (formData.documents as unknown as string[]) || [];
+                const fromUploads = Array.isArray(uploadedFiles) ? uploadedFiles : [];
+                const fromSelected = applicationDocument?.name ? [applicationDocument.name] : [];
+                const merged = [...fromSelected, ...fromUploads, ...fromState].filter(Boolean);
+                return merged.length > 0 ? merged : [];
+              })();
+              const withDocs = { ...prefill, documents: docList } as Partial<Application>;
+              onReadyForForm(withDocs);
+            }
+          }, 1200);
+        } else {
+          setCurrentStep('form');
+        }
+      }
     } catch (error) {
       console.error('Error extracting data from PDF:', error);
       alert('Error extracting data from PDF. Please fill the form manually.');
-      setCurrentStep('form');
+      if (!reviewMode) setCurrentStep('form');
     } finally {
       setIsExtracting(false);
     }
@@ -571,6 +768,42 @@ const ApplicationForm: React.FC<ApplicationFormProps> = ({ onSubmit }) => {
 
     const handleSubmitApplication = async () => {
       try {
+        if (reviewMode) {
+          // Build Application object from current form data and hand off to review submit handler
+          const application: Application = {
+            id: reviewInitial?.id || '',
+            businessName: formData.businessName,
+            monthlyRevenue: Number(formData.averageMonthlyRevenue),
+            timeInBusiness: Number(formData.yearsInBusiness),
+            creditScore: Number(formData.creditScore),
+            industry: formData.industry,
+            requestedAmount: Number(formData.requestedAmount),
+            status: 'submitted',
+            contactInfo: {
+              ownerName: formData.ownerName,
+              email: formData.email,
+              phone: formData.phone,
+              address: formData.address,
+            },
+            businessInfo: {
+              ein: formData.ein,
+              businessType: formData.businessType,
+              yearsInBusiness: Number(formData.yearsInBusiness),
+              numberOfEmployees: Number(formData.numberOfEmployees),
+            },
+            financialInfo: {
+              annualRevenue: Number(formData.annualRevenue),
+              averageMonthlyRevenue: Number(formData.averageMonthlyRevenue),
+              averageMonthlyDeposits: Number(formData.averageMonthlyDeposits),
+              existingDebt: Number(formData.existingDebt),
+            },
+            documents: formData.documents,
+          };
+          if (onReviewSubmit) {
+            onReviewSubmit(application);
+          }
+          return;
+        }
         const applicationData: Omit<DBApplication, 'id' | 'created_at' | 'updated_at'> = {
           business_name: formData.businessName,
           owner_name: formData.ownerName,
@@ -712,8 +945,7 @@ const ApplicationForm: React.FC<ApplicationFormProps> = ({ onSubmit }) => {
           <div className="mt-8 pt-6 border-t border-gray-200">
             <button
               onClick={() => {
-                // Enter manual mode and bypass any extraction/webhook logic
-                setManualMode(true);
+                // Go straight to manual form entry
                 setCurrentStep('form');
                 setExtractedData(null);
                 setWebhookData(null);
@@ -740,7 +972,7 @@ const ApplicationForm: React.FC<ApplicationFormProps> = ({ onSubmit }) => {
               {(extractedData || webhookData) ? 'Review and confirm the extracted information' : 'Please fill out all required information to get matched with qualified lenders'}
             </p>
           </div>
-          {extractedData && (
+          {(reviewMode || extractedData) && (
             <div className="flex items-center text-green-600">
               <FileCheck className="w-5 h-5 mr-2" />
               <span className="text-sm font-medium">Data extracted from document</span>
@@ -753,22 +985,35 @@ const ApplicationForm: React.FC<ApplicationFormProps> = ({ onSubmit }) => {
             </div>
           )}
         </div>
-        {applicationDocument && (
+        {(applicationDocument || reviewMode) && (
           <div className="mt-3 p-3 bg-blue-50 rounded-lg">
-            <div className="flex items-center">
+            <div className="flex items-center w-full">
               <FileText className="w-4 h-4 text-blue-600 mr-2" />
-              <span className="text-sm text-blue-800 font-medium">Source Document: {applicationDocument.name}</span>
+              {(() => {
+                const name = reviewMode ? (reviewDocName ?? '') : (applicationDocument?.name ?? '');
+                return (
+                  <span className="text-sm text-blue-800 font-medium truncate" title={name || undefined}>
+                    {name ? `Source Document: ${name}` : 'No source document detected'}
+                  </span>
+                );
+              })()}
               <button
                 onClick={() => {
-                  setCurrentStep('upload');
-                  setApplicationDocument(null);
-                  setExtractedData(null);
-                  setFormData({
-                    businessName: '', ownerName: '', email: '', phone: '', address: '', ein: '',
-                    businessType: '', industry: '', yearsInBusiness: '', numberOfEmployees: '',
-                    annualRevenue: '', averageMonthlyRevenue: '', averageMonthlyDeposits: '',
-                    existingDebt: '', creditScore: '', requestedAmount: '', documents: []
-                  });
+                  if (reviewMode) {
+                    if (onReplaceDocument) {
+                      onReplaceDocument();
+                    }
+                  } else {
+                    setCurrentStep('upload');
+                    setApplicationDocument(null);
+                    setExtractedData(null);
+                    setFormData({
+                      businessName: '', ownerName: '', email: '', phone: '', address: '', ein: '',
+                      businessType: '', industry: '', yearsInBusiness: '', numberOfEmployees: '',
+                      annualRevenue: '', averageMonthlyRevenue: '', averageMonthlyDeposits: '',
+                      existingDebt: '', creditScore: '', requestedAmount: '', documents: []
+                    });
+                  }
                 }}
                 className="ml-auto text-blue-600 hover:text-blue-800 text-sm"
               >

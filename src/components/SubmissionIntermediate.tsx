@@ -77,8 +77,10 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
       console.error('Failed to notify updatingApplications webhook:', e);
       // proceed regardless to not block user flow
     } finally {
-      setSubmitting(false);
+      // Trigger parent flow first so parent can flip loading immediately
       onContinue(details);
+      // Keep local loading true until after handing off control
+      setSubmitting(false);
     }
   };
 
@@ -110,7 +112,7 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
       </div>
 
       <div className="p-8">
-        {loading ? (
+        {loading || submitting ? (
           <div className="flex flex-col items-center justify-center py-12 text-center">
             <svg className="animate-spin h-8 w-8 text-blue-600 mb-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" aria-hidden="true">
               <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>

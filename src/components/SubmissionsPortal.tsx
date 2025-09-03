@@ -1,10 +1,15 @@
-import React, { useState } from 'react';
+import React, { useState, type ComponentProps } from 'react';
 import { CheckCircle } from 'lucide-react';
 import ApplicationForm from './ApplicationForm';
+import BankStatement from './BankStatement';
 import LenderMatches from './LenderMatches';
 import SubmissionRecap from './SubmissionRecap';
 import SubmissionIntermediate from './SubmissionIntermediate';
 import { extractLenderMatches, type CleanedMatch } from '../lib/parseLenderMatches';
+
+// Type aliases used across this file
+type ReviewInitialType = ComponentProps<typeof ApplicationForm>['reviewInitial'];
+type BankApplicationType = ComponentProps<typeof BankStatement>['application'];
 
 // Broad application data type to interop with both LenderMatches and SubmissionRecap
 type AppData = {
@@ -50,6 +55,52 @@ type AppData = {
   };
 };
 
+// Map prefill (from ApplicationForm.onReadyForForm) to our AppData so step 1 can be marked complete
+const appDataFromPrefill = (prefill: NonNullable<ReviewInitialType>): AppData => {
+  return {
+    id: prefill.id ?? '',
+    businessName: prefill.businessName ?? '',
+    monthlyRevenue: prefill.financialInfo?.averageMonthlyRevenue ?? 0,
+    timeInBusiness: prefill.businessInfo?.yearsInBusiness ?? 0,
+    creditScore: prefill.creditScore ?? 0,
+    industry: prefill.industry ?? '',
+    requestedAmount: prefill.requestedAmount ?? 0,
+    status: 'draft',
+    // top-level duplicates for LenderMatches
+    ownerName: prefill.contactInfo?.ownerName ?? '',
+    email: prefill.contactInfo?.email ?? '',
+    phone: prefill.contactInfo?.phone ?? '',
+    address: prefill.contactInfo?.address ?? '',
+    ein: prefill.businessInfo?.ein ?? '',
+    businessType: prefill.businessInfo?.businessType ?? '',
+    yearsInBusiness: prefill.businessInfo?.yearsInBusiness ?? 0,
+    numberOfEmployees: prefill.businessInfo?.numberOfEmployees ?? 0,
+    annualRevenue: prefill.financialInfo?.annualRevenue ?? 0,
+    monthlyDeposits: prefill.financialInfo?.averageMonthlyDeposits ?? 0,
+    existingDebt: prefill.financialInfo?.existingDebt ?? 0,
+    documents: prefill.documents ?? [],
+    // nested mirrors
+    contactInfo: {
+      ownerName: prefill.contactInfo?.ownerName ?? '',
+      email: prefill.contactInfo?.email ?? '',
+      phone: prefill.contactInfo?.phone ?? '',
+      address: prefill.contactInfo?.address ?? '',
+    },
+    businessInfo: {
+      ein: prefill.businessInfo?.ein ?? '',
+      businessType: prefill.businessInfo?.businessType ?? '',
+      yearsInBusiness: prefill.businessInfo?.yearsInBusiness ?? 0,
+      numberOfEmployees: prefill.businessInfo?.numberOfEmployees ?? 0,
+    },
+    financialInfo: {
+      annualRevenue: prefill.financialInfo?.annualRevenue ?? 0,
+      averageMonthlyRevenue: prefill.financialInfo?.averageMonthlyRevenue ?? 0,
+      averageMonthlyDeposits: prefill.financialInfo?.averageMonthlyDeposits ?? 0,
+      existingDebt: prefill.financialInfo?.existingDebt ?? 0,
+    },
+  };
+};
+
 // Local type mirroring ApplicationForm's Application output
 type FormApplication = {
   id: string;
@@ -82,16 +133,60 @@ type FormApplication = {
 };
 
 const SubmissionsPortal: React.FC = () => {
-  const [currentStep, setCurrentStep] = useState<'application' | 'intermediate' | 'matches' | 'recap'>('application');
-  const [prevStep, setPrevStep] = useState<'application' | 'intermediate' | 'matches' | 'recap' | null>(null);
+  const [currentStep, setCurrentStep] = useState<'application' | 'bank' | 'intermediate' | 'matches' | 'recap'>('application');
+  const [prevStep, setPrevStep] = useState<'application' | 'bank' | 'intermediate' | 'matches' | 'recap' | null>(null);
   const [application, setApplication] = useState<AppData | null>(null);
+  const [bankPrefill, setBankPrefill] = useState<ReviewInitialType>(null);
   const [selectedLenders, setSelectedLenders] = useState<string[]>([]);
   const [intermediateLoading, setIntermediateLoading] = useState(false);
   const [intermediatePrefill, setIntermediatePrefill] = useState<Record<string, string | boolean> | null>(null);
   const [cleanedMatches, setCleanedMatches] = useState<CleanedMatch[] | null>(null);
 
+  // Always pass BankStatement an object compatible with its 'application' prop
+  const toBankAppFromFlat = (flat: AppData | null): BankApplicationType => {
+    if (!flat) return null;
+    return {
+      id: flat.id,
+      businessName: flat.businessName,
+      creditScore: flat.creditScore,
+      industry: flat.industry,
+      requestedAmount: flat.requestedAmount,
+      documents: (flat as unknown as { documents?: string[] }).documents ?? [],
+      contactInfo: {
+        ownerName: flat.ownerName,
+        email: flat.email,
+        phone: flat.phone,
+        address: flat.address,
+      },
+      businessInfo: {
+        ein: flat.ein,
+        businessType: flat.businessType,
+        yearsInBusiness: flat.yearsInBusiness ?? flat.timeInBusiness,
+        numberOfEmployees: flat.numberOfEmployees,
+      },
+      financialInfo: {
+        annualRevenue: flat.annualRevenue,
+        averageMonthlyRevenue: flat.monthlyRevenue,
+      },
+    };
+  };
+
+  const toBankAppFromReview = (prefill: NonNullable<ReviewInitialType>): BankApplicationType => {
+    return {
+      id: prefill.id,
+      businessName: prefill.businessName,
+      creditScore: prefill.creditScore,
+      industry: prefill.industry,
+      requestedAmount: prefill.requestedAmount,
+      documents: prefill.documents,
+      contactInfo: prefill.contactInfo,
+      businessInfo: prefill.businessInfo,
+      financialInfo: prefill.financialInfo,
+    };
+  };
+
   // simple navigation helpers so Back returns to the real previous page
-  const goTo = (next: 'application' | 'intermediate' | 'matches' | 'recap') => {
+  const goTo = (next: 'application' | 'bank' | 'intermediate' | 'matches' | 'recap') => {
     setPrevStep(currentStep);
     setCurrentStep(next);
   };
@@ -136,7 +231,8 @@ const SubmissionsPortal: React.FC = () => {
     setApplication(mapped);
     setIntermediateLoading(true);
     setIntermediatePrefill(null);
-    goTo('intermediate');
+    // After submitting the application, move to the new Bank Statement step
+    goTo('bank');
 
     // Call webhook here using the passed PDF, showing loading while we await
     (async () => {
@@ -216,6 +312,8 @@ const SubmissionsPortal: React.FC = () => {
     // Fire-and-forget webhook with the full updated applications row
     (async () => {
       try {
+        // Show loading screen on the intermediate page while matching webhook runs
+        setIntermediateLoading(true);
         const resp = await fetch('/webhook/applications/lenders', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -234,6 +332,8 @@ const SubmissionsPortal: React.FC = () => {
         console.warn('applications/lenders webhook failed:', e);
         setCleanedMatches(null);
       } finally {
+        // Hide loading once webhook completes
+        setIntermediateLoading(false);
         goTo('matches');
       }
     })();
@@ -275,11 +375,23 @@ const SubmissionsPortal: React.FC = () => {
           
           <div className={`flex-1 h-1 mx-4 ${application ? 'bg-green-200' : 'bg-gray-200'}`}></div>
           
+          <div className={`flex items-center ${currentStep === 'bank' ? 'text-blue-600' : currentStep !== 'application' ? 'text-green-600' : 'text-gray-400'}`}>
+            <div className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-medium ${
+              currentStep === 'bank' ? 'bg-blue-100 text-blue-600' : currentStep !== 'application' ? 'bg-green-100 text-green-600' : 'bg-gray-100 text-gray-400'
+            }`}>
+              {currentStep !== 'application' ? <CheckCircle className="w-5 h-5" /> : '2'}
+            </div>
+            <span className="ml-2 text-sm font-medium">Bank Statement</span>
+          </div>
+          
+          {/* Separator to the right of Bank should be green only once we've moved past Bank */}
+          <div className={`flex-1 h-1 mx-4 ${currentStep !== 'application' && currentStep !== 'bank' ? 'bg-green-200' : 'bg-gray-200'}`}></div>
+          
           <div className={`flex items-center ${currentStep === 'matches' ? 'text-blue-600' : selectedLenders.length > 0 ? 'text-green-600' : 'text-gray-400'}`}>
             <div className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-medium ${
               selectedLenders.length > 0 ? 'bg-green-100 text-green-600' : currentStep === 'matches' ? 'bg-blue-100 text-blue-600' : 'bg-gray-100 text-gray-400'
             }`}>
-              {selectedLenders.length > 0 ? <CheckCircle className="w-5 h-5" /> : '2'}
+              {selectedLenders.length > 0 ? <CheckCircle className="w-5 h-5" /> : '3'}
             </div>
             <span className="ml-2 text-sm font-medium">Lender Matches</span>
           </div>
@@ -290,7 +402,7 @@ const SubmissionsPortal: React.FC = () => {
             <div className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-medium ${
               currentStep === 'recap' ? 'bg-blue-100 text-blue-600' : 'bg-gray-100 text-gray-400'
             }`}>
-              3
+              4
             </div>
             <span className="ml-2 text-sm font-medium">Submission Recap</span>
           </div>
@@ -299,7 +411,32 @@ const SubmissionsPortal: React.FC = () => {
 
       {/* Content */}
       {currentStep === 'application' ? (
-        <ApplicationForm onSubmit={handleApplicationSubmit} />
+        <ApplicationForm 
+          onSubmit={handleApplicationSubmit}
+          onReadyForForm={(prefill) => {
+            // Accept prefill from upload/extraction and move to Bank step
+            console.log('[SubmissionsPortal] onReadyForForm prefill:', prefill);
+            setBankPrefill(prefill as ReviewInitialType);
+            // Mark step 1 as completed by creating an application draft from the prefill
+            try {
+              if (prefill) {
+                setApplication(appDataFromPrefill(prefill as NonNullable<ReviewInitialType>));
+              }
+            } catch (e) {
+              console.warn('Failed to map prefill to AppData:', e);
+            }
+            // Defer navigation to ensure bankPrefill is committed before first Bank render
+            setTimeout(() => {
+              goTo('bank');
+            }, 0);
+          }}
+        />
+      ) : currentStep === 'bank' ? (
+        <BankStatement 
+          onContinue={() => goTo('intermediate')}
+          onReplaceDocument={() => goTo('application')}
+          application={bankPrefill ? toBankAppFromReview(bankPrefill as NonNullable<ReviewInitialType>) : toBankAppFromFlat(application)}
+        />
       ) : currentStep === 'intermediate' ? (
         <SubmissionIntermediate
           initial={{
