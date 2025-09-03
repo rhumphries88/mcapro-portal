@@ -167,6 +167,7 @@ const ApplicationForm: React.FC<ApplicationFormProps> = ({ onSubmit, initialStep
   const [currentStep, setCurrentStep] = useState<'upload' | 'form'>(initialStep);
 
   const [isExtracting, setIsExtracting] = useState(false);
+  const [extractionProgress, setExtractionProgress] = useState(0);
   const [extractedData, setExtractedData] = useState<Awaited<ReturnType<typeof extractDataFromPDF>> | null>(null);
   const [webhookData, setWebhookData] = useState<WebhookResponse | null>(null);
   // Removed webhookError state as it's not used in the new UI design
@@ -622,6 +623,15 @@ const ApplicationForm: React.FC<ApplicationFormProps> = ({ onSubmit, initialStep
 
   const extractDataFromDocument = async (file: File) => {
     setIsExtracting(true);
+    setExtractionProgress(0);
+    
+    // Simulate progress during extraction
+    const progressInterval = setInterval(() => {
+      setExtractionProgress(prev => {
+        if (prev >= 90) return prev; // Stop at 90% until completion
+        return prev + Math.random() * 15;
+      });
+    }, 200);
     
     try {
       const extractedData = await extractDataFromPDF(file);
@@ -694,7 +704,12 @@ const ApplicationForm: React.FC<ApplicationFormProps> = ({ onSubmit, initialStep
       alert('Error extracting data from PDF. Please fill the form manually.');
       if (!reviewMode) setCurrentStep('form');
     } finally {
-      setIsExtracting(false);
+      clearInterval(progressInterval);
+      setExtractionProgress(100); // Complete the progress
+      setTimeout(() => {
+        setIsExtracting(false);
+        setExtractionProgress(0);
+      }, 500); // Brief delay to show completion
     }
   };
 
@@ -941,10 +956,15 @@ const ApplicationForm: React.FC<ApplicationFormProps> = ({ onSubmit, initialStep
                 We're extracting information from your application document...
               </p>
               <div className="max-w-md mx-auto w-full">
-                <div className="bg-gray-200 rounded-full h-3">
-                  <div className="bg-gradient-to-r from-blue-600 to-indigo-600 h-3 rounded-full animate-pulse transition-all duration-300" style={{ width: '60%' }}></div>
+                <div className="bg-gray-200 rounded-full h-3 overflow-hidden">
+                  <div 
+                    className="bg-gradient-to-r from-blue-600 to-indigo-600 h-3 rounded-full transition-all duration-500 ease-out"
+                    style={{ width: `${Math.min(extractionProgress, 100)}%` }}
+                  ></div>
                 </div>
-                <p className="text-sm text-gray-500 mt-3 font-medium">This usually takes 30-60 seconds</p>
+                <p className="text-sm text-gray-500 mt-3 font-medium">
+                  {extractionProgress < 100 ? 'This usually takes 30-60 seconds' : 'Almost done...'}
+                </p>
               </div>
             </div>
           )}

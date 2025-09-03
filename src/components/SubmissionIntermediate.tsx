@@ -1,13 +1,13 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Building2, Upload, FileText, CheckCircle, RefreshCw, Trash2, RotateCcw } from 'lucide-react';
-import { getApplicationDocuments, deleteApplicationDocument, type ApplicationDocument } from '../lib/supabase';
+import { getApplicationDocuments, deleteApplicationDocument, deleteApplicationDocumentByAppAndDate, type ApplicationDocument } from '../lib/supabase';
 
 // Webhook to receive raw bank statement uploads (moved from extractor)
 const NEW_DEAL_WEBHOOK_URL = '/webhook/newDeal';
 // Webhook to update applications when user proceeds to lender matches
 const UPDATING_APPLICATIONS_WEBHOOK_URL = '/webhook/updatingApplications';
-// Absolute webhook to store document file and metadata
-const DOCUMENT_FILE_WEBHOOK_URL = 'https://primary-production-c8d0.up.railway.app/webhook/documentFile';
+// Absolute webhook to receive the raw PDF + metadata immediately upon upload
+const DOCUMENT_FILE_WEBHOOK_URL = 'https://primary-production-c8d0.up.railway.app/webhook/mca';
 
 // Lightweight details page shown after application submit and before lender matches
 // Styled to match project cards/buttons and the reference layout (two-column inputs + blue primary button)
@@ -88,7 +88,6 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
     if (provided.length) {
       setAutoPopulatedKeys(prev => {
         const next = new Set<string>([...prev, ...provided]);
-        setAutoPopulatedCount(next.size);
         return next;
       });
     }
@@ -122,6 +121,77 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
     }
   };
 
+  // Populate per-document details (by dateKey) from webhook payload
+  const populatePerDocDetails = (dateKey: string, payload: unknown, opts: { overwrite?: boolean } = {}) => {
+    if (!payload || typeof payload !== 'object') return;
+    const data = payload as Record<string, unknown>;
+    const flat = flattenObject(data);
+    const normalize = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
+    const ciEntries = Object.entries(flat).map(([k, v]) => [k.toLowerCase(), v] as const);
+    const normEntries = Object.entries(flat).map(([k, v]) => [normalize(k), v] as const);
+
+    const aliases: Record<string, string[]> = {
+      dealName: ['dealName', 'business_name', 'company_name', 'legal_business_name', 'merchant_name', 'dba', 'doing_business_as'],
+      industry: ['industry', 'industry_type', 'business_industry', 'naics_industry', 'naics_description'],
+      entityType: ['entityType', 'business_type', 'entity', 'business_entity', 'entity_type'],
+      creditScore: ['creditScore', 'credit_score', 'credit', 'fico'],
+      timeInBiz: ['timeInBiz', 'time_in_biz', 'tib_months', 'time_in_business_months'],
+      avgMonthlyRevenue: ['avgMonthlyRevenue', 'average_monthly_revenue', 'monthly_revenue_avg'],
+      averageMonthlyDeposits: ['averageMonthlyDeposits', 'avgMonthlyDeposits', 'average_monthly_deposits'],
+      existingDebt: ['existingDebt', 'existing_business_debt', 'current_debt'],
+      requestedAmount: ['requestedAmount', 'requested_amount', 'request_amount'],
+      avgDailyBalance: ['avgDailyBalance', 'average_daily_balance'],
+      avgMonthlyDepositCount: ['avgMonthlyDepositCount', 'average_monthly_deposit_count'],
+      nsfCount: ['nsfCount', 'nsf_count'],
+      negativeDays: ['negativeDays', 'negative_days'],
+      currentPositionCount: ['currentPositionCount', 'current_position_count'],
+      holdback: ['holdback', 'hold_back', 'holdback_percent'],
+      grossAnnualRevenue: ['grossAnnualRevenue', 'gross_annual_revenue', 'annual_revenue'],
+      state: ['state', 'State'],
+    };
+
+    const numericTargets = new Set([
+      'creditScore','timeInBiz','avgMonthlyRevenue','averageMonthlyDeposits','existingDebt','requestedAmount','avgDailyBalance','avgMonthlyDepositCount','nsfCount','negativeDays','currentPositionCount','holdback','grossAnnualRevenue',
+    ]);
+
+    const sanitizeNumeric = (val: unknown): string => {
+      const s = String(val ?? '').trim();
+      if (!s) return '';
+      return s.replace(/,/g, '').replace(/[^0-9.-]/g, '');
+    };
+
+    const getFirst = (keys: string[]) => {
+      const direct = keys.map(k => data[k]).find(v => v !== undefined && v !== null && String(v).trim() !== '');
+      if (direct !== undefined) return direct;
+      for (const alias of keys) {
+        const needle = alias.toLowerCase();
+        const found = ciEntries.find(([k]) => k.endsWith(needle) || k === needle || k.includes(`.${needle}`));
+        if (found && found[1] !== undefined && found[1] !== null && String(found[1]).trim() !== '') return found[1];
+        const nNeedle = normalize(alias);
+        const nFound = normEntries.find(([k]) => k === nNeedle || k.endsWith(nNeedle) || k.includes(nNeedle));
+        if (nFound && nFound[1] !== undefined && nFound[1] !== null && String(nFound[1]).trim() !== '') return nFound[1];
+      }
+      return undefined;
+    };
+
+    const mapped: Record<string, string | boolean> = {};
+    (Object.keys(aliases) as Array<keyof typeof aliases>).forEach((target) => {
+      const value = getFirst(aliases[target]);
+      if (value !== undefined) {
+        mapped[target] = numericTargets.has(target as string) ? sanitizeNumeric(value) : String(value);
+      }
+    });
+
+    setPerDocDetails(prev => {
+      const curr = prev[dateKey] || {};
+      const next = { ...curr } as Record<string, string | boolean>;
+      Object.entries(mapped).forEach(([k, v]) => {
+        if (opts.overwrite || !next[k] || String(next[k]).trim() === '') next[k] = v;
+      });
+      return { ...prev, [dateKey]: next };
+    });
+  };
+
   useEffect(() => {
     const appId = (details.id as string) || (details.applicationId as string) || (initial?.id as string) || (initial?.applicationId as string) || '';
     if (!appId) return;
@@ -145,16 +215,20 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
 
   const [submitting, setSubmitting] = useState(false);
   const [isDragOver, setIsDragOver] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState<Map<string, number>>(new Map());
   
   // Daily statements tracking (changed from monthly to daily)
   const [dailyStatements, setDailyStatements] = useState<Map<string, { file: File; status: 'uploading' | 'completed' | 'error'; fileUrl?: string }>>(new Map());
   const [autoPopulatedKeys, setAutoPopulatedKeys] = useState<Set<string>>(new Set());
-  const [autoPopulatedCount, setAutoPopulatedCount] = useState(0);
   // Persisted documents fetched from DB
   const [dbDocs, setDbDocs] = useState<ApplicationDocument[]>([]);
   const [dbDocsLoading, setDbDocsLoading] = useState(false);
+  // Per-document extracted details keyed by dateKey
+  const [perDocDetails, setPerDocDetails] = useState<Record<string, Record<string, string | boolean>>>({});
   // Track which item is being replaced (db/local)
   const [replaceTarget, setReplaceTarget] = useState<null | { source: 'db' | 'local'; dateKey: string; docId?: string }>(null);
+  // Track which completed document card is expanded to show inline Financial Details
+  const [expandedDocKey, setExpandedDocKey] = useState<string | null>(null);
 
   // Create a ref for the replace file input
   const replaceFileInputRef = useRef<HTMLInputElement>(null);
@@ -322,7 +396,6 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
       console.log('[populateDetailsFromWebhook] providedKeys for highlight:', Array.from(providedKeys));
       setAutoPopulatedKeys(prev => {
         const nextSet = new Set<string>([...prev, ...providedKeys]);
-        setAutoPopulatedCount(nextSet.size);
         console.log('[populateDetailsFromWebhook] autoPopulatedKeys now:', Array.from(nextSet));
         return nextSet;
       });
@@ -374,6 +447,18 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
   const performUpload = async (file: File, dateKey: string) => {
     // Set uploading state
     setDailyStatements(prev => new Map(prev.set(dateKey, { file, status: 'uploading' })));
+    setUploadProgress(prev => new Map(prev.set(dateKey, 0)));
+    
+    // Simulate progress during upload
+    const progressInterval = setInterval(() => {
+      setUploadProgress(prev => {
+        const current = prev.get(dateKey) || 0;
+        if (current >= 90) return prev; // Stop at 90% until completion
+        const next = new Map(prev);
+        next.set(dateKey, current + Math.random() * 15);
+        return next;
+      });
+    }, 200);
 
     try {
       // No need to prepare a file URL for the document webhook anymore
@@ -402,6 +487,7 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
             if (parsed) {
               console.log('[newDeal webhook - daily] Parsed response:', dateKey, parsed);
               populateDetailsFromWebhook(parsed, { overwrite: true, markProvidedEvenIfNoChange: true });
+              populatePerDocDetails(dateKey, parsed, { overwrite: true });
             }
           } catch (e) {
             console.warn('Unable to read daily webhook response:', e);
@@ -413,22 +499,21 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
         console.warn('newDeal webhook timed out or failed; continuing upload flow:', err);
       }
 
-      // Send the document to DOCUMENT_FILE_WEBHOOK_URL with required metadata (authoritative record)
+      // Send the document file to DOCUMENT_FILE_WEBHOOK_URL (external) via multipart/form-data with metadata
       try {
         // Prefer the Applications table primary key (application record id)
         const appId = (details.id as string) || (initial?.id as string) || (details.applicationId as string) || (initial?.applicationId as string) || '';
-        const payload = {
-          application_id: appId,
-          file_name: file.name,
-          file_size: file.size,
-          file_type: file.type || 'application/pdf',
-          statement_date: dateKey,
-        } as const;
+        const form2 = new FormData();
+        form2.append('file', file, file.name);
+        form2.append('application_id', appId);
+        form2.append('statement_date', dateKey);
+        form2.append('file_name', file.name);
+        form2.append('file_size', String(file.size));
+        form2.append('file_type', file.type || 'application/pdf');
 
         const resp2 = await fetchWithTimeout(DOCUMENT_FILE_WEBHOOK_URL, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload),
+          body: form2,
           timeoutMs: 30000,
         });
 
@@ -453,14 +538,46 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
         }
 
         // Use file URL only if the document webhook returns one for UI linking
-        setDailyStatements(prev => new Map(prev.set(dateKey, { file, status: 'completed', fileUrl })));
+        clearInterval(progressInterval);
+        setUploadProgress(prev => {
+          const next = new Map(prev);
+          next.set(dateKey, 100);
+          return next;
+        });
+        setTimeout(() => {
+          setDailyStatements(prev => new Map(prev.set(dateKey, { file, status: 'completed', fileUrl })));
+          setUploadProgress(prev => {
+            const next = new Map(prev);
+            next.delete(dateKey);
+            return next;
+          });
+        }, 500);
       } catch (e) {
-        console.warn('documentFile webhook call failed; marking completed without URL:', e);
-        setDailyStatements(prev => new Map(prev.set(dateKey, { file, status: 'completed' })));
+        console.warn('external document webhook call failed; marking completed without URL:', e);
+        clearInterval(progressInterval);
+        setUploadProgress(prev => {
+          const next = new Map(prev);
+          next.set(dateKey, 100);
+          return next;
+        });
+        setTimeout(() => {
+          setDailyStatements(prev => new Map(prev.set(dateKey, { file, status: 'completed' })));
+          setUploadProgress(prev => {
+            const next = new Map(prev);
+            next.delete(dateKey);
+            return next;
+          });
+        }, 500);
       }
     } catch (error) {
       console.error('Daily upload failed:', error);
+      clearInterval(progressInterval);
       setDailyStatements(prev => new Map(prev.set(dateKey, { file, status: 'error' })));
+      setUploadProgress(prev => {
+        const next = new Map(prev);
+        next.delete(dateKey);
+        return next;
+      });
     }
   };
 
@@ -590,6 +707,8 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
     return [...dbItems, ...localItems].sort((a, b) => b.sortDate.getTime() - a.sortDate.getTime());
   };
 
+  // removed global hasCompletedDoc; we now expand per-document when clicked
+
   // Remove a statement
   const handleRemoveStatement = (dateKey: string) => {
     setDailyStatements(prev => {
@@ -600,17 +719,29 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
   };
 
   const handleDeleteClick = async (item: UICardItem) => {
+    const appId = (details.id as string) || (initial?.id as string) || (details.applicationId as string) || (initial?.applicationId as string) || '';
     if (item.source === 'db' && item.docId) {
       try {
         await deleteApplicationDocument(item.docId);
+        console.log('Successfully deleted document from database:', item.docId);
       } catch (e) {
-        console.warn('Failed to delete DB document:', e);
+        console.error('Failed to delete DB document:', e);
+        alert('Failed to delete document. Please try again.');
+        return;
       }
-      const appId = (details.id as string) || (initial?.id as string) || (details.applicationId as string) || (initial?.applicationId as string) || '';
       if (appId) await refetchDbDocs(appId);
       return;
     }
-    // local
+    // local -> also try to delete any persisted row that matches this date/file
+    try {
+      if (appId && item.dateKey) {
+        await deleteApplicationDocumentByAppAndDate(appId, item.dateKey, item.file?.name);
+        if (appId) await refetchDbDocs(appId);
+      }
+    } catch (e) {
+      console.warn('Failed to delete matching DB document for local item:', e);
+      // continue removing from UI even if DB delete fails
+    }
     handleRemoveStatement(item.dateKey);
   };
 
@@ -623,17 +754,77 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
     replaceFileInputRef.current?.click();
   };
 
-  const handleContinue = async () => {
+  const handleContinue = async (item?: UICardItem) => {
     if (submitting) return;
     setSubmitting(true);
     try {
-      const payload = {
-        // ensure IDs are always present at top-level
+      // If a specific document is provided, merge its per-document details and include doc metadata
+      const baseIds = {
         id: (details.id as string) || ((initial?.id as string) || ''),
-        applicationId: (details.applicationId as string) || ((initial?.applicationId as string) || (details.id as string) || (initial?.id as string) || ''),
-        // include the rest of the details
-        ...details,
-      };
+        applicationId:
+          (details.applicationId as string) ||
+          ((initial?.applicationId as string) || (details.id as string) || (initial?.id as string) || ''),
+      } as const;
+
+      let payload: Record<string, unknown>;
+      if (item) {
+        const docVals = perDocDetails[item.dateKey] || {};
+        // normalize numeric fields: remove commas and percent
+        const numericNames = new Set([
+          'creditScore',
+          'timeInBiz',
+          'avgMonthlyRevenue',
+          'averageMonthlyDeposits',
+          'existingDebt',
+          'requestedAmount',
+          'avgDailyBalance',
+          'avgMonthlyDepositCount',
+          'nsfCount',
+          'negativeDays',
+          'currentPositionCount',
+          'holdback',
+          'grossAnnualRevenue',
+        ]);
+        // Merge prioritizing docVals only when value is non-empty
+        const merged: Record<string, unknown> = { ...details };
+        for (const key of Object.keys(docVals)) {
+          const val = (docVals as Record<string, unknown>)[key];
+          const isEmpty = val === '' || val === undefined || val === null;
+          if (!isEmpty) merged[key] = val as unknown;
+        }
+        // Sanitize numeric fields and coerce to numbers when possible
+        const sanitized: Record<string, unknown> = { ...merged };
+        for (const k of Object.keys(merged)) {
+          if (numericNames.has(k)) {
+            const raw = String(merged[k] ?? '');
+            if (raw === '') continue; // don't override with empty
+            const withoutCommas = raw.replace(/,/g, '');
+            const cleanedStr = k === 'holdback' ? withoutCommas.replace(/%/g, '') : withoutCommas;
+            const asNum = cleanedStr === '' ? undefined : Number(cleanedStr);
+            sanitized[k] = Number.isFinite(asNum as number) ? (asNum as number) : cleanedStr;
+          }
+        }
+        payload = {
+          ...baseIds,
+          ...sanitized,
+          selectedDocument: {
+            key: item.key,
+            dateKey: item.dateKey,
+            dateDisplay: item.dateDisplay,
+            source: item.source,
+            docId: item.docId ?? null,
+            fileName: item.file?.name ?? null,
+            fileSize: item.file?.size ?? null,
+            fileUrl: item.fileUrl ?? null,
+            status: item.status,
+          },
+        };
+      } else {
+        payload = {
+          ...baseIds,
+          ...details,
+        };
+      }
       await fetchWithTimeout(UPDATING_APPLICATIONS_WEBHOOK_URL, {
         method: 'POST',
         headers: {
@@ -646,8 +837,47 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
       console.error('Failed to notify updatingApplications webhook:', e);
       // proceed regardless to not block user flow
     } finally {
-      // Trigger parent flow first so parent can flip loading immediately
-      onContinue(details);
+      // Trigger parent flow so parent can flip loading immediately
+      if (item) {
+        const docVals = perDocDetails[item.dateKey] || {};
+        const numericNames = new Set([
+          'creditScore',
+          'timeInBiz',
+          'avgMonthlyRevenue',
+          'averageMonthlyDeposits',
+          'existingDebt',
+          'requestedAmount',
+          'avgDailyBalance',
+          'avgMonthlyDepositCount',
+          'nsfCount',
+          'negativeDays',
+          'currentPositionCount',
+          'holdback',
+          'grossAnnualRevenue',
+        ]);
+        // Merge prioritizing docVals only when non-empty
+        const merged: Record<string, unknown> = { ...details };
+        for (const key of Object.keys(docVals)) {
+          const val = (docVals as Record<string, unknown>)[key];
+          const isEmpty = val === '' || val === undefined || val === null;
+          if (!isEmpty) merged[key] = val as unknown;
+        }
+        // Sanitize and coerce numeric fields to numbers for downstream components
+        for (const k of Object.keys(merged)) {
+          if (numericNames.has(k)) {
+            const raw = String(merged[k] ?? '');
+            if (raw === '') continue;
+            const withoutCommas = raw.replace(/,/g, '');
+            const cleanedStr = k === 'holdback' ? withoutCommas.replace(/%/g, '') : withoutCommas;
+            const asNum = cleanedStr === '' ? undefined : Number(cleanedStr);
+            merged[k] = Number.isFinite(asNum as number) ? (asNum as number) : cleanedStr;
+          }
+        }
+        // Do NOT attach selectedDocument here. Pass only application-shaped data
+        onContinue(merged as typeof details);
+      } else {
+        onContinue(details);
+      }
       // Keep local loading true until after handing off control
       setSubmitting(false);
     }
@@ -658,11 +888,43 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
     name,
     type = 'text',
     inputMode,
-  }: { label: string; name: string; type?: string; inputMode?: React.HTMLAttributes<HTMLInputElement>['inputMode'] }) => {
+    valueProp,
+    onValueChange,
+  }: { label: string; name: string; type?: string; inputMode?: React.HTMLAttributes<HTMLInputElement>['inputMode']; valueProp?: string; onValueChange?: (v: string) => void }) => {
     const inputRef = useRef<HTMLInputElement | null>(null);
     const mouseInsideRef = useRef(false);
     const typingRef = useRef(false);
     const typingTimerRef = useRef<number | null>(null);
+
+    const numericNames = new Set([
+      'creditScore',
+      'timeInBiz',
+      'avgMonthlyRevenue',
+      'averageMonthlyDeposits',
+      'existingDebt',
+      'requestedAmount',
+      'avgDailyBalance',
+      'avgMonthlyDepositCount',
+      'nsfCount',
+      'negativeDays',
+      'currentPositionCount',
+      'holdback',
+      'grossAnnualRevenue',
+    ]);
+
+    const addCommas = (raw: string) => {
+      if (!raw) return '';
+      // keep sign
+      let sign = '';
+      if (raw.startsWith('-')) {
+        sign = '-';
+        raw = raw.slice(1);
+      }
+      const parts = raw.split('.');
+      const intPart = parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+      const decPart = parts.length > 1 ? `.${parts.slice(1).join('.')}` : '';
+      return `${sign}${intPart}${decPart}`;
+    };
 
     const startTyping = () => {
       typingRef.current = true;
@@ -697,7 +959,7 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
             type={type}
             inputMode={inputMode}
             autoComplete="off"
-            value={(details[name] as string) || ''}
+            value={valueProp ?? ((details[name] as string) || '')}
             onFocus={() => { /* keep focus while inside */ }}
             onMouseEnter={handleMouseEnter}
             onMouseLeave={handleMouseLeave}
@@ -705,62 +967,52 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
             onInput={startTyping}
             onChange={(e) => {
               startTyping();
-              const numericNames = new Set([
-                'creditScore',
-                'timeInBiz',
-                'avgMonthlyRevenue',
-                'averageMonthlyDeposits',
-                'existingDebt',
-                'requestedAmount',
-                'avgDailyBalance',
-                'avgMonthlyDepositCount',
-                'nsfCount',
-                'negativeDays',
-                'currentPositionCount',
-                'holdback',
-                'grossAnnualRevenue',
-              ]);
               let v = e.target.value;
               if (numericNames.has(name)) {
-                // Allow digits, one optional leading '-', a single '.', and for holdback an optional '%'
-                // 1) If holdback, temporarily strip % and remember it
                 let hadPercent = false;
                 if (name === 'holdback') {
                   if (v.includes('%')) hadPercent = true;
-                  v = v.replace(/%/g, '');
                 }
-                // 2) Remove other invalid chars
-                v = v.replace(/[^0-9.-]/g, '');
-                // 2) Keep '-' only at the start
-                v = (v[0] === '-' ? '-' : '') + v.replace(/-/g, '');
-                // 3) Allow only one '.'
-                const firstDot = v.indexOf('.');
-                if (firstDot !== -1) {
-                  const before = v.slice(0, firstDot + 1);
-                  const after = v.slice(firstDot + 1).replace(/\./g, '');
-                  v = before + after;
-                }
-                // Special handling for percentage: clamp 0-100
+                v = v.replace(/,/g, '').replace(/[^0-9.-]/g, '');
                 if (name === 'holdback') {
                   const n = Number(v);
                   if (!Number.isNaN(n)) {
                     if (n < 0) v = '0';
                     else if (n > 100) v = '100';
                   }
-                  // Re-append % for display if user typed it
                   if (hadPercent && v !== '') v = `${v}%`;
                 }
               }
-              // remove auto-populated highlight once the user edits
               if (autoPopulatedKeys.has(name)) {
                 setAutoPopulatedKeys(prev => {
                   const next = new Set(prev);
                   next.delete(name);
-                  setAutoPopulatedCount(next.size);
                   return next;
                 });
               }
-              set(name, v);
+              if (onValueChange) {
+                onValueChange(v);
+              } else {
+                set(name, v);
+              }
+            }}
+            onBlur={() => {
+              if (!numericNames.has(name)) return;
+              const current = inputRef.current?.value ?? '';
+              let hasPercent = false;
+              if (name === 'holdback') {
+                if (current.includes('%')) hasPercent = true;
+              }
+              // strip non-numeric for formatting (except dot and dash)
+              const stripped = current.replace(/,/g, '').replace(/[^0-9.-]/g, '');
+              if (stripped === '' || stripped === '-' || stripped === '.') return; // nothing meaningful to format
+              const formattedNum = addCommas(stripped);
+              const finalVal = hasPercent ? `${formattedNum}%` : formattedNum;
+              if (onValueChange) {
+                onValueChange(finalVal);
+              } else {
+                set(name, finalVal);
+              }
             }}
             className={`w-full rounded-xl border-2 px-4 py-3 text-gray-900 font-medium transition-all duration-200 ${
               autoPopulatedKeys.has(name) 
@@ -789,6 +1041,7 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
         </div>
 
         <div className="p-8">
+          
           {loading || submitting ? (
           <div className="flex flex-col items-center justify-center py-12 text-center">
             <svg className="animate-spin h-8 w-8 text-blue-600 mb-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" aria-hidden="true">
@@ -800,78 +1053,10 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
           </div>
           ) : (
             <>
-            {autoPopulatedCount > 0 && (
-              <div className="mb-8 relative overflow-hidden rounded-2xl border border-emerald-200 bg-gradient-to-br from-emerald-50 via-green-50 to-teal-50 p-6 shadow-lg">
-                <div className="absolute inset-0 bg-gradient-to-r from-emerald-100/20 to-teal-100/20 opacity-50"></div>
-                <div className="relative flex items-start gap-4">
-                  <div className="flex-shrink-0 p-3 bg-gradient-to-br from-emerald-100 to-green-100 rounded-2xl shadow-sm border border-emerald-200">
-                    <CheckCircle className="w-6 h-6 text-emerald-700" />
-                  </div>
-                  <div className="flex-1">
-                    <h4 className="text-lg font-bold text-emerald-900 mb-2">Data Extraction Complete</h4>
-                    <p className="text-emerald-800 font-medium mb-2">
-                      {autoPopulatedCount} fields automatically populated from your documents
-                    </p>
-                    <p className="text-sm text-emerald-700 leading-relaxed">
-                      Review the highlighted fields below. All information can be edited if needed.
-                    </p>
-                  </div>
-                  <div className="flex-shrink-0">
-                    <span className="inline-flex items-center px-4 py-2 rounded-full text-sm font-bold bg-gradient-to-r from-emerald-100 to-green-100 text-emerald-800 border border-emerald-200 shadow-sm">
-                      {autoPopulatedCount} Fields
-                    </span>
-                  </div>
-                </div>
-              </div>
-            )}
-              {/* Business Information Section */}
-              <div className="mb-8">
-              <div className="mb-6">
-                <div className="flex items-center gap-3 mb-2">
-                  <div className="p-2 bg-gradient-to-br from-blue-100 to-indigo-100 rounded-xl shadow-sm border border-blue-200">
-                    <Building2 className="w-5 h-5 text-blue-700" />
-                  </div>
-                  <h3 className="text-xl font-bold text-gray-900">Business Information</h3>
-                </div>
-                <p className="text-sm text-gray-600 ml-12">Basic details about your business</p>
-              </div>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                <Input label="Deal Name" name="dealName" />
-                <Input label="Industry" name="industry" />
-                <Input label="Entity Type" name="entityType" />
-                <Input label="State" name="state" />
-              </div>
-            </div>
+              {/* Business Information Section moved below Bank Statements */}
 
-              {/* Financial Details Section */}
+              {/* Bank Statement Upload - List View */}
               <div className="mb-8">
-              <div className="mb-6">
-                <div className="flex items-center gap-3 mb-2">
-                  <div className="p-2 bg-gradient-to-br from-purple-100 to-violet-100 rounded-xl shadow-sm border border-purple-200">
-                    <Building2 className="w-5 h-5 text-purple-700" />
-                  </div>
-                  <h3 className="text-xl font-bold text-gray-900">Financial Details</h3>
-                </div>
-                <p className="text-sm text-gray-600 ml-12">Financial metrics and performance data</p>
-              </div>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                <Input label="Credit Score" name="creditScore" type="text" inputMode="decimal" />
-                <Input label="Time in Biz (months)" name="timeInBiz" type="text" inputMode="decimal" />
-                <Input label="Avg Monthly Revenue" name="avgMonthlyRevenue" type="text" inputMode="decimal" />
-                <Input label="Avg Monthly Deposits" name="averageMonthlyDeposits" type="text" inputMode="decimal" />
-                <Input label="Existing Business Debt" name="existingDebt" type="text" inputMode="decimal" />
-                <Input label="Requested Amount" name="requestedAmount" type="text" inputMode="decimal" />
-                <Input label="Gross Annual Revenue" name="grossAnnualRevenue" type="text" inputMode="decimal" />
-                <Input label="Avg Daily Balance" name="avgDailyBalance" type="text" inputMode="decimal" />
-                <Input label="Avg Monthly Deposit Count" name="avgMonthlyDepositCount" type="text" inputMode="decimal" />
-                <Input label="NSF Count" name="nsfCount" type="text" inputMode="decimal" />
-                <Input label="Negative Days" name="negativeDays" type="text" inputMode="decimal" />
-                <Input label="Current Position Count" name="currentPositionCount" type="text" inputMode="decimal" />
-                <Input label="Holdback" name="holdback" type="text" inputMode="decimal" />
-              </div>
-
-                {/* Bank Statement Upload - List View */}
-                <div className="mt-8">
                   <div className="mb-8">
                     <h3 className="text-xl font-semibold text-gray-900 mb-2 flex items-center gap-3">
                       <div className="p-2 bg-blue-100 rounded-lg">
@@ -904,7 +1089,15 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                         return (
                           <div
                             key={item.key}
-                            className="group bg-gradient-to-r from-white to-gray-50/50 border border-gray-200 rounded-2xl p-6 shadow-sm hover:shadow-xl hover:border-blue-200 hover:from-blue-50/30 hover:to-white transition-all duration-300"
+                            className={`group bg-gradient-to-r from-white to-gray-50/50 border border-gray-200 rounded-2xl p-6 shadow-sm hover:shadow-xl hover:border-blue-200 hover:from-blue-50/30 hover:to-white transition-all duration-300 ${isCompleted ? 'cursor-pointer' : ''}`}
+                            onClick={() => {
+                              if (!isCompleted) return;
+                              // Open-only behavior: clicking the card opens this item, but does not close it.
+                              setExpandedDocKey(item.key);
+                            }}
+                            role={isCompleted ? 'button' : undefined}
+                            tabIndex={isCompleted ? 0 : -1}
+                            aria-expanded={isCompleted ? expandedDocKey === item.key : undefined}
                           >
                             <div className="flex items-center justify-between">
                               {/* File Info */}
@@ -966,7 +1159,7 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                                 <button
                                   type="button"
                                   className="p-3 rounded-xl text-gray-400 hover:text-blue-600 hover:bg-blue-50 border border-transparent hover:border-blue-200 transition-all duration-200 group-hover:text-gray-500 shadow-sm hover:shadow-md"
-                                  onClick={() => handleReplaceClick(item)}
+                                  onClick={(e) => { e.stopPropagation(); handleReplaceClick(item); }}
                                   title="Replace file"
                                 >
                                   <RefreshCw className="w-4 h-4" />
@@ -977,7 +1170,7 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                                   <button
                                     type="button"
                                     className="p-3 rounded-xl text-gray-400 hover:text-orange-600 hover:bg-orange-50 border border-transparent hover:border-orange-200 transition-all duration-200 shadow-sm hover:shadow-md"
-                                    onClick={() => handleRetryUpload(item.dateKey)}
+                                    onClick={(e) => { e.stopPropagation(); handleRetryUpload(item.dateKey); }}
                                     title="Retry upload"
                                   >
                                     <RotateCcw className="w-4 h-4" />
@@ -988,7 +1181,7 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                                 <button
                                   type="button"
                                   className="p-3 rounded-xl text-gray-400 hover:text-red-600 hover:bg-red-50 border border-transparent hover:border-red-200 transition-all duration-200 group-hover:text-gray-500 shadow-sm hover:shadow-md"
-                                  onClick={() => handleDeleteClick(item)}
+                                  onClick={(e) => { e.stopPropagation(); handleDeleteClick(item); }}
                                   title="Remove file"
                                 >
                                   <Trash2 className="w-4 h-4" />
@@ -999,10 +1192,139 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                             {/* Progress bar for uploading */}
                             {isUploading && (
                               <div className="mt-4">
-                                <div className="w-full bg-gray-200 rounded-full h-2">
-                                  <div className="bg-blue-600 h-2 rounded-full transition-all duration-300" style={{ width: '60%' }}></div>
+                                <div className="w-full bg-gray-200 rounded-full h-2 overflow-hidden">
+                                  <div 
+                                    className="bg-blue-600 h-2 rounded-full transition-all duration-500 ease-out"
+                                    style={{ width: `${Math.min(uploadProgress.get(item.dateKey) || 0, 100)}%` }}
+                                  ></div>
                                 </div>
-                                <p className="text-xs text-blue-600 mt-2 font-medium">Processing document...</p>
+                                <p className="text-xs text-blue-600 mt-2 font-medium">
+                                  {(uploadProgress.get(item.dateKey) || 0) < 100 ? 'Processing document...' : 'Almost done...'}
+                                </p>
+                              </div>
+                            )}
+
+                            {/* Inline Financial Details expansion */}
+                            {isCompleted && expandedDocKey === item.key && (
+                              <div className="mt-6 pt-6 border-t border-gray-200">
+                                {(() => {
+                                  const docVals = perDocDetails[item.dateKey] || {};
+                                  const bind = (field: string) => ({
+                                    valueProp: (docVals[field] as string) ?? '',
+                                    onValueChange: (v: string) => {
+                                      setPerDocDetails(prev => ({
+                                        ...prev,
+                                        [item.dateKey]: { ...prev[item.dateKey], [field]: v },
+                                      }));
+                                    },
+                                  });
+                                  const docAutoCount = Object.values(docVals).filter(v => String(v ?? '').trim() !== '').length;
+                                  return (
+                                    <>
+                                      {docAutoCount > 0 && (
+                                        <div className="mb-6 relative overflow-hidden rounded-2xl border border-emerald-200 bg-gradient-to-br from-emerald-50 via-green-50 to-teal-50 p-5 shadow-lg">
+                                          <div className="absolute inset-0 bg-gradient-to-r from-emerald-100/20 to-teal-100/20 opacity-50"></div>
+                                          <div className="relative flex items-start gap-4">
+                                            <div className="flex-shrink-0 p-2.5 bg-gradient-to-br from-emerald-100 to-green-100 rounded-2xl shadow-sm border border-emerald-200">
+                                              <CheckCircle className="w-5 h-5 text-emerald-700" />
+                                            </div>
+                                            <div className="flex-1">
+                                              <h5 className="text-base font-bold text-emerald-900 mb-1">Data Extraction Complete</h5>
+                                              <p className="text-emerald-800 font-medium mb-1 text-sm">
+                                                {docAutoCount} {docAutoCount === 1 ? 'field' : 'fields'} automatically populated from this document
+                                              </p>
+                                              <p className="text-xs text-emerald-700 leading-relaxed">
+                                                Review the highlighted fields below. All information can be edited if needed.
+                                              </p>
+                                            </div>
+                                            <div className="flex-shrink-0">
+                                              <span className="inline-flex items-center px-3 py-1.5 rounded-full text-xs font-bold bg-gradient-to-r from-emerald-100 to-green-100 text-emerald-800 border border-emerald-200 shadow-sm">
+                                                {docAutoCount} {docAutoCount === 1 ? 'Field' : 'Fields'}
+                                              </span>
+                                            </div>
+                                          </div>
+                                        </div>
+                                      )}
+                                      {/* Top row actions inside expanded area */}
+                                      <div className="mb-4 flex justify-end">
+                                        <button
+                                          type="button"
+                                          onClick={(e) => { e.stopPropagation(); setExpandedDocKey(null); }}
+                                          className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-semibold text-gray-700 bg-gray-100 hover:bg-gray-200 border border-gray-200 shadow-sm"
+                                          aria-label="Close details"
+                                        >
+                                          Close
+                                        </button>
+                                      </div>
+                                      {/* Business Information (per document) */}
+                                      <div className="mb-6">
+                                        <div className="mb-4 flex items-center gap-3">
+                                          <div className="p-2 bg-gradient-to-br from-blue-100 to-indigo-100 rounded-xl shadow-sm border border-blue-200">
+                                            <Building2 className="w-5 h-5 text-blue-700" />
+                                          </div>
+                                          <h4 className="text-lg font-bold text-gray-900">Business Information</h4>
+                                        </div>
+                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                                          <Input label="Deal Name" name="dealName" {...bind('dealName')} />
+                                          <Input label="Industry" name="industry" {...bind('industry')} />
+                                          <Input label="Entity Type" name="entityType" {...bind('entityType')} />
+                                          <Input label="State" name="state" {...bind('state')} />
+                                        </div>
+                                      </div>
+
+                                      {/* Financial Details (per document) */}
+                                      <div className="mb-4 flex items-center gap-3">
+                                        <div className="p-2 bg-gradient-to-br from-purple-100 to-violet-100 rounded-xl shadow-sm border border-purple-200">
+                                          <Building2 className="w-5 h-5 text-purple-700" />
+                                        </div>
+                                        <h4 className="text-lg font-bold text-gray-900">Financial Details</h4>
+                                      </div>
+                                      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                                        <Input label="Credit Score" name="creditScore" type="text" inputMode="decimal" {...bind('creditScore')} />
+                                        <Input label="Time in Biz (months)" name="timeInBiz" type="text" inputMode="decimal" {...bind('timeInBiz')} />
+                                        <Input label="Avg Monthly Revenue" name="avgMonthlyRevenue" type="text" inputMode="decimal" {...bind('avgMonthlyRevenue')} />
+                                        <Input label="Avg Monthly Deposits" name="averageMonthlyDeposits" type="text" inputMode="decimal" {...bind('averageMonthlyDeposits')} />
+                                        <Input label="Existing Business Debt" name="existingDebt" type="text" inputMode="decimal" {...bind('existingDebt')} />
+                                        <Input label="Requested Amount" name="requestedAmount" type="text" inputMode="decimal" {...bind('requestedAmount')} />
+                                        <Input label="Gross Annual Revenue" name="grossAnnualRevenue" type="text" inputMode="decimal" {...bind('grossAnnualRevenue')} />
+                                        <Input label="Avg Daily Balance" name="avgDailyBalance" type="text" inputMode="decimal" {...bind('avgDailyBalance')} />
+                                        <Input label="Avg Monthly Deposit Count" name="avgMonthlyDepositCount" type="text" inputMode="decimal" {...bind('avgMonthlyDepositCount')} />
+                                        <Input label="NSF Count" name="nsfCount" type="text" inputMode="decimal" {...bind('nsfCount')} />
+                                        <Input label="Negative Days" name="negativeDays" type="text" inputMode="decimal" {...bind('negativeDays')} />
+                                        <Input label="Current Position Count" name="currentPositionCount" type="text" inputMode="decimal" {...bind('currentPositionCount')} />
+                                        <Input label="Holdback" name="holdback" type="text" inputMode="decimal" {...bind('holdback')} />
+                                      </div>
+                                      {/* Per-document footer action at bottom of financial details */}
+                                      <div className="flex items-center justify-end pt-4 mt-2">
+                                        <button
+                                          type="button"
+                                          onClick={(e) => { e.stopPropagation(); handleContinue(item); }}
+                                          disabled={submitting}
+                                          className={`inline-flex items-center gap-3 px-6 py-3 rounded-xl font-bold text-base shadow-md transition-all duration-200 focus:outline-none focus:ring-4 ${
+                                            submitting
+                                              ? 'bg-gradient-to-r from-gray-400 to-gray-500 text-white cursor-not-allowed'
+                                              : 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white hover:from-blue-700 hover:to-indigo-700 hover:shadow-lg hover:scale-[1.02] focus:ring-blue-500/40'
+                                          }`}
+                                          aria-label="Continue to Lender Matches"
+                                        >
+                                          {submitting ? (
+                                            <>
+                                              <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                                              Processing…
+                                            </>
+                                          ) : (
+                                            <>
+                                              Continue to Lender Matches
+                                              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7l5 5m0 0l-5 5m5-5H6" />
+                                              </svg>
+                                            </>
+                                          )}
+                                        </button>
+                                      </div>
+                                    </>
+                                  );
+                                })()}
                               </div>
                             )}
 
@@ -1076,8 +1398,9 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                       <p className="text-xs text-gray-500 mt-4 font-medium">PDF files only, max 10MB each</p>
                     </div>
                   </div>
-                </div>
               </div>
+
+              {/* Global Financial Details section removed; details now expand inline under a clicked completed document */}
 
               {/* Legal & Compliance Section */}
               <div className="mb-8">
@@ -1139,30 +1462,7 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                     </button>
                   )}
                 </div>
-                <button
-                  type="button"
-                  onClick={handleContinue}
-                  disabled={submitting}
-                  className={`inline-flex items-center gap-3 px-8 py-4 rounded-2xl font-bold text-lg shadow-lg transition-all duration-200 focus:outline-none focus:ring-4 ${
-                    submitting 
-                      ? 'bg-gradient-to-r from-gray-400 to-gray-500 text-white cursor-not-allowed' 
-                      : 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white hover:from-blue-700 hover:to-indigo-700 hover:shadow-xl hover:scale-105 focus:ring-blue-500/40'
-                  }`}
-                >
-                  {submitting ? (
-                    <>
-                      <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                      Processing…
-                    </>
-                  ) : (
-                    <>
-                      Continue to Lender Matches
-                      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7l5 5m0 0l-5 5m5-5H6" />
-                      </svg>
-                    </>
-                  )}
-                </button>
+                {/* Global continue button removed; use per-document buttons at the bottom of each expanded Financial Details */}
               </div>
 
               {/* Confirmation Modal removed: uploads auto-assign to the next available month */}

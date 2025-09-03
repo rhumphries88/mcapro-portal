@@ -254,6 +254,27 @@ export const deleteApplicationDocument = async (id: string) => {
   if (error) throw error
 }
 
+// Delete one or more documents by application_id and statement_date.
+// Optionally narrow by file_name to avoid removing multiple rows when duplicates exist.
+export const deleteApplicationDocumentByAppAndDate = async (
+  applicationId: string,
+  statementDate: string,
+  fileName?: string
+) => {
+  let query = supabase
+    .from('application_documents')
+    .delete()
+    .eq('application_id', applicationId)
+    .eq('statement_date', statementDate)
+
+  if (fileName) {
+    query = query.eq('file_name', fileName)
+  }
+
+  const { error } = await query
+  if (error) throw error
+}
+
 // Qualification logic
 export const qualifyLenders = (lenders: Lender[], application: Application): (Lender & { qualified: boolean; matchScore: number })[] => {
   return lenders.map(lender => {
