@@ -1,14 +1,12 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Building2, Upload, FileText, CheckCircle, RefreshCw, Trash2, RotateCcw } from 'lucide-react';
-import { getApplicationDocuments, deleteApplicationDocument, deleteApplicationDocumentByAppAndDate, type ApplicationDocument, getMcaResult, type McaResult } from '../lib/supabase';
+import { getApplicationDocuments, deleteApplicationDocument, deleteApplicationDocumentByAppAndDate, type ApplicationDocument } from '../lib/supabase';
 
 
 const NEW_DEAL_WEBHOOK_URL = '/webhook/newDeal';
-
 const UPDATING_APPLICATIONS_WEBHOOK_URL = '/webhook/updatingApplications';
 const DOCUMENT_FILE_WEBHOOK_URL = 'https://primary-production-c8d0.up.railway.app/webhook/documentFile';
 
-const MCA_WEBHOOK_URL = '/webhook/mca';
 
 type Props = {
   onContinue: (details: Record<string, string | boolean>) => void;
@@ -137,98 +135,15 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
     }
   };
 
-  // Start polling Supabase for MCA results for a given jobId and attach to this dateKey when complete
-  const startMcaPolling = (dateKey: string, jobId: string) => {
-    // Save initial job status
-    setPerDocMcaJobs(prev => ({ ...prev, [dateKey]: { jobId, status: 'pending' } }));
-
-    const startedAt = Date.now();
-    const maxMs = 5 * 60 * 1000; // 5 minutes
-    const intervalMs = 3000; // 3s polling
-
-    const timer = window.setInterval(async () => {
-      // Stop if exceeded time budget
-      if (Date.now() - startedAt > maxMs) {
-        window.clearInterval(timer);
-        setPerDocMcaJobs(prev => ({ ...prev, [dateKey]: { jobId, status: 'failed', error: 'timeout' } }));
-        return;
-      }
-
-      try {
-        const row = await getMcaResult(jobId);
-        if (!row) return; // not yet persisted
-
-        // Update status
-        setPerDocMcaJobs(prev => ({ ...prev, [dateKey]: { jobId, status: row.status as McaResult['status'], error: row.error } }));
-
-        if (row.status === 'completed') {
-          // Attach result payload to this doc
-          const parsed = row.result_json as unknown;
-          if (parsed && typeof parsed === 'object') {
-            // Normalize same as immediate path
-            const root: unknown = Array.isArray(parsed) ? (parsed as unknown[])[0] : parsed;
-            if (root && typeof root === 'object') {
-              const obj = root as Record<string, unknown>;
-              const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
-              const getField = (o: Record<string, unknown>, target: string) => {
-                const keys = Object.keys(o);
-                const match = keys.find(k => norm(k) === norm(target));
-                return match ? (o as Record<string, unknown>)[match] : undefined;
-              };
-              const monthlyRaw = getField(obj, 'monthly_table');
-              const monthly_table: MCAMonthlyRow[] | undefined = Array.isArray(monthlyRaw)
-                ? (monthlyRaw as unknown[]).map((r) => {
-                    const rec = r as Record<string, unknown>;
-                    const out: Record<string, string> = {};
-                    Object.keys(rec).forEach((k) => { out[k] = String(rec[k] ?? ''); });
-                    return out;
-                  })
-                : undefined;
-              const summaryRaw = getField(obj, 'mca_summary');
-              let mca_summary: MCASummaryItem[] | undefined = undefined;
-              if (Array.isArray(summaryRaw)) {
-                mca_summary = (summaryRaw as unknown[]).map((row) => {
-                  const r = row as Record<string, unknown>;
-                  return {
-                    FUNDER: String(r.FUNDER ?? ''),
-                    AMOUNT: String(r.AMOUNT ?? ''),
-                    'DAILY/WEEKLY Debit': String((r as Record<string, unknown>)['DAILY/WEEKLY Debit'] ?? ''),
-                    NOTES: String(r.NOTES ?? ''),
-                  } as MCASummaryItem;
-                });
-              } else if (summaryRaw && typeof summaryRaw === 'object') {
-                const r = summaryRaw as Record<string, unknown>;
-                mca_summary = [{
-                  FUNDER: String(r.FUNDER ?? ''),
-                  AMOUNT: String(r.AMOUNT ?? ''),
-                  'DAILY/WEEKLY Debit': String((r as Record<string, unknown>)['DAILY/WEEKLY Debit'] ?? ''),
-                  NOTES: String(r.NOTES ?? ''),
-                }];
-              }
-              const flagsRaw = getField(obj, 'fraud_flags');
-              const fraud_flags: string[] | undefined = Array.isArray(flagsRaw)
-                ? (flagsRaw as unknown[]).map((x) => String(x))
-                : undefined;
-              const payload: MCAParsed = { monthly_table, mca_summary, fraud_flags };
-              setPerDocMcaData((prev: Record<string, MCAParsed>) => ({ ...prev, [dateKey]: payload }));
-            }
-          }
-          window.clearInterval(timer);
-        } else if (row.status === 'failed') {
-          window.clearInterval(timer);
-        }
-      } catch (e) {
-        // Keep polling despite transient errors
-        console.warn('[MCA polling] Error while polling job', jobId, e);
-      }
-    }, intervalMs);
-  };
-
   // Populate per-document details (by dateKey) from webhook payload
   const populatePerDocDetails = (dateKey: string, payload: unknown, opts: { overwrite?: boolean } = {}) => {
     if (!payload || typeof payload !== 'object') return;
-    const data = payload as Record<string, unknown>;
-    const flat = flattenObject(data);
+    // If payload is an array, merge object elements so we can find fields regardless of position
+    const objects: Record<string, unknown>[] = Array.isArray(payload)
+      ? (payload as unknown[]).filter((el): el is Record<string, unknown> => !!el && typeof el === 'object' && !Array.isArray(el))
+      : [payload as Record<string, unknown>];
+    const baseData: Record<string, unknown> = objects.length ? Object.assign({}, ...objects) : {};
+    const flat = flattenObject(baseData);
     const normalize = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
     const ciEntries = Object.entries(flat).map(([k, v]) => [k.toLowerCase(), v] as const);
     const normEntries = Object.entries(flat).map(([k, v]) => [normalize(k), v] as const);
@@ -264,7 +179,7 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
     };
 
     const getFirst = (keys: string[]) => {
-      const direct = keys.map(k => data[k]).find(v => v !== undefined && v !== null && String(v).trim() !== '');
+      const direct = keys.map(k => baseData[k]).find(v => v !== undefined && v !== null && String(v).trim() !== '');
       if (direct !== undefined) return direct;
       for (const alias of keys) {
         const needle = alias.toLowerCase();
@@ -285,6 +200,7 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
       }
     });
 
+    console.log('[populatePerDocDetails] mapped keys for', dateKey, Object.keys(mapped));
     setPerDocDetails(prev => {
       const curr = prev[dateKey] || {};
       const next = { ...curr } as Record<string, string | boolean>;
@@ -293,6 +209,77 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
       });
       return { ...prev, [dateKey]: next };
     });
+
+    // Also try to populate MCA-like data by deep-searching the original payload as well as merged baseData
+    try {
+      let monthly_table: MCAMonthlyRow[] | undefined = undefined;
+      let mca_summary: MCASummaryItem[] | undefined = undefined;
+      let fraud_flags: string[] | undefined = undefined;
+
+      const monthlyCandidates = [
+        ...deepFindAllByKey(baseData, 'monthly_table'),
+        ...deepFindAllByKey(payload, 'monthly_table'),
+      ];
+      const summaryCandidates = [
+        ...deepFindAllByKey(baseData, 'mca_summary'),
+        ...deepFindAllByKey(payload, 'mca_summary'),
+      ];
+      const flagCandidates = [
+        ...deepFindAllByKey(baseData, 'fraud_flags'),
+        ...deepFindAllByKey(payload, 'fraud_flags'),
+      ];
+
+      const monthlyRaw = monthlyCandidates.find((x) => Array.isArray(x));
+      if (Array.isArray(monthlyRaw)) {
+        monthly_table = (monthlyRaw as unknown[]).map((r) => {
+          const rec = (r && typeof r === 'object') ? (r as Record<string, unknown>) : {};
+          const out: Record<string, string> = {};
+          Object.keys(rec).forEach((k) => { out[k] = String(rec[k] ?? ''); });
+          return out;
+        });
+      }
+
+      const summaryRaw = summaryCandidates.find((x) => Array.isArray(x) || (x && typeof x === 'object'));
+      if (Array.isArray(summaryRaw)) {
+        mca_summary = (summaryRaw as unknown[]).map((row) => {
+          const r = row as Record<string, unknown>;
+          return {
+            FUNDER: String(r.FUNDER ?? ''),
+            AMOUNT: String(r.AMOUNT ?? ''),
+            'DAILY/WEEKLY Debit': String((r as Record<string, unknown>)['DAILY/WEEKLY Debit'] ?? ''),
+            NOTES: String(r.NOTES ?? ''),
+          } as MCASummaryItem;
+        });
+      } else if (summaryRaw && typeof summaryRaw === 'object') {
+        const r = summaryRaw as Record<string, unknown>;
+        mca_summary = [{
+          FUNDER: String(r.FUNDER ?? ''),
+          AMOUNT: String(r.AMOUNT ?? ''),
+          'DAILY/WEEKLY Debit': String((r as Record<string, unknown>)['DAILY/WEEKLY Debit'] ?? ''),
+          NOTES: String(r.NOTES ?? ''),
+        }];
+      }
+
+      const flagsRaw = flagCandidates.find((x) => Array.isArray(x));
+      if (Array.isArray(flagsRaw)) {
+        fraud_flags = (flagsRaw as unknown[]).map((x) => String(x));
+      }
+
+      if (monthly_table || mca_summary || fraud_flags) {
+        const payload: MCAParsed = { monthly_table, mca_summary, fraud_flags };
+        console.log('[populatePerDocDetails] Storing MCA-like data', {
+          dateKey,
+          monthlyRows: monthly_table?.length || 0,
+          summaryRows: mca_summary?.length || 0,
+          fraudFlags: fraud_flags?.length || 0,
+        });
+        setPerDocMcaData((prev: Record<string, MCAParsed>) => ({ ...prev, [dateKey]: payload }));
+      } else {
+        console.log('[populatePerDocDetails] No MCA-like fields present in merged payload for', dateKey);
+      }
+    } catch (e) {
+      console.warn('[populatePerDocDetails] Failed to derive MCA-like fields:', e);
+    }
   };
 
   useEffect(() => {
@@ -330,8 +317,19 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
   const [perDocDetails, setPerDocDetails] = useState<Record<string, Record<string, string | boolean>>>({});
   // Per-document MCA payload keyed by dateKey
   const [perDocMcaData, setPerDocMcaData] = useState<Record<string, MCAParsed>>({});
-  // Track MCA job status per document (by dateKey)
-  const [perDocMcaJobs, setPerDocMcaJobs] = useState<Record<string, { jobId: string; status: 'pending' | 'processing' | 'completed' | 'failed'; error?: string }>>({});
+  // Diagnostics: observe when MCA data updates
+  useEffect(() => {
+    const keys = Object.keys(perDocMcaData || {});
+    try {
+      if (keys.length) {
+        console.log('[MCA state] perDocMcaData updated. Keys:', keys);
+        const lastKey = keys[keys.length - 1];
+        console.log('[MCA state] latest entry sample', lastKey, perDocMcaData[lastKey]);
+      }
+    } catch (e) {
+      console.warn('[MCA state] Failed to log perDocMcaData update', e, { keys });
+    }
+  }, [perDocMcaData]);
   // Track which item is being replaced (db/local)
   const [replaceTarget, setReplaceTarget] = useState<null | { source: 'db' | 'local'; dateKey: string; docId?: string }>(null);
   // Track which completed document card is expanded to show inline Financial Details
@@ -340,12 +338,7 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
   // Create a ref for the replace file input
   const replaceFileInputRef = useRef<HTMLInputElement>(null);
 
-  // Reference perDocMcaJobs so it's not flagged as unused and provide useful debug info
-  useEffect(() => {
-    if (Object.keys(perDocMcaJobs).length) {
-      console.debug('[MCA jobs updated]', perDocMcaJobs);
-    }
-  }, [perDocMcaJobs]);
+  
 
   // Helper to flatten nested objects into dot.notation keys for easy lookup
   const flattenObject = (obj: unknown, prefix = ''): Record<string, unknown> => {
@@ -364,7 +357,7 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
 
   // Simple fetch wrapper with timeout to avoid indefinite hangs on slow webhooks
   const fetchWithTimeout = async (input: RequestInfo | URL, init: RequestInit & { timeoutMs?: number } = {}) => {
-    const { timeoutMs = 8000, ...rest } = init;
+    const { timeoutMs = 60000, ...rest } = init;
     const controller = new AbortController();
     const id = setTimeout(() => controller.abort(), timeoutMs);
     try {
@@ -382,7 +375,17 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
   // opts.markProvidedEvenIfNoChange: still flag as auto-populated even when value is identical
   const populateDetailsFromWebhook = (payload: unknown, opts: { overwrite?: boolean; markProvidedEvenIfNoChange?: boolean } = {}) => {
     if (!payload || typeof payload !== 'object') return;
-    const data = payload as Record<string, unknown>;
+    // Merge array elements so top-level keys like "Entity Type" are discoverable regardless of index
+    let data: Record<string, unknown> = {};
+    if (Array.isArray(payload)) {
+      for (const el of payload as unknown[]) {
+        if (el && typeof el === 'object' && !Array.isArray(el)) {
+          data = { ...data, ...(el as Record<string, unknown>) };
+        }
+      }
+    } else {
+      data = payload as Record<string, unknown>;
+    }
     console.log('[populateDetailsFromWebhook] raw payload keys:', Object.keys(data));
     // Flatten and create a case-insensitive index of keys
     const flat = flattenObject(data);
@@ -581,14 +584,20 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
         form.append('file', file, file.name);
         form.append('statementDate', dateKey);
 
+        console.log('[newDeal webhook] Starting request', {
+          url: NEW_DEAL_WEBHOOK_URL,
+          fileName: file.name,
+          dateKey,
+        });
         const resp = await fetchWithTimeout(NEW_DEAL_WEBHOOK_URL, {
           method: 'POST',
           body: form,
-          timeoutMs: 20000,
+          timeoutMs: 45000, // increase to 45s to reduce AbortError frequency on slow network/backend
         });
 
         if (resp.ok) {
           const contentType = resp.headers.get('content-type') || '';
+          console.log('[newDeal webhook] Response received', { status: resp.status, contentType });
           try {
             let parsed: unknown = undefined;
             if (contentType.includes('application/json')) {
@@ -598,9 +607,84 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
               try { parsed = JSON.parse(text); } catch { parsed = undefined; }
             }
             if (parsed) {
-              console.log('[newDeal webhook - daily] Parsed response:', dateKey, parsed);
+              const isArray = Array.isArray(parsed);
+              console.log('[newDeal webhook - daily] Parsed response summary:', {
+                dateKey,
+                isArray,
+                arrayLength: isArray ? (parsed as unknown[]).length : undefined,
+                topLevelKeys: !isArray && typeof parsed === 'object' ? Object.keys(parsed as Record<string, unknown>) : undefined,
+              });
               populateDetailsFromWebhook(parsed, { overwrite: true, markProvidedEvenIfNoChange: true });
               populatePerDocDetails(dateKey, parsed, { overwrite: true });
+
+              // Additionally, if newDeal returns MCA-like data (monthly_table, mca_summary, fraud_flags),
+              // deep-search anywhere in the payload and store it.
+              const monthlyCandidates = deepFindAllByKey(parsed, 'monthly_table');
+              const summaryCandidates = deepFindAllByKey(parsed, 'mca_summary');
+              const flagCandidates = deepFindAllByKey(parsed, 'fraud_flags');
+              console.log('[newDeal webhook] deep-search candidates', {
+                dateKey,
+                monthlyCandidates: monthlyCandidates.length,
+                summaryCandidates: summaryCandidates.length,
+                flagCandidates: flagCandidates.length,
+              });
+
+              let monthly_table: MCAMonthlyRow[] | undefined;
+              let mca_summary: MCASummaryItem[] | undefined;
+              let fraud_flags: string[] | undefined;
+
+              const monthlyRaw = monthlyCandidates.find((x) => Array.isArray(x));
+              if (Array.isArray(monthlyRaw)) {
+                monthly_table = (monthlyRaw as unknown[]).map((r) => {
+                  const rec = (r && typeof r === 'object') ? (r as Record<string, unknown>) : {};
+                  const out: Record<string, string> = {};
+                  Object.keys(rec).forEach((k) => { out[k] = String(rec[k] ?? ''); });
+                  return out;
+                });
+                console.log('[newDeal webhook] monthly_table extracted rows:', monthly_table.length);
+              }
+
+              const summaryRaw = summaryCandidates.find((x) => Array.isArray(x) || (x && typeof x === 'object'));
+              if (Array.isArray(summaryRaw)) {
+                mca_summary = (summaryRaw as unknown[]).map((row) => {
+                  const r = row as Record<string, unknown>;
+                  return {
+                    FUNDER: String(r.FUNDER ?? ''),
+                    AMOUNT: String(r.AMOUNT ?? ''),
+                    'DAILY/WEEKLY Debit': String((r as Record<string, unknown>)['DAILY/WEEKLY Debit'] ?? ''),
+                    NOTES: String(r.NOTES ?? ''),
+                  } as MCASummaryItem;
+                });
+                console.log('[newDeal webhook] mca_summary extracted rows:', mca_summary.length);
+              } else if (summaryRaw && typeof summaryRaw === 'object') {
+                const r = summaryRaw as Record<string, unknown>;
+                mca_summary = [{
+                  FUNDER: String(r.FUNDER ?? ''),
+                  AMOUNT: String(r.AMOUNT ?? ''),
+                  'DAILY/WEEKLY Debit': String((r as Record<string, unknown>)['DAILY/WEEKLY Debit'] ?? ''),
+                  NOTES: String(r.NOTES ?? ''),
+                }];
+                console.log('[newDeal webhook] mca_summary extracted 1 object row');
+              }
+
+              const flagsRaw = flagCandidates.find((x) => Array.isArray(x));
+              if (Array.isArray(flagsRaw)) {
+                fraud_flags = (flagsRaw as unknown[]).map((x) => String(x));
+                console.log('[newDeal webhook] fraud_flags extracted count:', fraud_flags.length);
+              }
+
+              const payload: MCAParsed = { monthly_table, mca_summary, fraud_flags };
+              if (monthly_table || mca_summary || fraud_flags) {
+                console.log('[newDeal webhook] Storing MCA-like payload from newDeal', {
+                  dateKey,
+                  monthlyRows: monthly_table?.length || 0,
+                  summaryRows: mca_summary?.length || 0,
+                  fraudFlags: fraud_flags?.length || 0,
+                });
+                setPerDocMcaData((prev: Record<string, MCAParsed>) => ({ ...prev, [dateKey]: payload }));
+              } else {
+                console.log('[newDeal webhook] No MCA-like fields found in response (monthly_table, mca_summary, fraud_flags) for', dateKey);
+              }
             }
           } catch (e) {
             console.warn('Unable to read daily webhook response:', e);
@@ -608,119 +692,14 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
         } else {
           console.warn(`newDeal webhook responded ${resp.status} ${resp.statusText}; continuing upload flow`);
         }
-      } catch (err) {
-        console.warn('newDeal webhook timed out or failed; continuing upload flow:', err);
-      }
-
-      // 2) Send to MCA_WEBHOOK_URL (deferred processing friendly)
-      try {
-        const formMca = new FormData();
-        formMca.append('file', file, file.name);
-        formMca.append('statementDate', dateKey);
-
-        const respMca = await fetchWithTimeout(MCA_WEBHOOK_URL, {
-          method: 'POST',
-          body: formMca,
-          timeoutMs: 60000,
-        });
-        console.log('[MCA webhook] Response status:', respMca.status, respMca.statusText);
-
-        if (respMca.status === 202) {
-          // Acknowledged for background processing
-          try {
-            const ack = await respMca.clone().json().catch(() => null) as unknown;
-            console.log('[MCA webhook] Accepted for background processing. Ack:', ack);
-            if (ack && typeof ack === 'object') {
-              const a = ack as Record<string, unknown>;
-              const jobId = (a.jobId as string) || (a.job_id as string) || (a.id as string) || '';
-              if (jobId) {
-                startMcaPolling(dateKey, jobId);
-              }
-            }
-          } catch {
-            // ignore parse failures; background processing continues
-          }
-        } else if (respMca.ok) {
-          try {
-            const ct = respMca.headers.get('content-type') || '';
-            let parsed: unknown = undefined;
-            if (ct.includes('application/json')) {
-              parsed = await respMca.json();
-            } else {
-              const text = await respMca.text();
-              try { parsed = JSON.parse(text); } catch { parsed = undefined; }
-            }
-            if (parsed) {
-              console.log('[MCA webhook] Parsed payload:', parsed);
-              // Normalize payload: support both object and array-of-one formats
-              const root: unknown = Array.isArray(parsed) ? parsed[0] : parsed;
-              if (root && typeof root === 'object') {
-                const obj = root as Record<string, unknown>;
-                const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
-                const getField = (o: Record<string, unknown>, target: string) => {
-                  const keys = Object.keys(o);
-                  const match = keys.find(k => norm(k) === norm(target));
-                  return match ? (o as Record<string, unknown>)[match] : undefined;
-                };
-
-                // monthly_table
-                const monthlyRaw = getField(obj, 'monthly_table');
-                const monthly_table: MCAMonthlyRow[] | undefined = Array.isArray(monthlyRaw)
-                  ? (monthlyRaw as unknown[]).map((r) => {
-                      const rec = r as Record<string, unknown>;
-                      const out: Record<string, string> = {};
-                      Object.keys(rec).forEach((k) => { out[k] = String(rec[k] ?? ''); });
-                      return out;
-                    })
-                  : undefined;
-
-                // mca_summary
-                const summaryRaw = getField(obj, 'mca_summary');
-                let mca_summary: MCASummaryItem[] | undefined = undefined;
-                if (Array.isArray(summaryRaw)) {
-                  mca_summary = (summaryRaw as unknown[]).map((row) => {
-                    const r = row as Record<string, unknown>;
-                    return {
-                      FUNDER: String(r.FUNDER ?? ''),
-                      AMOUNT: String(r.AMOUNT ?? ''),
-                      'DAILY/WEEKLY Debit': String((r as Record<string, unknown>)['DAILY/WEEKLY Debit'] ?? ''),
-                      NOTES: String(r.NOTES ?? ''),
-                    } as MCASummaryItem;
-                  });
-                } else if (summaryRaw && typeof summaryRaw === 'object') {
-                  const r = summaryRaw as Record<string, unknown>;
-                  mca_summary = [{
-                    FUNDER: String(r.FUNDER ?? ''),
-                    AMOUNT: String(r.AMOUNT ?? ''),
-                    'DAILY/WEEKLY Debit': String((r as Record<string, unknown>)['DAILY/WEEKLY Debit'] ?? ''),
-                    NOTES: String(r.NOTES ?? ''),
-                  }];
-                }
-
-                // fraud_flags
-                const flagsRaw = getField(obj, 'fraud_flags');
-                const fraud_flags: string[] | undefined = Array.isArray(flagsRaw)
-                  ? (flagsRaw as unknown[]).map((x) => String(x))
-                  : undefined;
-
-                const payload: MCAParsed = { monthly_table, mca_summary, fraud_flags };
-                console.log('[MCA webhook] Storing full MCA payload for', dateKey, payload);
-                setPerDocMcaData((prev: Record<string, MCAParsed>) => ({ ...prev, [dateKey]: payload }));
-                console.log('[MCA webhook] Stored payload mca_summary length:', Array.isArray(mca_summary) ? mca_summary.length : 0);
-              } else {
-                console.log('[MCA webhook] Parsed payload root is not an object');
-              }
-            }
-          } catch (e) {
-            console.warn('Unable to parse MCA webhook response:', e);
-          }
-        }
       } catch (err: unknown) {
-        const name = (typeof err === 'object' && err && 'name' in err) ? (err as { name?: string }).name : undefined;
-        if (name === 'AbortError') {
-          console.info('[MCA webhook] Request aborted/timeout (AbortError). Continuing without blocking.', err);
+        if (err instanceof DOMException && err.name === 'AbortError') {
+          console.warn('[newDeal webhook] Request aborted due to timeout (45s). Continuing upload flow.', {
+            fileName: file.name,
+            dateKey,
+          });
         } else {
-          console.warn('MCA webhook failed; continuing upload flow:', err);
+          console.warn('newDeal webhook failed; continuing upload flow:', err);
         }
       }
 
@@ -871,6 +850,28 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
     const d = new Date(iso);
     if (Number.isNaN(d.getTime())) return '';
     return d.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
+  };
+
+  // Deep-search helpers to locate keys anywhere in a nested structure
+  const normalizeKey = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
+  const deepFindAllByKey = (root: unknown, targetKey: string): unknown[] => {
+    const normTarget = normalizeKey(targetKey);
+    const out: unknown[] = [];
+    const stack: unknown[] = [root];
+    while (stack.length) {
+      const cur = stack.pop();
+      if (!cur) continue;
+      if (Array.isArray(cur)) {
+        for (const el of cur) stack.push(el);
+      } else if (typeof cur === 'object') {
+        const obj = cur as Record<string, unknown>;
+        for (const k of Object.keys(obj)) {
+          if (normalizeKey(k) === normTarget) out.push(obj[k]);
+          stack.push(obj[k]);
+        }
+      }
+    }
+    return out;
   };
 
   type UICardItem = {
@@ -1528,7 +1529,14 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                                             flagsLen: Array.isArray(data.fraud_flags) ? data.fraud_flags.length : 0,
                                           });
                                         }
-                                        if (!data) return null;
+                                        if (!data) {
+                                          console.log('[MCA render] No perDocMcaData for dateKey', item.dateKey, 'existing keys:', Object.keys(perDocMcaData || {}));
+                                          return (
+                                            <div className="mt-6 text-sm text-gray-500">
+                                              No MCA data parsed yet for this document.
+                                            </div>
+                                          );
+                                        }
                                         return (
                                           <div className="mt-8 space-y-8">
                                             {/* Monthly Table */}
