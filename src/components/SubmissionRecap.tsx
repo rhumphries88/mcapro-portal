@@ -303,7 +303,7 @@ Application ID: {{applicationId}}`;
     }
     
     try {
-      // Create lender submissions in database dfsafsafsafsadfsafsa
+      // Create lender submissions in database
       if (application) {
         await createLenderSubmissions(application.id, selectedLenderIds);
       }
