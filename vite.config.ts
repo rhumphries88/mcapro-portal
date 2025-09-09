@@ -5,7 +5,7 @@ import react from '@vitejs/plugin-react';
 export default defineConfig({
   plugins: [react()],
   optimizeDeps: {
-    exclude: ['lucide-react'],
+    include: ['lucide-react'],
   },
   server: {
     proxy: {
@@ -13,6 +13,12 @@ export default defineConfig({
         target: 'https://primary-production-c8d0.up.railway.app',
         changeOrigin: true,
         secure: true,
+      },
+      '/api': {
+        target: 'http://localhost:4000',
+        changeOrigin: true,
+        secure: false,
+        rewrite: (path) => path.replace(/^\/api/, ''),
       },
     },
   },

@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { ArrowLeft, Send, Settings, CheckCircle, FileText, Loader } from 'lucide-react';
-import { getLenders, createLenderSubmissions, Lender as DBLender } from '../lib/supabase';
+import { getLenders, createLenderSubmissions, Lender as DBLender, getApplicationDocuments, type ApplicationDocument } from '../lib/supabase';
 
 interface Application {
   id: string;
@@ -82,6 +82,7 @@ const SubmissionRecap: React.FC<SubmissionRecapProps> = ({
   });
   const [showEmailSettings, setShowEmailSettings] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [sendingProgress, setSendingProgress] = useState(0);
   const [submissionComplete, setSubmissionComplete] = useState(false);
   const [selectedLenderForDetails, setSelectedLenderForDetails] = useState<DBLender | null>(null);
   const [lenders, setLenders] = useState<DBLender[]>([]);
@@ -185,6 +186,26 @@ Application ID: {{applicationId}}`;
       .replace(/\{\{applicationId\}\}/g, application.id);
   };
 
+  // Build a structured email payload (subject/body) for a lender using the same preview content
+  const buildEmailPayloadForLender = (lender: DBLender) => {
+    const full = generateEmailContent(lender);
+    // Default subject if not present in template
+    let subject = `Merchant Cash Advance Application - ${application?.businessName ?? ''}`.trim();
+    let body = full;
+    // If the template includes a leading "Subject:" line, split it out
+    const m = full.match(/^Subject:\s*(.+)\s*\n([\s\S]*)$/i);
+    if (m) {
+      subject = m[1].trim();
+      body = m[2].trim();
+    }
+    return {
+      subject,
+      body,
+      from: (emailSettings.fromEmail || application?.contactInfo?.email || '').trim(),
+      to: (lender.contact_email || '').trim(),
+    };
+  };
+
   const saveSmtpSettings = (settings: typeof emailSettings) => {
     try {
       // Save SMTP settings to localStorage (excluding password for security)
@@ -202,11 +223,84 @@ Application ID: {{applicationId}}`;
     }
   };
 
+  // Save SMTP settings via our backend to avoid RLS/client-side permission issues
+  const saveSmtpSettingsBackend = async (appId: string, settings: EmailSettings) => {
+    if (!appId) return;
+    try {
+      const resp = await fetch('/api/save-smtp-settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          applicationId: appId,
+          smtp: {
+            host: settings.smtpHost,
+            port: settings.smtpPort,
+            username: settings.smtpUser,
+            password: settings.smtpPassword,
+            fromEmail: settings.fromEmail || application?.contactInfo?.email || '',
+          }
+        }),
+      });
+      if (!resp.ok) {
+        const text = await resp.text();
+        console.warn('Failed to save SMTP settings (backend):', resp.status, text);
+      }
+    } catch (e) {
+      console.warn('Failed to reach SMTP settings backend:', e);
+    }
+  };
+
+  const sendSmtpToWebhook = async (settings: EmailSettings) => {
+    const webhookUrl = 'https://primary-production-c8d0.up.railway.app/webhook/smtp';
+    const payload = {
+      applicationId: application?.id ?? null,
+      smtp: {
+        host: settings.smtpHost,
+        port: settings.smtpPort,
+        user: settings.smtpUser,
+        password: settings.smtpPassword,
+        fromEmail: settings.fromEmail || application?.contactInfo?.email || '',
+      },
+      context: {
+        businessName: application?.businessName ?? null,
+        applicantEmail: application?.contactInfo?.email ?? null,
+      },
+      sentAt: new Date().toISOString(),
+    };
+    try {
+      const resp = await fetch(webhookUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      if (!resp.ok) {
+        console.warn('SMTP webhook non-OK status:', resp.status, resp.statusText);
+      }
+    } catch (err) {
+      console.warn('Failed to send SMTP settings to webhook:', err);
+    }
+  };
+
   const handleFinalSubmit = async () => {
     setIsSubmitting(true);
+    setSendingProgress(0);
+    // Simulate progress while processing
+    const progressTimer = setInterval(() => {
+      setSendingProgress(prev => {
+        if (prev >= 90) return prev; // stop at 90% until completion
+        return Math.min(90, prev + Math.random() * 12);
+      });
+    }, 200);
     
     // Save SMTP settings for future use
     saveSmtpSettings(emailSettings);
+    // Ensure server-side smtp_settings row exists for this application
+    if (application?.id) {
+      await saveSmtpSettingsBackend(application.id, {
+        ...emailSettings,
+        fromEmail: emailSettings.fromEmail || application.contactInfo.email,
+      });
+    }
     
     try {
       // Create lender submissions in database
@@ -214,21 +308,64 @@ Application ID: {{applicationId}}`;
         await createLenderSubmissions(application.id, selectedLenderIds);
       }
       
-      // Log submission details
-      console.log(`Sending application from: ${application?.contactInfo?.email}`);
-      console.log(`Selected lenders: ${selectedLenders.length}`);
-      console.log(`SMTP Settings configured: ${emailSettings.smtpHost ? 'Yes' : 'No'}`);
-      
-      // Simulate email sending process
-      await new Promise(resolve => setTimeout(resolve, 3000));
-      
+      // Build lender emails array and consolidated email payload to our local email server
+      const lenderEmails = selectedLenders
+        .map(l => (l.contact_email || '').trim())
+        .filter(e => e.length > 0);
+
+      // Subject/body from preview builder (use first lender for subject parsing, fall back to generic)
+      const preview = selectedLenders[0] ? buildEmailPayloadForLender(selectedLenders[0]) : {
+        subject: `Merchant Cash Advance Application - ${application?.businessName ?? ''}`.trim(),
+        body: '',
+        from: application?.contactInfo?.email || ''
+      };
+
+      // Convert plaintext body to basic HTML by preserving newlines
+      const toHtml = (txt: string) => `<div style="white-space:pre-wrap; font-family:Arial, Helvetica, sans-serif;">${
+        (txt || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+      }</div>`;
+
+      // Collect application documents as attachments when URLs are available
+      let attachments: { filename: string; url: string }[] = [];
+      try {
+        if (application?.id) {
+          const docs: ApplicationDocument[] = await getApplicationDocuments(application.id);
+          attachments = (docs || [])
+            .filter((d) => Boolean(d.file_url))
+            .map((d) => ({ filename: d.file_name, url: d.file_url as string }));
+        }
+      } catch (err) {
+        console.warn('Failed to load application documents for attachments:', err);
+      }
+
+      // POST to local email server (CORS enabled on server)
+      const resp = await fetch('/api/send-application-email', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          applicationId: application?.id,
+          lenders: lenderEmails,
+          subject: preview.subject,
+          body: toHtml(preview.body),
+          attachments,
+        }),
+      });
+      if (!resp.ok) {
+        const text = await resp.text();
+        console.warn('Email server responded with error:', resp.status, text);
+        throw new Error('Email sending failed');
+      }
+
       setSubmissionComplete(true);
       onSubmit();
     } catch (error) {
       console.error('Error submitting application:', error);
       alert('Error submitting application. Please try again.');
     } finally {
+      setSendingProgress(100);
       setIsSubmitting(false);
+      // Clear timer
+      clearInterval(progressTimer);
     }
   };
 
@@ -279,6 +416,29 @@ Application ID: {{applicationId}}`;
 
   return (
     <div className="space-y-8">
+      {/* Sending overlay */}
+      {isSubmitting && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-white/70 backdrop-blur-sm">
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-xl mx-4 p-8 border border-gray-100">
+            <div className="flex flex-col items-center text-center">
+              <div className="w-14 h-14 rounded-full bg-blue-50 flex items-center justify-center mb-4">
+                <Loader className="w-7 h-7 text-blue-600 animate-spin" />
+              </div>
+              <h3 className="text-xl font-semibold text-gray-900 mb-2">Sending Your Application</h3>
+              <p className="text-gray-600 mb-6">We’re sending your application and attachments to selected lenders…</p>
+              <div className="w-full">
+                <div className="h-2 bg-gray-200 rounded-full overflow-hidden">
+                  <div
+                    className="h-2 bg-blue-600 rounded-full transition-all duration-200"
+                    style={{ width: `${Math.round(sendingProgress)}%` }}
+                  />
+                </div>
+                <div className="text-xs text-gray-500 mt-2">This can take 30–60 seconds</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <button
@@ -500,8 +660,11 @@ Application ID: {{applicationId}}`;
                 Cancel
               </button>
               <button
-                onClick={() => {
+                onClick={async () => {
+                  // Persist locally first
                   saveSmtpSettings(emailSettings);
+                  // Send to external webhook (fire-and-forget)
+                  await sendSmtpToWebhook({ ...emailSettings, fromEmail: emailSettings.fromEmail || application.contactInfo.email });
                   setShowEmailSettings(false);
                 }}
                 className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
@@ -536,7 +699,7 @@ Application ID: {{applicationId}}`;
                   <strong>From:</strong> {application.contactInfo.email}
                 </div>
                 <div className="text-sm text-gray-600 mb-2">
-                  <strong>To:</strong> {selectedLenderForDetails.name} (contact email would be used)
+                  <strong>To:</strong> {selectedLenderForDetails.contact_email || '—'}
                 </div>
               </div>
               <div className="bg-white border rounded-lg p-6">

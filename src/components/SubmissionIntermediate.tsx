@@ -355,16 +355,15 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
     return out;
   };
 
-  // Simple fetch wrapper with timeout to avoid indefinite hangs on slow webhooks
-  const fetchWithTimeout = async (input: RequestInfo | URL, init: RequestInit & { timeoutMs?: number } = {}) => {
-    const { timeoutMs = 60000, ...rest } = init;
-    const controller = new AbortController();
-    const id = setTimeout(() => controller.abort(), timeoutMs);
-    try {
-      return await fetch(input, { ...rest, signal: controller.signal });
-    } finally {
-      clearTimeout(id);
+  // Simple fetch wrapper without automatic timeout or AbortController
+  // Keeps the same signature so callers passing `timeoutMs` won't break; it is ignored.
+  type WithTimeout = RequestInit & { timeoutMs?: number };
+  const fetchWithTimeout = async (input: RequestInfo | URL, init: WithTimeout = {}) => {
+    const restInit: RequestInit = { ...init };
+    if ('timeoutMs' in restInit) {
+      delete (restInit as WithTimeout).timeoutMs;
     }
+    return fetch(input, restInit);
   };
 
   // (base64 conversion helper removed; no longer needed since we send only file_url)
