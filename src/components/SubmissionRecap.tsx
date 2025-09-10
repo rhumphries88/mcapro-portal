@@ -227,7 +227,7 @@ Application ID: {{applicationId}}`;
   const saveSmtpSettingsBackend = async (appId: string, settings: EmailSettings) => {
     if (!appId) return;
     try {
-      const resp = await fetch('/api/save-smtp-settings', {
+      const resp = await fetch('/.netlify/functions/save-smtp-settings', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -339,7 +339,7 @@ Application ID: {{applicationId}}`;
       }
 
       // POST to local email server (CORS enabled on server)
-      const resp = await fetch('/api/send-application-email', {
+      const resp = await fetch('/.netlify/functions/send-application-email', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

@@ -1,0 +1,12 @@
+[functions]
+  directory = "netlify/functions"
+  node_bundler = "esbuild"
+
+# Optional: increase timeout and memory if needed for SMTP and file downloads
+#[[functions.included_files]]
+#  path = "netlify/functions/**"
+
+# Uncomment to set a longer timeout for specific functions
+#[[functions]]
+#  name = "send-application-email"
+#  timeout = 26
