@@ -306,6 +306,23 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
   const [submitting, setSubmitting] = useState(false);
   const [isDragOver, setIsDragOver] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<Map<string, number>>(new Map());
+  // Animated progress for general loading/submitting screen
+  const [loadingProgress, setLoadingProgress] = useState(0);
+  useEffect(() => {
+    if (!(loading || submitting)) {
+      setLoadingProgress(0);
+      return;
+    }
+    // Start indeterminate-like progress up to ~90%
+    setLoadingProgress(10);
+    const id = setInterval(() => {
+      setLoadingProgress(prev => {
+        if (prev >= 90) return prev;
+        return Math.min(prev + Math.random() * 10 + 5, 90);
+      });
+    }, 300);
+    return () => clearInterval(id);
+  }, [loading, submitting]);
   
   // Daily statements tracking (changed from monthly to daily)
   const [dailyStatements, setDailyStatements] = useState<Map<string, { file: File; status: 'uploading' | 'completed' | 'error'; fileUrl?: string }>>(new Map());
@@ -988,8 +1005,16 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
           (details.applicationId as string) ||
           ((initial?.applicationId as string) || (details.id as string) || (initial?.id as string) || ''),
       } as const;
+      const isValidUUID = (v: unknown) =>
+        typeof v === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(v);
+      if (!baseIds.applicationId || !isValidUUID(baseIds.applicationId)) {
+        console.warn('[updatingApplications] Skipping webhook: missing or invalid applicationId', {
+          id: baseIds.id,
+          applicationId: baseIds.applicationId,
+        });
+      }
 
-      let payload: Record<string, unknown>;
+      let payload: Record<string, unknown> = {};
       if (item) {
         const docVals = perDocDetails[item.dateKey] || {};
         // normalize numeric fields: remove commas and percent
@@ -1015,7 +1040,7 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
           const isEmpty = val === '' || val === undefined || val === null;
           if (!isEmpty) merged[key] = val as unknown;
         }
-        // Sanitize numeric fields and coerce to numbers when possible
+        // Sanitize numeric fields for webhook (keep as cleaned strings)
         const sanitized: Record<string, unknown> = { ...merged };
         for (const k of Object.keys(merged)) {
           if (numericNames.has(k)) {
@@ -1023,42 +1048,100 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
             if (raw === '') continue; // don't override with empty
             const withoutCommas = raw.replace(/,/g, '');
             const cleanedStr = k === 'holdback' ? withoutCommas.replace(/%/g, '') : withoutCommas;
-            const asNum = cleanedStr === '' ? undefined : Number(cleanedStr);
-            sanitized[k] = Number.isFinite(asNum as number) ? (asNum as number) : cleanedStr;
+            sanitized[k] = cleanedStr;
+          }
+        }
+        // Build a flat application-shaped payload (previously working schema)
+        payload = {
+          id: baseIds.id,
+          applicationId: baseIds.applicationId,
+          dealName: sanitized.dealName ?? '',
+          entityType: sanitized.entityType ?? '',
+          industry: sanitized.industry ?? '',
+          state: sanitized.state ?? '',
+          creditScore: sanitized.creditScore ?? '',
+          timeInBiz: sanitized.timeInBiz ?? '',
+          grossAnnualRevenue: sanitized.grossAnnualRevenue ?? '',
+          avgMonthlyRevenue: sanitized.avgMonthlyRevenue ?? '',
+          averageMonthlyDeposits: sanitized.averageMonthlyDeposits ?? '',
+          existingDebt: sanitized.existingDebt ?? '',
+          requestedAmount: sanitized.requestedAmount ?? '',
+          avgDailyBalance: sanitized.avgDailyBalance ?? '',
+          avgMonthlyDepositCount: sanitized.avgMonthlyDepositCount ?? '',
+          nsfCount: sanitized.nsfCount ?? '',
+          negativeDays: sanitized.negativeDays ?? '',
+          currentPositionCount: sanitized.currentPositionCount ?? '',
+          holdback: sanitized.holdback ?? '',
+          hasBankruptcies: Boolean(sanitized.hasBankruptcies ?? details.hasBankruptcies ?? false),
+          hasOpenJudgments: Boolean(sanitized.hasOpenJudgments ?? details.hasOpenJudgments ?? false),
+        };
+      } else {
+        // No specific document clicked: send flat application-shaped payload from current details
+        const flatNumericNames = new Set([
+          'creditScore','timeInBiz','avgMonthlyRevenue','averageMonthlyDeposits','existingDebt','requestedAmount','avgDailyBalance','avgMonthlyDepositCount','nsfCount','negativeDays','currentPositionCount','holdback','grossAnnualRevenue'
+        ]);
+        const sanitized: Record<string, unknown> = { ...details };
+        for (const k of Object.keys(details)) {
+          if (flatNumericNames.has(k)) {
+            const raw = String((details as Record<string, unknown>)[k] ?? '');
+            if (!raw) continue;
+            const withoutCommas = raw.replace(/,/g, '');
+            const cleanedStr = k === 'holdback' ? withoutCommas.replace(/%/g, '') : withoutCommas;
+            sanitized[k] = cleanedStr;
           }
         }
         payload = {
-          ...baseIds,
-          ...sanitized,
-          selectedDocument: {
-            key: item.key,
-            dateKey: item.dateKey,
-            dateDisplay: item.dateDisplay,
-            source: item.source,
-            docId: item.docId ?? null,
-            fileName: item.file?.name ?? null,
-            fileSize: item.file?.size ?? null,
-            fileUrl: item.fileUrl ?? null,
-            status: item.status,
-          },
-        };
-      } else {
-        payload = {
-          ...baseIds,
-          ...details,
+          id: baseIds.id,
+          applicationId: baseIds.applicationId,
+          dealName: sanitized.dealName ?? '',
+          entityType: sanitized.entityType ?? '',
+          industry: sanitized.industry ?? '',
+          state: sanitized.state ?? '',
+          creditScore: sanitized.creditScore ?? '',
+          timeInBiz: sanitized.timeInBiz ?? '',
+          grossAnnualRevenue: sanitized.grossAnnualRevenue ?? '',
+          avgMonthlyRevenue: sanitized.avgMonthlyRevenue ?? '',
+          averageMonthlyDeposits: sanitized.averageMonthlyDeposits ?? '',
+          existingDebt: sanitized.existingDebt ?? '',
+          requestedAmount: sanitized.requestedAmount ?? '',
+          avgDailyBalance: sanitized.avgDailyBalance ?? '',
+          avgMonthlyDepositCount: sanitized.avgMonthlyDepositCount ?? '',
+          nsfCount: sanitized.nsfCount ?? '',
+          negativeDays: sanitized.negativeDays ?? '',
+          currentPositionCount: sanitized.currentPositionCount ?? '',
+          holdback: sanitized.holdback ?? '',
+          hasBankruptcies: Boolean(sanitized.hasBankruptcies ?? details.hasBankruptcies ?? false),
+          hasOpenJudgments: Boolean(sanitized.hasOpenJudgments ?? details.hasOpenJudgments ?? false),
         };
       }
-      await fetchWithTimeout(UPDATING_APPLICATIONS_WEBHOOK_URL, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(payload),
-        timeoutMs: 8000,
-      });
+      // Only attempt the webhook if we have a valid applicationId
+      if (baseIds.applicationId && isValidUUID(baseIds.applicationId)) {
+        try { console.log('[updatingApplications] payload preview (flat)', payload); } catch {}
+        const resp = await fetchWithTimeout(UPDATING_APPLICATIONS_WEBHOOK_URL, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(payload),
+          timeoutMs: 8000,
+        });
+        if (!resp.ok) {
+          // Attempt to read response body for better diagnostics
+          let errorText = '';
+          try {
+            errorText = await resp.text();
+          } catch {
+            // ignore
+          }
+          console.error('[updatingApplications] Non-OK response (flat payload)', {
+            status: resp.status,
+            statusText: resp.statusText,
+            body: (errorText || '').slice(0, 2048),
+          });
+        }
+      }
     } catch (e) {
-      console.error('Failed to notify updatingApplications webhook:', e);
-      // proceed regardless to not block user flow
+      console.error('[updatingApplications] Error sending webhook:', e);
     } finally {
       // Trigger parent flow so parent can flip loading immediately
       if (item) {
@@ -1266,13 +1349,32 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
         <div className="p-8">
           
           {loading || submitting ? (
-          <div className="flex flex-col items-center justify-center py-12 text-center">
-            <svg className="animate-spin h-8 w-8 text-blue-600 mb-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" aria-hidden="true">
-              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"></path>
-            </svg>
-            <p className="text-gray-700 font-medium">Analyzing your application and preparing lender matches…</p>
-            <p className="text-gray-500 text-sm mt-1">This usually takes just a few seconds.</p>
+          <div className="flex flex-col items-center justify-center py-16 text-center">
+            <div className="w-16 h-16 rounded-xl bg-gradient-to-b from-blue-50 to-blue-100/70 border border-blue-100 flex items-center justify-center shadow-sm mb-5">
+              <svg className="w-7 h-7 text-blue-600 animate-spin" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <g stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                  <line x1="12" y1="3.5" x2="12" y2="6.5" opacity="1" />
+                  <line x1="12" y1="17.5" x2="12" y2="20.5" opacity="0.25" />
+                  <line x1="3.5" y1="12" x2="6.5" y2="12" opacity="0.6" />
+                  <line x1="17.5" y1="12" x2="20.5" y2="12" opacity="0.25" />
+                  <line x1="6.1" y1="6.1" x2="8.2" y2="8.2" opacity="0.85" />
+                  <line x1="15.8" y1="15.8" x2="17.9" y2="17.9" opacity="0.2" />
+                  <line x1="6.1" y1="17.9" x2="8.2" y2="15.8" opacity="0.45" />
+                  <line x1="15.8" y1="8.2" x2="17.9" y2="6.1" opacity="0.25" />
+                </g>
+              </svg>
+            </div>
+            <h3 className="text-xl font-bold text-gray-900">Finding Your Lender Matches</h3>
+            <p className="text-gray-600 mt-1">We’re reviewing your application and matching it with lenders best suited to your needs.</p>
+            <div className="w-full max-w-md mt-6">
+              <div className="w-full bg-gray-200 rounded-full h-2 overflow-hidden">
+                <div
+                  className="bg-blue-600 h-2 rounded-full transition-all duration-500 ease-out"
+                  style={{ width: `${loadingProgress}%` }}
+                ></div>
+              </div>
+            </div>
+            <p className="text-gray-500 text-xs mt-3">This usually takes 30–60 seconds</p>
           </div>
           ) : (
             <>
