@@ -10,3 +10,10 @@
 #[[functions]]
 #  name = "send-application-email"
 #  timeout = 26
+
+[build]
+  functions = "netlify/functions"
+  publish = "public"  # can be empty if no frontend
+
+[dev]
+  functions = "netlify/functions"
