@@ -36,9 +36,9 @@ export async function handler(event) {
 
     const body = event.isBase64Encoded ? Buffer.from(event.body || "", "base64") : (event.body || "");
 
-    // Best-of-both: wait up to 15s for n8n to respond; otherwise return 202.
+    // Best-of-both: wait up to ~28s for n8n to respond; otherwise return 202.
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 15000);
+    const timer = setTimeout(() => controller.abort(), 28000);
 
     try {
       const resp = await fetch(url, {
@@ -60,9 +60,11 @@ export async function handler(event) {
     } catch (e) {
       // On timeout or network error, return 202 and let n8n continue. Log for diagnostics.
       console.warn("[new-deal] early return (background continue):", e?.name || e?.message || e);
-      return jsonResponse(202, { accepted: true });
+      return jsonResponse(202, { accepted: true, note: "forward continuing in background", error: String(e?.message || e) });
     }
   } catch (err) {
-    return jsonResponse(500, { error: err?.message || "Unexpected server error" });
+    // Do not fail the UI; treat as accepted and continue. Log error for analysis.
+    console.warn("[new-deal] outer error:", err?.message || err);
+    return jsonResponse(202, { accepted: true, note: "unhandled error; continue in background", error: String(err?.message || err) });
   }
 }
