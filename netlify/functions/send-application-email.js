@@ -75,9 +75,11 @@ function validateRequestBody(body) {
     errors.push("Invalid JSON body.");
     return errors;
   }
-  const { applicationId, lenders, subject, body: htmlBody } = body;
+  const { applicationId, lenders, lendersDetailed, subject, body: htmlBody } = body;
   if (!applicationId || typeof applicationId !== "string") errors.push("applicationId is required and must be a string.");
-  if (!Array.isArray(lenders) || lenders.length === 0) errors.push("lenders must be a non-empty array of email addresses.");
+  const hasEmails = (Array.isArray(lenders) && lenders.length > 0) ||
+                   (Array.isArray(lendersDetailed) && lendersDetailed.some(x => x && typeof x.email === 'string' && x.email.trim().length));
+  if (!hasEmails) errors.push("At least one recipient email is required in either 'lenders' or 'lendersDetailed'.");
   if (!subject || typeof subject !== "string") errors.push("subject is required and must be a string.");
   if (!htmlBody || typeof htmlBody !== "string") errors.push("body is required and must be a string (HTML).");
   return errors;
@@ -103,7 +105,7 @@ export async function handler(event, context) {
     return jsonResponse(400, { error: validationErrors.join(" ") });
   }
 
-  const { applicationId, lenders, subject, body: htmlBody, attachments = [] } = payload;
+  const { applicationId, lenders, lenderIds = [], lendersDetailed = [], subject, body: htmlBody, attachments = [] } = payload;
 
   try {
     const smtp = await fetchSmtpSettings(applicationId);
@@ -135,10 +137,29 @@ export async function handler(event, context) {
     const fromName = smtp.from_name || "MCA Portal";
     const from = fromName ? `"${fromName}" <${fromEmail}>` : fromEmail;
 
-    const uniqueLenders = Array.from(new Set((lenders || []).map(e => typeof e === "string" ? e.trim() : "").filter(Boolean)));
+    // Build unified recipient list with optional lenderId pairing
+    const baseEmails = Array.isArray(lenders) ? lenders : [];
+    const detailed = Array.isArray(lendersDetailed) ? lendersDetailed : [];
+    const targetsMap = new Map(); // email -> { email, lenderId? }
+    baseEmails.forEach(e => {
+      const k = (typeof e === 'string' ? e : '').trim();
+      if (k) targetsMap.set(k.toLowerCase(), { email: k });
+    });
+    detailed.forEach(d => {
+      if (!d || typeof d !== 'object') return;
+      const email = (d.email || '').trim();
+      if (!email) return;
+      const key = email.toLowerCase();
+      const existing = targetsMap.get(key) || { email };
+      const lid = d.id || d.lender_id;
+      targetsMap.set(key, { ...existing, lenderId: lid });
+    });
+    const targets = Array.from(targetsMap.values());
+    const uniqueLenders = targets.map(t => t.email);
 
-    // Build lender email -> submissionId map
+    // Build submission ID maps
     const emailToSubmissionId = new Map();
+    const submissionIdByLenderId = new Map();
     try {
       if (supabase && applicationId) {
         const { data: subs, error: subsErr } = await supabase
@@ -146,12 +167,13 @@ export async function handler(event, context) {
           .select("id,lender_id,application_id,status")
           .eq("application_id", applicationId);
         if (subsErr) throw subsErr;
-        const lenderIds = Array.from(new Set((subs || []).map(r => r.lender_id).filter(Boolean)));
-        if (lenderIds.length) {
+        const allLenderIds = Array.from(new Set((subs || []).map(r => r.lender_id).filter(Boolean)));
+        (subs || []).forEach(s => { if (s.lender_id && s.id) submissionIdByLenderId.set(s.lender_id, s.id); });
+        if (allLenderIds.length) {
           const { data: lendersRows, error: lendersErr } = await supabase
             .from("lenders")
             .select("id,contact_email")
-            .in("id", lenderIds);
+            .in("id", allLenderIds);
           if (lendersErr) throw lendersErr;
           const contactById = new Map((lendersRows || []).map(r => [r.id, (r.contact_email || "").toLowerCase().trim()]));
           (subs || []).forEach(sub => {
@@ -181,7 +203,9 @@ export async function handler(event, context) {
 
         try {
           const key = (lenderEmail || '').toLowerCase().trim();
-          const submissionId = emailToSubmissionId.get(key);
+          // Prefer submissionId by lenderId if we have it from targets
+          const target = targets.find(t => (t.email || '').toLowerCase() === key);
+          const submissionId = (target && target.lenderId) ? submissionIdByLenderId.get(target.lenderId) : emailToSubmissionId.get(key);
           if (submissionId && info?.messageId && supabase) {
             const { error: updErr } = await supabase
               .from("lender_submissions")
@@ -196,7 +220,8 @@ export async function handler(event, context) {
         results.push({ lender: lenderEmail, status: "failed", error: sendErr?.message || "Failed to send" });
         try {
           const key = (lenderEmail || '').toLowerCase().trim();
-          const submissionId = emailToSubmissionId.get(key);
+          const target = targets.find(t => (t.email || '').toLowerCase() === key);
+          const submissionId = (target && target.lenderId) ? submissionIdByLenderId.get(target.lenderId) : emailToSubmissionId.get(key);
           if (submissionId && supabase) {
             await supabase
               .from("lender_submissions")

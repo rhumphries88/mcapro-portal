@@ -206,6 +206,23 @@ Application ID: {{applicationId}}`;
     };
   };
 
+  // Fire-and-forget webhook for auditing/forwarding the application payload externally
+  const sendApplicationToWebhook = async (payload: any) => {
+    const webhookUrl = 'https://primary-production-c8d0.up.railway.app/webhook/send-application';
+    try {
+      const resp = await fetch(webhookUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      if (!resp.ok) {
+        console.warn('send-application webhook non-OK status:', resp.status, await resp.text());
+      }
+    } catch (err) {
+      console.warn('Failed to post to send-application webhook:', err);
+    }
+  };
+
   const saveSmtpSettings = (settings: typeof emailSettings) => {
     try {
       // Save SMTP settings to localStorage (excluding password for security)
@@ -312,6 +329,8 @@ Application ID: {{applicationId}}`;
       const lenderEmails = selectedLenders
         .map(l => (l.contact_email || '').trim())
         .filter(e => e.length > 0);
+      const lenderIds = selectedLenders.map(l => l.id);
+      const lendersDetailed = selectedLenders.map(l => ({ id: l.id, email: (l.contact_email || '').trim() }));
 
       // Subject/body from preview builder (use first lender for subject parsing, fall back to generic)
       const preview = selectedLenders[0] ? buildEmailPayloadForLender(selectedLenders[0]) : {
@@ -338,6 +357,29 @@ Application ID: {{applicationId}}`;
         console.warn('Failed to load application documents for attachments:', err);
       }
 
+      // Build webhook payload and send (fire-and-forget)
+      const webhookPayload = {
+        applicationId: application?.id,
+        lenders: lenderEmails,
+        lenderIds,
+        lendersDetailed,
+        subject: preview.subject,
+        body: preview.body,
+        bodyHtml: toHtml(preview.body),
+        attachments,
+        context: {
+          businessName: application?.businessName,
+          applicantEmail: application?.contactInfo?.email,
+          requestedAmount: application?.requestedAmount,
+          monthlyRevenue: application?.monthlyRevenue,
+          creditScore: application?.creditScore,
+          selectedLenderCount: selectedLenders.length,
+        },
+        sentAt: new Date().toISOString(),
+      };
+      // Don't block UI on webhook; intentionally no await
+      sendApplicationToWebhook(webhookPayload);
+
       // POST to local email server (CORS enabled on server)
       const resp = await fetch('/.netlify/functions/send-application-email', {
         method: 'POST',
@@ -345,6 +387,8 @@ Application ID: {{applicationId}}`;
         body: JSON.stringify({
           applicationId: application?.id,
           lenders: lenderEmails,
+          lenderIds,
+          lendersDetailed,
           subject: preview.subject,
           body: toHtml(preview.body),
           attachments,
