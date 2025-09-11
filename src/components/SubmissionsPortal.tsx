@@ -306,13 +306,14 @@ const SubmissionsPortal: React.FC<SubmissionsPortalProps> = ({ initialStep, init
     (async () => {
       try {
         if (extra?.pdfFile && !intermediatePrefill) {
-          console.log('[newDeal] starting POST to /webhook/newDeal with file:', {
+          console.log('[newDeal] starting POST to /.netlify/functions/new-deal with file:', {
             name: extra.pdfFile.name,
             size: extra.pdfFile.size,
             type: extra.pdfFile.type,
           });
-          // Use Vite proxy in development to avoid CORS; backend path remains the same
-          const url = '/webhook/newDeal';
+          // Call Netlify Function for new-deal
+          const url = '/.netlify/functions/new-deal';
+
           const form = new FormData();
           form.append('file', extra.pdfFile, extra.pdfFile.name);
           const resp = await fetch(url, { method: 'POST', body: form });
@@ -574,11 +575,12 @@ const SubmissionsPortal: React.FC<SubmissionsPortalProps> = ({ initialStep, init
           updated_at: new Date().toISOString(),
         } as unknown as DBApplication;
 
-        const resp = await fetch('/webhook/applications/lenders', {
+        const resp = await fetch('/.netlify/functions/applications-lenders', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payloadForLenders),
         });
+
         // Attempt to parse and extract cleaned matches safely
         try {
           if (!resp.ok) {

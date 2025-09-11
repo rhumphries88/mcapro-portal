@@ -3,9 +3,9 @@ import { Building2, Upload, FileText, CheckCircle, RefreshCw, Trash2, RotateCcw 
 import { getApplicationDocuments, deleteApplicationDocument, deleteApplicationDocumentByAppAndDate, type ApplicationDocument } from '../lib/supabase';
 
 
-const NEW_DEAL_WEBHOOK_URL = '/webhook/newDeal';
-const UPDATING_APPLICATIONS_WEBHOOK_URL = '/webhook/updatingApplications';
-const DOCUMENT_FILE_WEBHOOK_URL = 'https://primary-production-c8d0.up.railway.app/webhook/documentFile';
+const NEW_DEAL_WEBHOOK_URL = '/.netlify/functions/new-deal';
+const UPDATING_APPLICATIONS_WEBHOOK_URL = '/.netlify/functions/updating-applications';
+const DOCUMENT_FILE_WEBHOOK_URL = '/.netlify/functions/document-file';
 
 
 type Props = {
