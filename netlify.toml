@@ -12,8 +12,10 @@
 #  timeout = 26
 
 [build]
-  functions = "netlify/functions"
-  publish = "public"  # can be empty if no frontend
+  command = "npm run build"
+  publish = "dist"
 
 [dev]
+  command = "npm run dev"
+  targetPort = 5173
   functions = "netlify/functions"
