@@ -9,7 +9,7 @@
 # Uncomment to set a longer timeout for specific functions
 #[[functions]]
 #  name = "send-application-email"
-#  timeout = 26
+#  timeout = 100
 
 [build]
   command = "npm run build"

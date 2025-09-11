@@ -55,7 +55,12 @@ export async function handler(event) {
       const text = await resp.text();
       let payload;
       try { payload = text ? JSON.parse(text) : null; } catch { payload = text; }
-      // Pass-through response when we got it in time.
+      // If n8n returned a non-OK status, do not surface 4xx/5xx to the browser.
+      if (!resp.ok) {
+        console.warn("[new-deal] n8n non-OK status, returning 202 instead:", resp.status, resp.statusText, typeof text === 'string' ? text.slice(0,200) : '');
+        return jsonResponse(202, { accepted: true, note: `n8n responded ${resp.status}`, data: payload });
+      }
+      // Pass-through OK responses when we got them in time.
       return jsonResponse(resp.status, payload == null ? {} : payload);
     } catch (e) {
       // On timeout or network error, return 202 and let n8n continue. Log for diagnostics.

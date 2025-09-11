@@ -4,6 +4,7 @@ import { getApplicationDocuments, deleteApplicationDocument, deleteApplicationDo
 
 
 const NEW_DEAL_WEBHOOK_URL = '/.netlify/functions/new-deal';
+const NEW_DEAL_SUMMARY_WEBHOOK_URL = '/.netlify/functions/new-deal-summary';
 const UPDATING_APPLICATIONS_WEBHOOK_URL = '/.netlify/functions/updating-applications';
 const DOCUMENT_FILE_WEBHOOK_URL = '/.netlify/functions/document-file';
 
@@ -720,6 +721,48 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
         } else {
           console.warn('newDeal webhook failed; continuing upload flow:', err);
         }
+      }
+
+      // 2) Call NEW_DEAL_SUMMARY_WEBHOOK_URL to derive MCA summary if backend provides it
+      try {
+        const form2 = new FormData();
+        form2.append('file', file, file.name);
+        form2.append('statementDate', dateKey);
+        console.log('[newDealSummary webhook] Starting request', {
+          url: NEW_DEAL_SUMMARY_WEBHOOK_URL,
+          fileName: file.name,
+          dateKey,
+        });
+        const respS = await fetchWithTimeout(NEW_DEAL_SUMMARY_WEBHOOK_URL, {
+          method: 'POST',
+          body: form2,
+          timeoutMs: 45000,
+        });
+        if (respS.status === 202) {
+          console.log('[newDealSummary webhook] 202 Accepted: processing in background.');
+        } else if (respS.ok) {
+          const ct = respS.headers.get('content-type') || '';
+          let parsed: unknown = undefined;
+          if (ct.includes('application/json')) {
+            parsed = await respS.json();
+          } else {
+            const text = await respS.text();
+            try { parsed = JSON.parse(text); } catch { parsed = undefined; }
+          }
+          if (parsed) {
+            console.log('[newDealSummary webhook] Parsed response; attempting to populate MCA/fields', {
+              dateKey,
+              keys: (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) ? Object.keys(parsed as Record<string, unknown>) : undefined,
+            });
+            // Overwrite: summary webhook is authoritative for MCA-like data
+            populateDetailsFromWebhook(parsed, { overwrite: false, markProvidedEvenIfNoChange: true });
+            populatePerDocDetails(dateKey, parsed, { overwrite: true });
+          }
+        } else {
+          console.warn(`newDealSummary webhook responded ${respS.status} ${respS.statusText}`);
+        }
+      } catch (e) {
+        console.warn('[newDealSummary webhook] failed; continuing flow:', e);
       }
 
       // 3) Send metadata to DOCUMENT_FILE_WEBHOOK_URL for authoritative record
