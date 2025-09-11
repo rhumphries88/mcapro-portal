@@ -611,7 +611,10 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
           timeoutMs: 45000, // increase to 45s to reduce AbortError frequency on slow network/backend
         });
 
-        if (resp.ok) {
+        if (resp.status === 202) {
+          console.log('[newDeal webhook] 202 Accepted: processing in background. Skipping response parsing.');
+          // Leave fields as-is; downstream steps can proceed. UI remains non-error.
+        } else if (resp.ok) {
           const contentType = resp.headers.get('content-type') || '';
           console.log('[newDeal webhook] Response received', { status: resp.status, contentType });
           try {
