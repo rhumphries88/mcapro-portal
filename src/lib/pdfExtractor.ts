@@ -5,10 +5,7 @@ import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker;
 
 // Webhook URL for sending extracted data (Netlify Function)
-// Use Netlify Dev origin in development; relative path in production
-const WEBHOOK_URL = import.meta.env.DEV
-  ? 'http://localhost:8888/.netlify/functions/extractor'
-  : '/.netlify/functions/extractor';
+const WEBHOOK_URL = '/.netlify/functions/extractor';
 
 // Minimal type for PDF.js text content items we need
 type PdfJsTextItem = { str: string };

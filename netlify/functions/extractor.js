@@ -8,7 +8,7 @@ const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY || process.env.SUP
 
 const supabase = SUPABASE_URL && SUPABASE_SERVICE_KEY ? createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY) : null;
 
-function jsonResponse(statusCode, payload) {
+function jsonResponse(statusCode, payload, extraHeaders = {}) {
   return {
     statusCode,
     headers: {
@@ -16,6 +16,7 @@ function jsonResponse(statusCode, payload) {
       "Access-Control-Allow-Origin": "*",
       "Access-Control-Allow-Methods": "POST, OPTIONS",
       "Access-Control-Allow-Headers": "Content-Type, Authorization",
+      ...extraHeaders,
     },
     body: JSON.stringify(payload),
   };
@@ -40,28 +41,28 @@ export async function handler(event) {
   if (event.httpMethod !== "POST") return jsonResponse(405, { error: "Method Not Allowed" });
 
   try {
-    const ct = (event.headers["content-type"] || event.headers["Content-Type"] || "").toLowerCase();
-    let payload = null;
+    // Server-to-server forward to n8n (preserve body and headers)
+    const base = "https://primary-production-c8d0.up.railway.app";
 
-    if (ct.includes("application/json")) {
-      payload = JSON.parse(event.body || "{}");
-    } else if (ct.includes("multipart/form-data")) {
-      // Best-effort: extract the JSON metadata; we ignore file content here.
-      payload = parseMultipartExtractedData(event) || {};
-    } else {
-      // Default to JSON parse
-      payload = JSON.parse(event.body || "{}");
-    }
+    const path = "/webhook/extractor";
+    const url = base.replace(/\/$/, "") + path;
+    const contentType = event.headers["content-type"] || event.headers["Content-Type"];
+    const auth = process.env.N8N_AUTH;
 
-    // Optionally store or log payload to Supabase for auditing (no-op if supabase not configured)
-    if (supabase && payload) {
-      // Example: insert into a generic logs table if exists; otherwise skip silently
-      try {
-        await supabase.from("webhook_logs").insert({ kind: "extractor", payload, created_at: new Date().toISOString() });
-      } catch {}
-    }
+    const body = event.isBase64Encoded ? Buffer.from(event.body || "", "base64") : (event.body || "");
+    const resp = await fetch(url, {
+      method: "POST",
+      headers: {
+        ...(contentType ? { "Content-Type": contentType } : {}),
+        ...(auth ? { Authorization: auth } : {}),
+      },
+      body,
+    });
 
-    return jsonResponse(200, { success: true, received: !!payload });
+    const text = await resp.text();
+    let payload;
+    try { payload = text ? JSON.parse(text) : null; } catch { payload = text; }
+    return jsonResponse(resp.status, payload == null ? {} : payload);
   } catch (err) {
     return jsonResponse(500, { error: err?.message || "Unexpected server error" });
   }

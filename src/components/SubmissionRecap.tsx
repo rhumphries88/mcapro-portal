@@ -208,7 +208,7 @@ Application ID: {{applicationId}}`;
 
   // Fire-and-forget webhook for auditing/forwarding the application payload externally
   const sendApplicationToWebhook = async (payload: any) => {
-    const webhookUrl = 'https://primary-production-c8d0.up.railway.app/webhook/send-application';
+    const webhookUrl = '/.netlify/functions/send-application';
     try {
       const resp = await fetch(webhookUrl, {
         method: 'POST',
@@ -268,7 +268,7 @@ Application ID: {{applicationId}}`;
   };
 
   const sendSmtpToWebhook = async (settings: EmailSettings) => {
-    const webhookUrl = 'https://primary-production-c8d0.up.railway.app/webhook/smtp';
+    const webhookUrl = '/.netlify/functions/smtp';
     const payload = {
       applicationId: application?.id ?? null,
       smtp: {
