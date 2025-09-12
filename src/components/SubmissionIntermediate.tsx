@@ -543,19 +543,13 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
 
   // removed unused helpers for monthly logic (detectMonthFromFilename no longer needed)
 
-  // Find the next available month key (YYYY-MM-01) ensuring only one file per month
-  const getNextAvailableMonthDateKey = () => {
-    const existingKeys = Array.from(dailyStatements.keys());
-    const monthTaken = (y: number, mZeroBased: number) => {
-      const prefix = `${y}-${String(mZeroBased + 1).padStart(2, '0')}`;
-      return existingKeys.some(k => k.startsWith(prefix));
-    };
+  // Generate a date key based on today's date (YYYY-MM-DD) without pre-filling future months
+  const getCurrentDateKey = () => {
     const d = new Date();
-    d.setDate(1);
-    while (monthTaken(d.getFullYear(), d.getMonth())) {
-      d.setMonth(d.getMonth() + 1);
-    }
-    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`;
+    const yyyy = d.getFullYear();
+    const mm = String(d.getMonth() + 1).padStart(2, '0');
+    const dd = String(d.getDate()).padStart(2, '0');
+    return `${yyyy}-${mm}-${dd}`;
   };
 
   // Handle upload (auto-assigns to the next available month)
@@ -572,9 +566,9 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
       return;
     }
 
-    // Assign to the next available month (one file per month rule)
-    const targetMonthKey = getNextAvailableMonthDateKey();
-    await performUpload(file, targetMonthKey);
+    // Assign to today's date (no auto-generated monthly placeholders)
+    const targetDateKey = getCurrentDateKey();
+    await performUpload(file, targetDateKey);
   };
 
   // Actual upload logic separated for reuse
@@ -861,7 +855,7 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
     if (file) {
       // If we have a replacement target, keep its dateKey and replace in-place
       const appId = (details.id as string) || (initial?.id as string) || (details.applicationId as string) || (initial?.applicationId as string) || '';
-      const dateKey = replaceTarget?.dateKey || getNextAvailableMonthDateKey();
+      const dateKey = replaceTarget?.dateKey || getCurrentDateKey();
       await performUpload(file, dateKey);
       // If replacing a DB document, remove the old row then refresh DB list
       if (replaceTarget?.source === 'db' && replaceTarget.docId) {
@@ -1435,7 +1429,7 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                       </div>
                       Bank Statement Documents
                     </h3>
-                    <p className="text-gray-600 text-sm">Upload and manage your monthly bank statements for processing</p>
+                    <p className="text-gray-600 text-sm">Upload and manage your bank statements for processing</p>
                   </div>
 
                   {/* Uploaded Files List */}
@@ -1482,8 +1476,8 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                                 </div>
                                 <div className="min-w-0 flex-1">
                                   <div className="flex items-center gap-3 mb-3">
-                                    <h5 className="text-lg font-bold text-gray-900">
-                                      {item.dateDisplay}
+                                    <h5 className="text-lg font-bold text-gray-900" title={item.file.name}>
+                                      {item.file.name}
                                     </h5>
                                     <div className={`inline-flex items-center px-4 py-2 rounded-full text-xs font-bold shadow-sm border ${
                                       isCompleted 
@@ -1501,10 +1495,6 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                                     </div>
                                   </div>
                                   <div className="flex items-center gap-2 text-sm text-gray-600">
-                                    <span className="font-medium truncate" title={item.file.name}>
-                                      {item.file.name}
-                                    </span>
-                                    <span className="text-gray-400">•</span>
                                     <span className="px-2 py-1 bg-gray-100 rounded-md text-xs font-semibold text-gray-700">
                                       {(item.file.size / 1024 / 1024).toFixed(1)} MB
                                     </span>
@@ -1523,7 +1513,6 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                                   )}
                                 </div>
                               </div>
-
                               {/* Icon Actions */}
                               <div className="flex items-center gap-2 ml-4">
                                 {/* Replace Icon (both db and local) */}
@@ -1694,7 +1683,7 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                                                     <Building2 className="w-6 h-6 text-white" />
                                                   </div>
                                                   <div>
-                                                    <h4 className="text-xl font-bold text-gray-900">Monthly Analysis</h4>
+                                                    <h4 className="text-xl font-bold text-gray-900">Statement Analysis</h4>
                                                     <p className="text-sm text-gray-600">Financial performance overview</p>
                                                   </div>
                                                 </div>
@@ -1821,34 +1810,7 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                     </div>
                   )}
 
-                  {/* Next month reminder */}
-                  {(() => {
-                    const completed = getUnifiedDocumentCards().filter((s: ReturnType<typeof getUnifiedDocumentCards>[number]) => s.status === 'completed');
-                    if (completed.length === 0) return null;
-                    const latest = completed[0]; // unified list is already sorted desc by date
-                    const [year, month, day] = latest.dateKey.split('-').map(Number);
-                    if (!year || !month || !day) return null;
-                    const currentDate = new Date(year, month - 1, day);
-                    const nextMonth = new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 1);
-                    const nextMonthDisplay = nextMonth.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
-                    return (
-                      <div className="mb-6 p-4 bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-200 rounded-2xl shadow-sm">
-                        <div className="flex items-center gap-3">
-                          <div className="p-2 bg-blue-100 rounded-xl">
-                            <Upload className="w-5 h-5 text-blue-600" />
-                          </div>
-                          <div>
-                            <p className="text-sm font-bold text-blue-900 mb-1">
-                              Next: Upload statement for {nextMonthDisplay}
-                            </p>
-                            <p className="text-xs text-blue-700">
-                              Continue your document sequence
-                            </p>
-                          </div>
-                        </div>
-                      </div>
-                    );
-                  })()}
+                  {/* Next month reminder removed per request */}
 
                   {/* Upload Dropzone (enhanced) */}
                   <div 
@@ -1869,7 +1831,7 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                         Upload Bank Statements
                       </h3>
                       <p className="text-sm text-gray-600 mb-8 max-w-md mx-auto leading-relaxed">
-                        We'll automatically organize them by month. Drag & drop files here or click to browse.
+                        Drag & drop PDF files here or click to browse.
                       </p>
                       <label className="cursor-pointer inline-flex items-center gap-3 px-8 py-4 rounded-2xl bg-gradient-to-r from-blue-600 to-indigo-600 text-white font-bold hover:from-blue-700 hover:to-indigo-700 focus:outline-none focus:ring-4 focus:ring-blue-500/40 transition-all duration-200 shadow-lg hover:shadow-xl hover:scale-105">
                         <Upload className="w-5 h-5" />

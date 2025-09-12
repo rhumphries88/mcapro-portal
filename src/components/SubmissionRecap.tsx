@@ -87,6 +87,9 @@ const SubmissionRecap: React.FC<SubmissionRecapProps> = ({
   const [selectedLenderForDetails, setSelectedLenderForDetails] = useState<DBLender | null>(null);
   const [lenders, setLenders] = useState<(DBLender & { match_score?: number; matchScore?: number })[]>([]);
   const [iframeHeight, setIframeHeight] = useState<number>(800);
+  // Application documents (from Supabase)
+  const [appDocs, setAppDocs] = useState<ApplicationDocument[]>([]);
+  const [appDocsLoading, setAppDocsLoading] = useState<boolean>(false);
 
   // Load lenders from Supabase
   React.useEffect(() => {
@@ -134,7 +137,30 @@ const SubmissionRecap: React.FC<SubmissionRecapProps> = ({
     loadLenders();
   }, []);
 
+  // Load application documents from Supabase for this application
+  React.useEffect(() => {
+    const loadDocs = async () => {
+      if (!application?.id) {
+        setAppDocs([]);
+        return;
+      }
+      try {
+        setAppDocsLoading(true);
+        const docs = await getApplicationDocuments(application.id);
+        setAppDocs(docs || []);
+      } catch (e) {
+        console.warn('Failed to load application_documents for recap:', e);
+        setAppDocs([]);
+      } finally {
+        setAppDocsLoading(false);
+      }
+    };
+    loadDocs();
+  }, [application?.id]);
+
   const selectedLenders = lenders.filter(lender => selectedLenderIds.includes(lender.id));
+  // Application form files stored on the application row (text[])
+  const inlineDocs: string[] = Array.isArray(application?.documents) ? (application!.documents as string[]) : [];
 
   const generateEmailContent = (lender: DBLender) => {
     if (!application) return '';
@@ -815,27 +841,54 @@ const SubmissionRecap: React.FC<SubmissionRecapProps> = ({
         </div>
       </div>
 
-      {/* Documents Section */}
+      {/* Documents Section (dynamic from application_documents) */}
       <div className="bg-white rounded-2xl shadow-lg ring-1 ring-gray-100 p-6 mb-12">
-        <h4 className="text-lg font-bold text-gray-900 mb-4">Documents to be Included</h4>
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-          <div className="flex items-center gap-3 p-3 bg-blue-50 rounded-xl border border-blue-200">
-            <FileText className="w-5 h-5 text-blue-600" />
-            <span className="text-sm font-medium text-blue-900">Application Form</span>
-          </div>
-          <div className="flex items-center gap-3 p-3 bg-green-50 rounded-xl border border-green-200">
-            <FileText className="w-5 h-5 text-green-600" />
-            <span className="text-sm font-medium text-green-900">Bank Statements (6 months)</span>
-          </div>
-          <div className="flex items-center gap-3 p-3 bg-purple-50 rounded-xl border border-purple-200">
-            <FileText className="w-5 h-5 text-purple-600" />
-            <span className="text-sm font-medium text-purple-900">Tax Returns</span>
-          </div>
-          <div className="flex items-center gap-3 p-3 bg-orange-50 rounded-xl border border-orange-200">
-            <FileText className="w-5 h-5 text-orange-600" />
-            <span className="text-sm font-medium text-orange-900">Voided Check</span>
+        <div className="flex items-center justify-between mb-4">
+          <h4 className="text-lg font-bold text-gray-900">Documents to be Included</h4>
+          <div className="text-xs text-gray-500">
+            {appDocsLoading ? 'Loading…' : `${((appDocs?.length || 0) + (inlineDocs?.length || 0))} file${(((appDocs?.length || 0) + (inlineDocs?.length || 0)) === 1) ? '' : 's'}`}
           </div>
         </div>
+        {appDocsLoading ? (
+          <div className="flex items-center gap-2 text-gray-600 text-sm">
+            <Loader className="w-4 h-4 animate-spin" /> Fetching documents…
+          </div>
+        ) : ((appDocs?.length || 0) + (inlineDocs?.length || 0)) === 0 ? (
+          <div className="text-sm text-gray-500">No documents uploaded yet.</div>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {inlineDocs.map((fileName, idx) => (
+              <div key={`inline-${idx}`} className="flex items-center justify-between p-3 rounded-xl border bg-gradient-to-br from-gray-50 to-white hover:shadow-md transition-shadow border-gray-200">
+                <div className="flex items-center gap-3 min-w-0">
+                  <div className="w-9 h-9 rounded-lg bg-emerald-50 border border-emerald-200 flex items-center justify-center">
+                    <FileText className="w-4 h-4 text-emerald-700" />
+                  </div>
+                  <div className="min-w-0">
+                    <div className="text-sm font-semibold text-gray-900 truncate" title={fileName}>{fileName}</div>
+                    <div className="text-xs text-gray-500">Application Form</div>
+                  </div>
+                </div>
+              </div>
+            ))}
+            {appDocs
+              .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+              .map((doc) => (
+                <div key={doc.id} className="flex items-center justify-between p-3 rounded-xl border bg-gradient-to-br from-gray-50 to-white hover:shadow-md transition-shadow border-gray-200">
+                  <div className="flex items-center gap-3 min-w-0">
+                    <div className="w-9 h-9 rounded-lg bg-blue-50 border border-blue-200 flex items-center justify-center">
+                      <FileText className="w-4 h-4 text-blue-600" />
+                    </div>
+                    <div className="min-w-0">
+                      <div className="text-sm font-semibold text-gray-900 truncate" title={doc.file_name}>{doc.file_name}</div>
+                      <div className="text-xs text-gray-500">
+                        {` ${doc.file_size && doc.file_size > 0 ? '' : ''}Bank Statement`}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              ))}
+          </div>
+        )}
       </div>
 
       {/* Action Buttons */}
