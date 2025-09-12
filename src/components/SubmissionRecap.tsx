@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { ArrowLeft, Send, Settings, CheckCircle, FileText, Loader } from 'lucide-react';
-import { getLenders, createLenderSubmissions, Lender as DBLender, getApplicationDocuments, type ApplicationDocument } from '../lib/supabase';
+import { getLenders, createLenderSubmissions, Lender as DBLender, getApplicationDocuments, type ApplicationDocument, qualifyLenders, type Application as DBApplication } from '../lib/supabase';
 
 interface Application {
   id: string;
@@ -85,14 +85,48 @@ const SubmissionRecap: React.FC<SubmissionRecapProps> = ({
   const [sendingProgress, setSendingProgress] = useState(0);
   const [submissionComplete, setSubmissionComplete] = useState(false);
   const [selectedLenderForDetails, setSelectedLenderForDetails] = useState<DBLender | null>(null);
-  const [lenders, setLenders] = useState<DBLender[]>([]);
+  const [lenders, setLenders] = useState<(DBLender & { match_score?: number; matchScore?: number })[]>([]);
+  const [iframeHeight, setIframeHeight] = useState<number>(800);
 
   // Load lenders from Supabase
   React.useEffect(() => {
     const loadLenders = async () => {
       try {
         const dbLenders = await getLenders();
-        setLenders(dbLenders);
+        // If we have an application, compute match scores like in LenderMatches
+        if (application) {
+          const allowedStatus: DBApplication['status'][] = ['draft', 'submitted', 'under-review', 'approved', 'funded', 'declined'];
+          const status: DBApplication['status'] = allowedStatus.includes((application.status as DBApplication['status']))
+            ? (application.status as DBApplication['status'])
+            : 'draft';
+          const dbApplication: DBApplication = {
+            id: application.id,
+            business_name: application.businessName,
+            owner_name: application.contactInfo.ownerName,
+            email: application.contactInfo.email,
+            phone: application.contactInfo.phone,
+            address: application.contactInfo.address,
+            ein: application.businessInfo.ein,
+            business_type: application.businessInfo.businessType,
+            industry: application.industry,
+            years_in_business: application.timeInBusiness,
+            number_of_employees: application.businessInfo.numberOfEmployees,
+            annual_revenue: application.financialInfo.annualRevenue,
+            monthly_revenue: application.monthlyRevenue,
+            monthly_deposits: application.financialInfo.averageMonthlyDeposits,
+            existing_debt: application.financialInfo.existingDebt,
+            credit_score: application.creditScore,
+            requested_amount: application.requestedAmount,
+            status,
+            documents: application.documents,
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          };
+          const qualified = qualifyLenders(dbLenders, dbApplication);
+          setLenders(qualified);
+        } else {
+          setLenders(dbLenders);
+        }
       } catch (error) {
         console.error('Error loading lenders:', error);
       }
@@ -109,55 +143,183 @@ const SubmissionRecap: React.FC<SubmissionRecapProps> = ({
     const savedTemplate = localStorage.getItem('mcaPortalEmailTemplate');
     const defaultTemplate = `Subject: Merchant Cash Advance Application - {{businessName}}
 
-Dear {{lenderName}} Team,
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Merchant Cash Advance Application</title>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; line-height: 1.6; color: #333; margin: 0; padding: 0; background-color: #f8f9fa; }
+        .container { max-width: 700px; margin: 0 auto; background: white; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 20px rgba(0,0,0,0.1); }
+        .header { background: linear-gradient(135deg, #10b981 0%, #059669 100%); color: white; padding: 30px; text-align: center; }
+        .header h1 { margin: 0; font-size: 28px; font-weight: 700; }
+        .header p { margin: 10px 0 0; font-size: 16px; opacity: 0.9; }
+        .content { padding: 40px; }
+        .section { margin-bottom: 35px; }
+        .section h2 { color: #10b981; font-size: 20px; margin-bottom: 20px; padding-bottom: 8px; border-bottom: 2px solid #e5e7eb; }
+        .info-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 20px; margin-bottom: 25px; }
+        .info-card { background: #f8fafc; padding: 20px; border-radius: 8px; border-left: 4px solid #10b981; }
+        .info-card h3 { margin: 0 0 10px; color: #374151; font-size: 14px; text-transform: uppercase; letter-spacing: 0.5px; }
+        .info-card p { margin: 0; font-size: 16px; font-weight: 600; color: #111827; }
+        .highlight-box { background: linear-gradient(135deg, #ecfdf5 0%, #d1fae5 100%); padding: 25px; border-radius: 10px; border: 1px solid #10b981; margin: 25px 0; }
+        .highlight-box h3 { color: #065f46; margin: 0 0 15px; font-size: 18px; }
+        .criteria-list { list-style: none; padding: 0; margin: 15px 0; }
+        .criteria-list li { padding: 8px 0; border-bottom: 1px solid #e5e7eb; display: flex; justify-content: space-between; }
+        .criteria-list li:last-child { border-bottom: none; }
+        .criteria-list .label { font-weight: 600; color: #374151; }
+        .criteria-list .value { color: #10b981; font-weight: 700; }
+        .documents { background: #fef3c7; padding: 20px; border-radius: 8px; border-left: 4px solid #f59e0b; }
+        .documents h3 { color: #92400e; margin: 0 0 15px; }
+        .doc-list { list-style: none; padding: 0; margin: 0; }
+        .doc-list li { padding: 5px 0; color: #78350f; }
+        .doc-list li:before { content: "📄"; margin-right: 8px; }
+        .footer { background: #f9fafb; padding: 30px; text-align: center; border-top: 1px solid #e5e7eb; }
+        .footer p { margin: 5px 0; color: #6b7280; }
+        .contact-info { background: #eff6ff; padding: 20px; border-radius: 8px; margin: 20px 0; }
+        .contact-info h3 { color: #1e40af; margin: 0 0 15px; }
+        .contact-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; }
+        .contact-item { display: flex; align-items: center; }
+        .contact-item .icon { margin-right: 10px; font-size: 16px; }
+        .app-id { font-family: 'Courier New', monospace; background: #f3f4f6; padding: 8px 12px; border-radius: 6px; font-size: 14px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>Merchant Cash Advance Application</h1>
+            <p>Professional Business Funding Request</p>
+        </div>
+        
+        <div class="content">
+            <p style="font-size: 16px; margin-bottom: 30px;">Dear <strong>{{lenderName}} Team</strong>,</p>
+            
+            <p style="margin-bottom: 30px;">I hope this email finds you well. I am writing to submit a merchant cash advance application for your review and consideration. Below you'll find comprehensive details about our business and funding requirements.</p>
+            
+            <div class="section">
+                <h2>📊 Business Overview</h2>
+                <div class="info-grid">
+                    <div class="info-card">
+                        <h3>Business Name</h3>
+                        <p>{{businessName}}</p>
+                    </div>
+                    <div class="info-card">
+                        <h3>Industry</h3>
+                        <p>{{industry}}</p>
+                    </div>
+                    <div class="info-card">
+                        <h3>Business Owner</h3>
+                        <p>{{ownerName}}</p>
+                    </div>
+                    <div class="info-card">
+                        <h3>Years in Business</h3>
+                        <p>{{yearsInBusiness}} years</p>
+                    </div>
+                    <div class="info-card">
+                        <h3>Business Type</h3>
+                        <p>{{businessType}}</p>
+                    </div>
+                    <div class="info-card">
+                        <h3>EIN</h3>
+                        <p>{{ein}}</p>
+                    </div>
+                </div>
+            </div>
 
-I hope this email finds you well. I am writing to submit a merchant cash advance application for your review and consideration.
+            <div class="section">
+                <h2>💰 Financial Information</h2>
+                <div class="info-grid">
+                    <div class="info-card">
+                        <h3>Requested Amount</h3>
+                        <p style="color: #10b981; font-size: 20px;">$\{{requestedAmount}}</p>
+                    </div>
+                    <div class="info-card">
+                        <h3>Monthly Revenue</h3>
+                        <p>$\{{monthlyRevenue}}</p>
+                    </div>
+                    <div class="info-card">
+                        <h3>Annual Revenue</h3>
+                        <p>$\{{annualRevenue}}</p>
+                    </div>
+                    <div class="info-card">
+                        <h3>Credit Score</h3>
+                        <p>\{{creditScore}}</p>
+                    </div>
+                    <div class="info-card">
+                        <h3>Existing Debt</h3>
+                        <p>$\{{existingDebt}}</p>
+                    </div>
+                </div>
+            </div>
 
-BUSINESS INFORMATION:
-• Business Name: {{businessName}}
-• Owner: {{ownerName}}
-• Industry: {{industry}}
-• Years in Business: {{yearsInBusiness}}
-• Business Type: {{businessType}}
-• EIN: {{ein}}
+            <div class="contact-info">
+                <h3>📞 Contact Information</h3>
+                <div class="contact-grid">
+                    <div class="contact-item">
+                        <span class="icon">📧</span>
+                        <span>{{email}}</span>
+                    </div>
+                    <div class="contact-item">
+                        <span class="icon">📱</span>
+                        <span>{{phone}}</span>
+                    </div>
+                    <div class="contact-item">
+                        <span class="icon">📍</span>
+                        <span>{{address}}</span>
+                    </div>
+                </div>
+            </div>
 
-FINANCIAL DETAILS:
-• Requested Amount: \${{requestedAmount}}
-• Monthly Revenue: \${{monthlyRevenue}}
-• Annual Revenue: \${{annualRevenue}}
-• Credit Score: {{creditScore}}
-• Existing Debt: \${{existingDebt}}
+            <div class="documents">
+                <h3>📋 Attached Documents</h3>
+                <ul class="doc-list">
+                    <li>Business bank statements (last 6 months)</li>
+                    <li>Tax returns</li>
+                    <li>Completed application form</li>
+                    <li>Voided business check</li>
+                </ul>
+            </div>
 
-CONTACT INFORMATION:
-• Email: {{email}}
-• Phone: {{phone}}
-• Address: {{address}}
+            <div class="highlight-box">
+                <h3>🎯 Lending Criteria Alignment</h3>
+                <p style="margin-bottom: 20px;">Based on your underwriting guidelines, I believe this application aligns well with your lending criteria:</p>
+                <ul class="criteria-list">
+                    <li>
+                        <span class="label">Amount Range:</span>
+                        <span class="value">$\{{lenderMinAmount}} - $\{{lenderMaxAmount}}</span>
+                    </li>
+                    <li>
+                        <span class="label">Factor Rate:</span>
+                        <span class="value">{{lenderFactorRate}}</span>
+                    </li>
+                    <li>
+                        <span class="label">Payback Term:</span>
+                        <span class="value">{{lenderPaybackTerm}}</span>
+                    </li>
+                    <li>
+                        <span class="label">Approval Time:</span>
+                        <span class="value">{{lenderApprovalTime}}</span>
+                    </li>
+                </ul>
+            </div>
 
-I have attached the following documents for your review:
-• Business bank statements (last 6 months)
-• Tax returns
-• Completed application form
-• Voided business check
-
-Based on your underwriting guidelines, I believe this application aligns well with your lending criteria:
-• Amount Range: \${{lenderMinAmount}} - \${{lenderMaxAmount}}
-• Factor Rate: {{lenderFactorRate}}
-• Payback Term: {{lenderPaybackTerm}}
-• Approval Time: {{lenderApprovalTime}}
-
-I would appreciate the opportunity to discuss this application further and answer any questions you may have. Please let me know if you need any additional information or documentation.
-
-Thank you for your time and consideration. I look forward to hearing from you soon.
-
-Best regards,
-{{ownerName}}
-{{businessName}}
-{{email}}
-{{phone}}
-
----
-This application was submitted through MCAPortal Pro
-Application ID: {{applicationId}}`;
+            <p style="margin: 30px 0;">I would appreciate the opportunity to discuss this application further and answer any questions you may have. Please let me know if you need any additional information or documentation.</p>
+            
+            <p style="margin-bottom: 30px;">Thank you for your time and consideration. I look forward to hearing from you soon.</p>
+            
+            <p style="margin-bottom: 10px;"><strong>Best regards,</strong></p>
+            <p style="margin: 0;"><strong>{{ownerName}}</strong><br>
+            {{businessName}}<br>
+            {{email}} | {{phone}}</p>
+        </div>
+        
+        <div class="footer">
+            <p><strong>This application was submitted through MCAPortal Pro</strong></p>
+            <p>Application ID: <span class="app-id">{{applicationId}}</span></p>
+        </div>
+    </div>
+</body>
+</html>`;
 
     const template = savedTemplate || defaultTemplate;
 
@@ -339,10 +501,11 @@ Application ID: {{applicationId}}`;
         from: application?.contactInfo?.email || ''
       };
 
-      // Convert plaintext body to basic HTML by preserving newlines
-      const toHtml = (txt: string) => `<div style="white-space:pre-wrap; font-family:Arial, Helvetica, sans-serif;">${
-        (txt || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
-      }</div>`;
+      // Extract HTML body from email content (skip subject line)
+      const extractHtmlBody = (emailContent: string) => {
+        const parts = emailContent.split('\n\n');
+        return parts.length > 1 ? parts.slice(1).join('\n\n') : emailContent;
+      };
 
       // Collect application documents as attachments when URLs are available
       let attachments: { filename: string; url: string }[] = [];
@@ -357,6 +520,9 @@ Application ID: {{applicationId}}`;
         console.warn('Failed to load application documents for attachments:', err);
       }
 
+      // Get HTML content for each lender
+      const htmlContent = selectedLenders[0] ? extractHtmlBody(generateEmailContent(selectedLenders[0])) : '';
+
       // Build webhook payload and send (fire-and-forget)
       const webhookPayload = {
         applicationId: application?.id,
@@ -365,7 +531,7 @@ Application ID: {{applicationId}}`;
         lendersDetailed,
         subject: preview.subject,
         body: preview.body,
-        bodyHtml: toHtml(preview.body),
+        bodyHtml: htmlContent,
         attachments,
         context: {
           businessName: application?.businessName,
@@ -390,7 +556,7 @@ Application ID: {{applicationId}}`;
           lenderIds,
           lendersDetailed,
           subject: preview.subject,
-          body: toHtml(preview.body),
+          body: htmlContent,
           attachments,
         }),
       });
@@ -423,200 +589,268 @@ Application ID: {{applicationId}}`;
 
   if (submissionComplete) {
     return (
-      <div className="bg-white rounded-xl shadow-lg p-8">
-        <div className="text-center">
-          <CheckCircle className="w-16 h-16 text-green-600 mx-auto mb-6" />
-          <h2 className="text-2xl font-bold text-gray-900 mb-4">Application Submitted Successfully!</h2>
-          <p className="text-gray-600 mb-6">
-            Your application and business bank statements have been sent to {selectedLenders.length} selected lender{selectedLenders.length > 1 ? 's' : ''}. 
-            You should receive responses within 24-48 hours at {application.contactInfo.email}.
-          </p>
-          
-          <div className="bg-green-50 rounded-lg p-6 mb-6">
-            <h3 className="text-lg font-medium text-green-800 mb-3">Submitted to:</h3>
-            <div className="space-y-2">
-              {selectedLenders.map(lender => (
-                <div key={lender.id} className="flex items-center justify-between bg-white p-3 rounded border">
-                  <div className="flex items-center">
-                    <img src="https://images.pexels.com/photos/259027/pexels-photo-259027.jpeg?auto=compress&cs=tinysrgb&w=100&h=100" alt={lender.name} className="w-12 h-12 rounded-lg mr-4" />
-                    <span className="font-medium text-green-900">{lender.name}</span>
-                  </div>
-                  <span className="text-sm text-green-600">✓ Sent</span>
+      <div className="relative min-h-screen bg-gradient-to-b from-emerald-50/30 via-white to-white">
+        {/* Decorative background shapes */}
+        <div className="pointer-events-none absolute inset-0 overflow-hidden" aria-hidden="true">
+          <div className="absolute -top-24 -right-24 w-96 h-96 rounded-full bg-emerald-100/40 blur-3xl"></div>
+          <div className="absolute -bottom-24 -left-24 w-96 h-96 rounded-full bg-blue-100/30 blur-3xl"></div>
+        </div>
+        <div className="relative max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+          <div className="bg-white rounded-xl shadow-lg p-8">
+            <div className="text-center">
+              <CheckCircle className="w-16 h-16 text-green-600 mx-auto mb-6" />
+              <h2 className="text-2xl font-bold text-gray-900 mb-4">Application Submitted Successfully!</h2>
+              <p className="text-gray-600 mb-6">
+                Your application and business bank statements have been sent to {selectedLenders.length} selected lender{selectedLenders.length > 1 ? 's' : ''}. 
+                You should receive responses within 24-48 hours at {application.contactInfo.email}.
+              </p>
+              
+              <div className="bg-green-50 rounded-lg p-6 mb-6">
+                <h3 className="text-lg font-medium text-green-800 mb-3">Submitted to:</h3>
+                <div className="space-y-2">
+                  {selectedLenders.map(lender => (
+                    <div key={lender.id} className="flex items-center justify-between bg-white p-3 rounded border">
+                      <div className="flex items-center">
+                        <img src="https://images.pexels.com/photos/259027/pexels-photo-259027.jpeg?auto=compress&cs=tinysrgb&w=100&h=100" alt={lender.name} className="w-12 h-12 rounded-lg mr-4" />
+                        <span className="font-medium text-green-900">{lender.name}</span>
+                      </div>
+                      <span className="text-sm text-green-600">✓ Sent</span>
+                    </div>
+                  ))}
                 </div>
-              ))}
+              </div>
+              
+              <button
+                onClick={() => window.location.reload()}
+                className="bg-blue-600 text-white px-6 py-3 rounded-lg hover:bg-blue-700 transition-colors"
+              >
+                Submit Another Application
+              </button>
             </div>
           </div>
-          
-          <button
-            onClick={() => window.location.reload()}
-            className="bg-blue-600 text-white px-6 py-3 rounded-lg hover:bg-blue-700 transition-colors"
-          >
-            Submit Another Application
-          </button>
         </div>
       </div>
     );
   }
 
   return (
-    <div className="space-y-8">
+    <div className="relative min-h-screen bg-gradient-to-b from-emerald-50/30 via-white to-white">
+      {/* Decorative background shapes */}
+      <div className="pointer-events-none absolute inset-0 overflow-hidden" aria-hidden="true">
+        <div className="absolute -top-24 -right-24 w-96 h-96 rounded-full bg-emerald-100/40 blur-3xl"></div>
+        <div className="absolute -bottom-24 -left-24 w-96 h-96 rounded-full bg-blue-100/30 blur-3xl"></div>
+      </div>
+      <div className="relative max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
       {/* Sending overlay */}
       {isSubmitting && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-white/70 backdrop-blur-sm">
-          <div className="bg-white rounded-2xl shadow-xl w-full max-w-xl mx-4 p-8 border border-gray-100">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/20 backdrop-blur-sm">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md mx-4 p-8 border border-gray-100">
             <div className="flex flex-col items-center text-center">
-              <div className="w-14 h-14 rounded-full bg-blue-50 flex items-center justify-center mb-4">
-                <Loader className="w-7 h-7 text-blue-600 animate-spin" />
+              <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-emerald-100 to-emerald-200 flex items-center justify-center mb-6 shadow-inner">
+                <Loader className="w-8 h-8 text-emerald-600 animate-spin" />
               </div>
-              <h3 className="text-xl font-semibold text-gray-900 mb-2">Sending Your Application</h3>
-              <p className="text-gray-600 mb-6">We’re sending your application and attachments to selected lenders…</p>
+              <h3 className="text-xl font-bold text-gray-900 mb-2">Sending Your Application</h3>
+              <p className="text-gray-600 mb-6">We're sending your application and attachments to selected lenders…</p>
               <div className="w-full">
-                <div className="h-2 bg-gray-200 rounded-full overflow-hidden">
+                <div className="h-3 bg-gray-200 rounded-full overflow-hidden shadow-inner">
                   <div
-                    className="h-2 bg-blue-600 rounded-full transition-all duration-200"
+                    className="h-3 bg-gradient-to-r from-emerald-500 to-emerald-600 rounded-full transition-all duration-300 shadow-sm"
                     style={{ width: `${Math.round(sendingProgress)}%` }}
                   />
                 </div>
-                <div className="text-xs text-gray-500 mt-2">This can take 30–60 seconds</div>
+                <div className="text-sm text-gray-500 mt-3">This can take 30–60 seconds</div>
               </div>
             </div>
           </div>
         </div>
       )}
-      {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-        <button
-          onClick={onBack}
-          className="w-full sm:w-auto flex items-center justify-center sm:justify-start text-gray-600 hover:text-gray-900 transition-colors"
-        >
-          <ArrowLeft className="w-5 h-5 mr-2" />
-          Back to Lender Selection
-        </button>
-        <div className="text-sm text-gray-500 break-all">
-          Application ID: {application.id}
+
+      {/* Header Section */}
+      <div className="text-center mb-12">
+        <div className="flex items-center justify-between mb-6">
+          <button
+            onClick={onBack}
+            className="flex items-center px-4 py-2 text-gray-600 hover:text-gray-900 hover:bg-gray-50 rounded-xl transition-all duration-200"
+          >
+            <ArrowLeft className="w-5 h-5 mr-2" />
+            Back to Lender Selection
+          </button>
+          <div className="text-sm text-gray-500 font-mono bg-gray-50 px-3 py-1 rounded-lg">
+            Application ID: {application.id}
+          </div>
+        </div>
+        
+        <div className="inline-flex items-center px-4 py-2 bg-emerald-50 border border-emerald-200 rounded-full text-emerald-700 text-sm font-medium mb-4">
+          <CheckCircle className="w-4 h-4 mr-2" />
+          Ready to Submit to {selectedLenders.length} Lender{selectedLenders.length > 1 ? 's' : ''}
+        </div>
+        <h1 className="text-4xl font-bold text-gray-900 mb-4">Submission Summary</h1>
+        <p className="text-xl text-gray-600 max-w-2xl mx-auto">
+          Review your application details before sending to selected lenders
+        </p>
+      </div>
+
+      {/* Application Summary Cards */}
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-12">
+        <div className="bg-white rounded-2xl p-6 shadow-lg ring-1 ring-gray-100 hover:shadow-xl transition-shadow">
+          <div className="flex items-center gap-3 mb-3">
+            <div className="w-10 h-10 rounded-xl bg-blue-100 flex items-center justify-center shadow-inner">
+              <FileText className="w-5 h-5 text-blue-600" />
+            </div>
+            <div className="text-sm font-medium text-gray-600">Business</div>
+          </div>
+          <div className="text-2xl font-bold text-slate-800 mb-1">{application.businessName}</div>
+          <div className="text-sm text-gray-500">{application.industry}</div>
+        </div>
+        
+        <div className="bg-white rounded-2xl p-6 shadow-lg ring-1 ring-gray-100 hover:shadow-xl transition-shadow">
+          <div className="flex items-center gap-3 mb-3">
+            <div className="w-10 h-10 rounded-xl bg-green-100 flex items-center justify-center shadow-inner">
+              <Send className="w-5 h-5 text-green-600" />
+            </div>
+            <div className="text-sm font-medium text-gray-600">Requested Amount</div>
+          </div>
+          <div className="text-2xl font-bold text-slate-800">${application.requestedAmount.toLocaleString()}</div>
+        </div>
+        
+        <div className="bg-white rounded-2xl p-6 shadow-lg ring-1 ring-gray-100 hover:shadow-xl transition-shadow">
+          <div className="flex items-center gap-3 mb-3">
+            <div className="w-10 h-10 rounded-xl bg-purple-100 flex items-center justify-center shadow-inner">
+              <ArrowLeft className="w-5 h-5 text-purple-600" />
+            </div>
+            <div className="text-sm font-medium text-gray-600">Monthly Revenue</div>
+          </div>
+          <div className="text-2xl font-bold text-slate-800">${application.monthlyRevenue.toLocaleString()}</div>
+        </div>
+        
+        <div className="bg-white rounded-2xl p-6 shadow-lg ring-1 ring-gray-100 hover:shadow-xl transition-shadow">
+          <div className="flex items-center gap-3 mb-3">
+            <div className="w-10 h-10 rounded-xl bg-orange-100 flex items-center justify-center shadow-inner">
+              <CheckCircle className="w-5 h-5 text-orange-600" />
+            </div>
+            <div className="text-sm font-medium text-gray-600">Credit Score</div>
+          </div>
+          <div className="text-2xl font-bold text-slate-800">{application.creditScore}</div>
         </div>
       </div>
 
-      {/* Submission Summary */}
-      <div className="bg-white rounded-xl shadow-lg p-6">
-        <h2 className="text-2xl font-bold text-gray-900 mb-6">Submission Summary</h2>
-        
-        {/* Application Overview */}
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
-          <div className="bg-blue-50 p-4 rounded-lg">
-            <div className="text-sm text-blue-600 font-medium">Business</div>
-            <div className="text-lg font-bold text-blue-900">{application.businessName}</div>
-            <div className="text-sm text-blue-700">{application.industry}</div>
-          </div>
-          <div className="bg-green-50 p-4 rounded-lg">
-            <div className="text-sm text-green-600 font-medium">Requested Amount</div>
-            <div className="text-lg font-bold text-green-900">${application.requestedAmount.toLocaleString()}</div>
-          </div>
-          <div className="bg-purple-50 p-4 rounded-lg">
-            <div className="text-sm text-purple-600 font-medium">Monthly Revenue</div>
-            <div className="text-lg font-bold text-purple-900">${application.monthlyRevenue.toLocaleString()}</div>
-          </div>
-          <div className="bg-orange-50 p-4 rounded-lg">
-            <div className="text-sm text-orange-600 font-medium">Credit Score</div>
-            <div className="text-lg font-bold text-orange-900">{application.creditScore}</div>
-          </div>
-        </div>
-
-        {/* Selected Lenders */}
-        <div className="mb-6">
-          <h3 className="text-lg font-semibold text-gray-900 mb-4">
-            Selected Lenders ({selectedLenders.length})
-          </h3>
-          <div className="space-y-3">
-            {selectedLenders.map(lender => (
-              <div key={lender.id} className="flex items-center justify-between bg-gray-50 p-4 rounded-lg">
+      {/* Selected Lenders */}
+      <div className="mb-12">
+        <h3 className="text-2xl font-bold text-gray-900 mb-6">
+          Selected Lenders ({selectedLenders.length})
+        </h3>
+        <div className="space-y-4">
+          {selectedLenders.map(lender => (
+            <div
+              key={lender.id}
+              className="group bg-white rounded-2xl border-2 border-gray-200 hover:border-emerald-300 hover:shadow-xl hover:shadow-emerald-100/50 transition-all duration-200 p-6"
+            >
+              <div className="flex items-center justify-between">
                 <div className="flex items-center">
-                  <img src="https://images.pexels.com/photos/259027/pexels-photo-259027.jpeg?auto=compress&cs=tinysrgb&w=100&h=100" alt={lender.name} className="w-12 h-12 rounded-lg mr-4" />
+                  <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-emerald-100 to-emerald-200 flex items-center justify-center mr-4 shadow-sm border-2 border-emerald-300">
+                    <FileText className="w-8 h-8 text-emerald-700" />
+                  </div>
                   <div>
-                    <h4 className="font-medium text-gray-900">{lender.name}</h4>
-                    <p className="text-sm text-gray-600">
-                      {lender.factor_rate} • {lender.payback_term} • {lender.approval_time}
-                    </p>
+                    <h4 className="text-xl font-bold text-gray-900 mb-1">{lender.name}</h4>
+                    <div className="flex items-center gap-4 text-sm text-gray-600">
+                      <span className="font-medium">Factor: {lender.factor_rate}</span>
+                      <span>•</span>
+                      <span className="font-medium">Term: {lender.payback_term}</span>
+                      <span>•</span>
+                      <span className="font-medium">Approval: {lender.approval_time}</span>
+                    </div>
                   </div>
                 </div>
-                <div className="flex items-center space-x-2">
-                  <span className="text-sm font-medium text-green-600">
-                    95% Match
-                  </span>
+                <div className="flex items-center gap-4">
+                  <div className="text-right">
+                    <div className="text-xl font-bold text-emerald-600">95%</div>
+                    <div className="text-sm text-gray-500">Match Score</div>
+                  </div>
                   <button
                     onClick={() => {
                       setSelectedLenderForDetails(lender);
                       setShowEmailPreview(true);
                     }}
-                    className="text-blue-600 hover:text-blue-800 text-sm flex items-center"
+                    className="px-4 py-2 text-emerald-600 hover:text-emerald-700 hover:bg-emerald-50 rounded-xl transition-all duration-200 text-sm font-medium"
                   >
                     Preview Email
                   </button>
                 </div>
               </div>
-            ))}
-          </div>
+            </div>
+          ))}
         </div>
+      </div>
 
-        {/* Email Configuration */}
-        <div className="bg-blue-50 rounded-lg p-4 mb-6">
-          <div className="flex items-center justify-between">
+      {/* Email Configuration */}
+      <div className="bg-white rounded-2xl shadow-lg ring-1 ring-gray-100 p-6 mb-12">
+        <div className="flex items-start justify-between">
+          <div className="flex items-start gap-4">
+            <div className="w-12 h-12 rounded-xl bg-blue-100 flex items-center justify-center shadow-inner">
+              <Settings className="w-6 h-6 text-blue-600" />
+            </div>
             <div>
-              <h4 className="font-medium text-blue-900">Email Configuration</h4>
-              <p className="text-sm text-blue-700">
-                Emails will be sent from: <span className="font-medium">{application.contactInfo.email}</span>
+              <h4 className="text-lg font-bold text-gray-900 mb-2">Email Configuration</h4>
+              <p className="text-gray-600 mb-1">
+                Emails will be sent from: <span className="font-semibold text-gray-900">{application.contactInfo.email}</span>
               </p>
-              <p className="text-sm text-blue-600 mt-1">
-                SMTP Status: {emailSettings.smtpHost ? 'Configured ✓' : 'Not configured - using default settings'}
-                {emailSettings.smtpHost && (
-                  <span className="block text-xs text-blue-500 mt-1">
-                    Settings saved for future submissions
-                  </span>
-                )}
-              </p>
-            </div>
-            <button
-              onClick={() => setShowEmailSettings(true)}
-              className="flex items-center text-blue-600 hover:text-blue-800 text-sm"
-            >
-              <Settings className="w-4 h-4 mr-1" />
-              Configure SMTP
-            </button>
-          </div>
-        </div>
-
-        {/* Documents Included */}
-        <div className="mb-6">
-          <h4 className="font-medium text-gray-900 mb-3">Documents to be Included:</h4>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-            <div className="flex items-center text-sm text-gray-600">
-              <FileText className="w-4 h-4 mr-2 text-blue-600" />
-              Application Form
-            </div>
-            <div className="flex items-center text-sm text-gray-600">
-              <FileText className="w-4 h-4 mr-2 text-green-600" />
-              Bank Statements (6 months)
-            </div>
-            <div className="flex items-center text-sm text-gray-600">
-              <FileText className="w-4 h-4 mr-2 text-purple-600" />
-              Tax Returns
-            </div>
-            <div className="flex items-center text-sm text-gray-600">
-              <FileText className="w-4 h-4 mr-2 text-orange-600" />
-              Voided Check
+              <div className="flex items-center gap-2">
+                <div className={`w-2 h-2 rounded-full ${emailSettings.smtpHost ? 'bg-green-500' : 'bg-yellow-500'}`}></div>
+                <span className="text-sm text-gray-600">
+                  SMTP Status: {emailSettings.smtpHost ? 'Configured' : 'Using default settings'}
+                </span>
+              </div>
+              {emailSettings.smtpHost && (
+                <p className="text-xs text-green-600 mt-1">Settings saved for future submissions</p>
+              )}
             </div>
           </div>
+          <button
+            onClick={() => setShowEmailSettings(true)}
+            className="flex items-center gap-2 px-4 py-2 text-blue-600 hover:text-blue-700 hover:bg-blue-50 rounded-xl transition-all duration-200 text-sm font-medium"
+          >
+            <Settings className="w-4 h-4" />
+            Configure SMTP
+          </button>
         </div>
+      </div>
 
-        {/* Final Submit Button */}
-        <div className="flex flex-col sm:flex-row sm:items-center justify-end gap-3 pt-6 border-t border-gray-200">
+      {/* Documents Section */}
+      <div className="bg-white rounded-2xl shadow-lg ring-1 ring-gray-100 p-6 mb-12">
+        <h4 className="text-lg font-bold text-gray-900 mb-4">Documents to be Included</h4>
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+          <div className="flex items-center gap-3 p-3 bg-blue-50 rounded-xl border border-blue-200">
+            <FileText className="w-5 h-5 text-blue-600" />
+            <span className="text-sm font-medium text-blue-900">Application Form</span>
+          </div>
+          <div className="flex items-center gap-3 p-3 bg-green-50 rounded-xl border border-green-200">
+            <FileText className="w-5 h-5 text-green-600" />
+            <span className="text-sm font-medium text-green-900">Bank Statements (6 months)</span>
+          </div>
+          <div className="flex items-center gap-3 p-3 bg-purple-50 rounded-xl border border-purple-200">
+            <FileText className="w-5 h-5 text-purple-600" />
+            <span className="text-sm font-medium text-purple-900">Tax Returns</span>
+          </div>
+          <div className="flex items-center gap-3 p-3 bg-orange-50 rounded-xl border border-orange-200">
+            <FileText className="w-5 h-5 text-orange-600" />
+            <span className="text-sm font-medium text-orange-900">Voided Check</span>
+          </div>
+        </div>
+      </div>
+
+      {/* Action Buttons */}
+      <div className="bg-white border-t border-gray-200 pt-8">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div className="text-sm text-gray-600">
+            Ready to send your application to <span className="font-semibold text-emerald-600">{selectedLenders.length}</span> qualified lender{selectedLenders.length !== 1 ? 's' : ''}
+          </div>
           <button
             onClick={handleFinalSubmit}
             disabled={isSubmitting}
-            className={`w-full sm:w-auto justify-center flex items-center px-8 py-3 rounded-lg font-medium transition-colors ${
+            className={`w-full sm:w-auto justify-center flex items-center px-8 py-4 rounded-xl font-semibold text-lg transition-all duration-200 ${
               isSubmitting
-                ? 'bg-gray-300 text-gray-500 cursor-not-allowed'
-                : 'bg-green-600 text-white hover:bg-green-700'
+                ? 'bg-gray-200 text-gray-400 cursor-not-allowed'
+                : 'bg-gradient-to-r from-emerald-600 to-emerald-700 text-white hover:from-emerald-700 hover:to-emerald-800 shadow-lg shadow-emerald-200/50 hover:shadow-xl hover:shadow-emerald-300/50'
             }`}
           >
             {isSubmitting ? (
@@ -723,7 +957,7 @@ Application ID: {{applicationId}}`;
       {/* Email Preview Modal */}
       {showEmailPreview && selectedLenderForDetails && (
         <div className="fixed inset-0 bg-gray-600 bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-xl shadow-xl max-w-4xl w-full mx-4 max-h-[90vh] overflow-y-auto">
+          <div className="bg-white rounded-xl shadow-xl max-w-5xl w-full mx-4 max-h-[90vh] overflow-y-auto">
             <div className="p-6 border-b border-gray-200">
               <div className="flex items-center justify-between">
                 <h3 className="text-lg font-medium text-gray-900">
@@ -731,7 +965,7 @@ Application ID: {{applicationId}}`;
                 </h3>
                 <button
                   onClick={() => setShowEmailPreview(false)}
-                  className="text-gray-400 hover:text-gray-600"
+                  className="text-gray-400 hover:text-gray-600 text-2xl"
                 >
                   ×
                 </button>
@@ -745,14 +979,51 @@ Application ID: {{applicationId}}`;
                 <div className="text-sm text-gray-600 mb-2">
                   <strong>To:</strong> {selectedLenderForDetails.contact_email || '—'}
                 </div>
+                <div className="text-sm text-gray-600">
+                  <strong>Format:</strong> HTML Email
+                </div>
               </div>
-              <div className="bg-white border rounded-lg p-6">
-                <pre className="whitespace-pre-wrap text-sm text-gray-800 font-mono">
-                  {generateEmailContent(selectedLenderForDetails)}
-                </pre>
+              <div className="bg-white border rounded-lg overflow-hidden">
+                <iframe
+                  title="Email HTML Preview"
+                  style={{ width: '100%', height: `${iframeHeight}px`, border: '0', display: 'block' }}
+                  srcDoc={(() => {
+                    const content = generateEmailContent(selectedLenderForDetails);
+                    const parts = content.split(/\r?\n\r?\n/);
+                    return parts.length > 1 ? parts.slice(1).join('\n\n') : content;
+                  })()}
+                  onLoad={(e) => {
+                    try {
+                      const iframe = e.currentTarget as HTMLIFrameElement;
+                      const doc = iframe.contentDocument || iframe.contentWindow?.document;
+                      const newHeight = Math.max(
+                        doc?.body?.scrollHeight || 0,
+                        doc?.documentElement?.scrollHeight || 0,
+                        800
+                      );
+                      setIframeHeight(newHeight + 20); // small buffer
+                    } catch {}
+                  }}
+                />
               </div>
             </div>
-            <div className="p-6 border-t border-gray-200 flex justify-end">
+            <div className="p-6 border-t border-gray-200 flex justify-between">
+              <button
+                onClick={() => {
+                  const content = generateEmailContent(selectedLenderForDetails);
+                  const parts = content.split(/\r?\n\r?\n/);
+                  const html = parts.length > 1 ? parts.slice(1).join('\n\n') : content;
+                  const win = window.open('', '_blank');
+                  if (win) {
+                    win.document.open();
+                    win.document.write(html);
+                    win.document.close();
+                  }
+                }}
+                className="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50"
+              >
+                Open in new window
+              </button>
               <button
                 onClick={() => setShowEmailPreview(false)}
                 className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
@@ -763,6 +1034,7 @@ Application ID: {{applicationId}}`;
           </div>
         </div>
       )}
+      </div>
     </div>
   );
 };
