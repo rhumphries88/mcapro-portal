@@ -552,6 +552,14 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
     return `${yyyy}-${mm}-${dd}`;
   };
 
+  // Generate a unique key so multiple files uploaded on the same day do not overwrite each other
+  const getUniqueDateKey = () => {
+    const base = getCurrentDateKey();
+    const ts = Date.now();
+    const rnd = Math.random().toString(36).slice(2, 6);
+    return `${base}-${ts}-${rnd}`;
+  };
+
   // Handle upload (auto-assigns to the next available month)
   const handleDailyUpload = async (file: File | undefined) => {
     if (!file) return;
@@ -566,8 +574,8 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
       return;
     }
 
-    // Assign to today's date (no auto-generated monthly placeholders)
-    const targetDateKey = getCurrentDateKey();
+    // Assign a unique key for this upload (so multiple files on the same day are all listed)
+    const targetDateKey = getUniqueDateKey();
     await performUpload(file, targetDateKey);
   };
 
@@ -855,7 +863,7 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
     if (file) {
       // If we have a replacement target, keep its dateKey and replace in-place
       const appId = (details.id as string) || (initial?.id as string) || (details.applicationId as string) || (initial?.applicationId as string) || '';
-      const dateKey = replaceTarget?.dateKey || getCurrentDateKey();
+      const dateKey = replaceTarget?.dateKey || getUniqueDateKey();
       await performUpload(file, dateKey);
       // If replacing a DB document, remove the old row then refresh DB list
       if (replaceTarget?.source === 'db' && replaceTarget.docId) {
@@ -950,10 +958,12 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
 
     // Local (in-session) uploads
     const localItems: UICardItem[] = Array.from(dailyStatements.entries()).map(([dateKey, data]) => {
-      const [year, month, day] = dateKey.split('-').map(Number);
-      const baseDate = new Date(year, month - 1, day);
-      const isCurrentMonth = (year === tYear) && ((month - 1) === tMonth);
-      const displayDate = new Date(year, month - 1, isCurrentMonth ? tDay : day);
+      // Support unique keys like YYYY-MM-DD-<ts>-<rnd>
+      const basePart = dateKey.slice(0, 10);
+      const [year, month, day] = basePart.split('-').map(Number);
+      const baseDate = (!Number.isNaN(year) && !Number.isNaN(month) && !Number.isNaN(day)) ? new Date(year, month - 1, day) : new Date();
+      const isCurrentMonth = (!Number.isNaN(year) && (year === tYear) && ((month - 1) === tMonth));
+      const displayDate = (!Number.isNaN(year) && !Number.isNaN(month) && !Number.isNaN(day)) ? new Date(year, month - 1, isCurrentMonth ? tDay : day) : new Date();
       return {
         key: `local:${dateKey}`,
         dateKey,
