@@ -6,6 +6,7 @@
 
 import { ImapFlow } from 'imapflow';
 import { createClient } from '@supabase/supabase-js';
+import { simpleParser } from 'mailparser';
 
 // ----- Environment -----
 const SUPABASE_URL = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
@@ -30,6 +31,25 @@ function jsonResponse(statusCode, payload) {
     },
     body: JSON.stringify(payload),
   };
+}
+
+function stripHtml(html) {
+  try {
+    return String(html)
+      .replace(/<!--([\s\S]*?)-->/g, ' ')
+      .replace(/<style[\s\S]*?>[\s\S]*?<\/style>/gi, ' ')
+      .replace(/<script[\s\S]*?>[\s\S]*?<\/script>/gi, ' ')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/&nbsp;/g, ' ')
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/[\t\r]+/g, ' ')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
+  } catch {
+    return '';
+  }
 }
 
 // ----- Regexes (reused from src/services/imapListener.js) -----
@@ -258,8 +278,20 @@ async function processUnseenSince(client, sinceDate) {
       }
 
       const raw = msg.source || Buffer.from('');
-      const textRaw = extractTextFromSource(raw).trim();
-      const text = cleanEmailBody(textRaw);
+      // Try robust parsing first
+      let parsedText = '';
+      try {
+        const parsed = await simpleParser(raw);
+        if (parsed && parsed.text) parsedText = parsed.text.trim();
+        if (!parsedText && parsed && parsed.html) parsedText = stripHtml(parsed.html);
+      } catch {}
+
+      // Fallback to the previous manual extraction
+      if (!parsedText) {
+        const textRaw = extractTextFromSource(raw).trim();
+        parsedText = cleanEmailBody(textRaw);
+      }
+      const text = parsedText;
 
       const { offered_amount, factor_rate, terms, applicationId, lenderIdFromBody } = parseReplyFields(text);
       if (!applicationId) {
@@ -395,7 +427,13 @@ export async function handler(event, context) {
         const result = await processUnseenSince(client, sinceDate);
         processedCount = result.processed.length;
         totalProcessed += processedCount;
-        mailboxSummaries.push({ mailbox: `${mb.auth.user}@${mb.host}`, processed: processedCount, found: result.found });
+        mailboxSummaries.push({
+          mailbox: `${mb.auth.user}@${mb.host}`,
+          processed: processedCount,
+          found: result.found,
+          skipped: result.skipped ? result.skipped.length : 0,
+          errors: result.errors ? result.errors.length : 0,
+        });
       } catch (e) {
         mailboxSummaries.push({ mailbox: `${mb.auth.user}@${mb.host}`, error: e?.message || String(e) });
       } finally {

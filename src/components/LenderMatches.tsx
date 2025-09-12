@@ -37,6 +37,7 @@ const LenderMatches: React.FC<LenderMatchesProps> = ({ application, matches, onL
   const [lenders, setLenders] = useState<(DBLender & { match_score?: number; matchScore?: number })[]>([]);
   const [selectedLenderIds, setSelectedLenderIds] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   const lockedSet = useMemo(() => new Set(lockedLenderIds), [lockedLenderIds]);
 
@@ -125,8 +126,21 @@ const LenderMatches: React.FC<LenderMatchesProps> = ({ application, matches, onL
     );
   };
 
+  // Only allow submission of newly selected lenders (exclude already submitted/locked ones)
+  const newSelectedLenderIds = useMemo(
+    () => selectedLenderIds.filter(id => !lockedSet.has(id)),
+    [selectedLenderIds, lockedSet]
+  );
+
   const handleContinue = () => {
-    onLenderSelect(selectedLenderIds);
+    if (newSelectedLenderIds.length === 0 || isSubmitting) return;
+    setIsSubmitting(true);
+    try {
+      onLenderSelect(newSelectedLenderIds);
+    } finally {
+      // In many flows navigation happens immediately; this is a safeguard
+      setIsSubmitting(false);
+    }
   };
 
   if (loading) {
@@ -362,21 +376,21 @@ const LenderMatches: React.FC<LenderMatchesProps> = ({ application, matches, onL
             Back to Application
           </button>
           <div className="flex items-center gap-4">
-            {selectedLenderIds.length > 0 && (
+            {newSelectedLenderIds.length > 0 && (
               <div className="text-sm text-gray-600">
-                <span className="font-semibold text-emerald-600">{selectedLenderIds.length}</span> lender{selectedLenderIds.length !== 1 ? 's' : ''} selected
+                <span className="font-semibold text-emerald-600">{newSelectedLenderIds.length}</span> lender{newSelectedLenderIds.length !== 1 ? 's' : ''} selected
               </div>
             )}
             <button
               onClick={handleContinue}
-              disabled={selectedLenderIds.length === 0}
+              disabled={newSelectedLenderIds.length === 0 || isSubmitting}
               className={`w-full sm:w-auto justify-center flex items-center px-8 py-4 rounded-xl font-semibold text-lg transition-all duration-200 ${
-                selectedLenderIds.length > 0
+                newSelectedLenderIds.length > 0 && !isSubmitting
                   ? 'bg-gradient-to-r from-emerald-600 to-emerald-700 text-white hover:from-emerald-700 hover:to-emerald-800 shadow-lg shadow-emerald-200/50 hover:shadow-xl hover:shadow-emerald-300/50'
                   : 'bg-gray-200 text-gray-400 cursor-not-allowed'
               }`}
             >
-              Continue with Selected Lenders
+              {isSubmitting ? 'Submitting...' : 'Continue with Selected Lenders'}
               <ArrowRight className="w-5 h-5 ml-2" />
             </button>
           </div>
