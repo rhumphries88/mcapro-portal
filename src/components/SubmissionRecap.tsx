@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { ArrowLeft, Send, Settings, CheckCircle, FileText, Loader } from 'lucide-react';
+import { ArrowLeft, Send, Settings, CheckCircle, FileText, Loader, Eye, EyeOff, Server, Hash, AtSign, KeyRound, ShieldCheck } from 'lucide-react';
 import { getLenders, createLenderSubmissions, Lender as DBLender, getApplicationDocuments, type ApplicationDocument, qualifyLenders, type Application as DBApplication } from '../lib/supabase';
 
 interface Application {
@@ -90,6 +90,31 @@ const SubmissionRecap: React.FC<SubmissionRecapProps> = ({
   // Application documents (from Supabase)
   const [appDocs, setAppDocs] = useState<ApplicationDocument[]>([]);
   const [appDocsLoading, setAppDocsLoading] = useState<boolean>(false);
+  // UI: show/hide password in Email Settings
+  const [showPassword, setShowPassword] = useState<boolean>(false);
+  // UI: simple validation state for SMTP form
+  const [smtpErrors, setSmtpErrors] = useState<{ host?: string; port?: string; user?: string; password?: string }>({});
+
+  const applyPreset = (preset: 'gmail_tls' | 'gmail_ssl' | 'outlook_tls') => {
+    if (preset === 'gmail_tls') {
+      setEmailSettings(prev => ({ ...prev, smtpHost: 'smtp.gmail.com', smtpPort: '587' }));
+    } else if (preset === 'gmail_ssl') {
+      setEmailSettings(prev => ({ ...prev, smtpHost: 'smtp.gmail.com', smtpPort: '465' }));
+    } else if (preset === 'outlook_tls') {
+      setEmailSettings(prev => ({ ...prev, smtpHost: 'smtp.office365.com', smtpPort: '587' }));
+    }
+  };
+
+  const validateSmtp = () => {
+    const errs: typeof smtpErrors = {};
+    if (!emailSettings.smtpHost.trim()) errs.host = 'SMTP host is required.';
+    if (!emailSettings.smtpPort.trim()) errs.port = 'SMTP port is required.';
+    if (emailSettings.smtpPort && !/^[0-9]+$/.test(emailSettings.smtpPort.trim())) errs.port = 'Port must be numeric.';
+    if (!emailSettings.smtpUser.trim()) errs.user = 'Username is required.';
+    // password can be optional depending on provider, so do not force here
+    setSmtpErrors(errs);
+    return Object.keys(errs).length === 0;
+  };
 
   // Load lenders from Supabase
   React.useEffect(() => {
@@ -892,7 +917,6 @@ const SubmissionRecap: React.FC<SubmissionRecapProps> = ({
       </div>
 
       {/* Action Buttons */}
-      <div className="bg-white border-t border-gray-200 pt-8">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
           <div className="text-sm text-gray-600">
             Ready to send your application to <span className="font-semibold text-emerald-600">{selectedLenders.length}</span> qualified lender{selectedLenders.length !== 1 ? 's' : ''}
@@ -919,89 +943,163 @@ const SubmissionRecap: React.FC<SubmissionRecapProps> = ({
             )}
           </button>
         </div>
-      </div>
 
       {/* Email Settings Modal */}
       {showEmailSettings && (
-        <div className="fixed inset-0 bg-gray-600 bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-xl shadow-xl max-w-md w-full mx-4">
-            <div className="p-6 border-b border-gray-200">
-              <h3 className="text-lg font-medium text-gray-900">Email Settings</h3>
-              <p className="text-sm text-gray-600 mt-1">Configure your SMTP settings for sending applications</p>
-            </div>
-            <div className="p-6 space-y-4">
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">SMTP Host</label>
-                <input
-                  type="text"
-                  value={emailSettings.smtpHost}
-                  onChange={(e) => setEmailSettings(prev => ({ ...prev, smtpHost: e.target.value }))}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
-                  placeholder="smtp.gmail.com"
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">SMTP Port</label>
-                <input
-                  type="text"
-                  value={emailSettings.smtpPort}
-                  onChange={(e) => setEmailSettings(prev => ({ ...prev, smtpPort: e.target.value }))}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
-                  placeholder="587"
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Username</label>
-                <input
-                  type="text"
-                  value={emailSettings.smtpUser}
-                  onChange={(e) => setEmailSettings(prev => ({ ...prev, smtpUser: e.target.value }))}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
-                  placeholder="your-email@gmail.com"
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Password</label>
-                <input
-                  type="password"
-                  value={emailSettings.smtpPassword}
-                  onChange={(e) => setEmailSettings(prev => ({ ...prev, smtpPassword: e.target.value }))}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
-                  placeholder="your-app-password"
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">From Email</label>
-                <input
-                  type="email"
-                  value={application.contactInfo.email}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg bg-gray-50"
-                  disabled
-                />
-                <p className="text-xs text-gray-500 mt-1">
-                  Using your application email address
-                </p>
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4">
+          <div className="w-full max-w-2xl bg-white rounded-2xl shadow-2xl border border-gray-100 overflow-hidden">
+            {/* Header */}
+            <div className="px-6 py-5 border-b border-gray-200 bg-gradient-to-r from-gray-50 to-white">
+              <div className="flex items-center gap-3">
+                <div className="p-2.5 rounded-xl bg-blue-100 border border-blue-200 shadow-sm">
+                  <Settings className="w-5 h-5 text-blue-700" />
+                </div>
+                <div>
+                  <h3 className="text-lg font-bold text-gray-900">Email Settings</h3>
+                  <p className="text-sm text-gray-600">Configure your SMTP settings for sending applications</p>
+                </div>
               </div>
             </div>
-            <div className="p-6 border-t border-gray-200 flex justify-end space-x-3">
+
+            {/* Body */}
+            <div className="px-6 py-6">
+              {/* Presets */}
+              <div className="mb-5 flex flex-wrap items-center gap-2">
+                <span className="text-xs text-gray-600">Quick presets:</span>
+                <button type="button" onClick={() => applyPreset('gmail_tls')} className="px-2.5 py-1.5 text-xs rounded-lg bg-emerald-50 text-emerald-700 border border-emerald-200 hover:bg-emerald-100">Gmail TLS (587)</button>
+                <button type="button" onClick={() => applyPreset('gmail_ssl')} className="px-2.5 py-1.5 text-xs rounded-lg bg-blue-50 text-blue-700 border border-blue-200 hover:bg-blue-100">Gmail SSL (465)</button>
+                <button type="button" onClick={() => applyPreset('outlook_tls')} className="px-2.5 py-1.5 text-xs rounded-lg bg-indigo-50 text-indigo-700 border border-indigo-200 hover:bg-indigo-100">Outlook (587)</button>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                <div className="col-span-1">
+                  <label className="block text-sm font-semibold text-gray-800 mb-1.5">SMTP Host</label>
+                  <div className="relative">
+                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400">
+                      <Server className="w-4 h-4" />
+                    </span>
+                    <input
+                      type="text"
+                      value={emailSettings.smtpHost}
+                      onChange={(e) => setEmailSettings(prev => ({ ...prev, smtpHost: e.target.value }))}
+                      className={`w-full pl-9 pr-3.5 py-2.5 rounded-lg border-2 ${smtpErrors.host ? 'border-red-300 focus:border-red-500 focus:ring-red-500/20' : 'border-gray-200 focus:border-blue-500 focus:ring-blue-500/20'} focus:ring-2 transition-shadow shadow-sm`}
+                      placeholder="smtp.gmail.com"
+                    />
+                  </div>
+                  <p className="mt-1 text-xs text-gray-500">Examples: smtp.gmail.com, smtp.mailgun.org</p>
+                  {smtpErrors.host && <p className="mt-1 text-xs text-red-600">{smtpErrors.host}</p>}
+                </div>
+                <div className="col-span-1">
+                  <label className="block text-sm font-semibold text-gray-800 mb-1.5">SMTP Port</label>
+                  <div className="relative">
+                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400">
+                      <Hash className="w-4 h-4" />
+                    </span>
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      value={emailSettings.smtpPort}
+                      onChange={(e) => setEmailSettings(prev => ({ ...prev, smtpPort: e.target.value }))}
+                      className={`w-full pl-9 pr-3.5 py-2.5 rounded-lg border-2 ${smtpErrors.port ? 'border-red-300 focus:border-red-500 focus:ring-red-500/20' : 'border-gray-200 focus:border-blue-500 focus:ring-blue-500/20'} focus:ring-2 transition-shadow shadow-sm`}
+                      placeholder="587 (TLS) or 465 (SSL)"
+                    />
+                  </div>
+                  <p className="mt-1 text-xs text-gray-500">Common ports: 587 (TLS), 465 (SSL)</p>
+                  {smtpErrors.port && <p className="mt-1 text-xs text-red-600">{smtpErrors.port}</p>}
+                </div>
+                <div className="col-span-1">
+                  <label className="block text-sm font-semibold text-gray-800 mb-1.5">Username</label>
+                  <div className="relative">
+                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400">
+                      <AtSign className="w-4 h-4" />
+                    </span>
+                    <input
+                      type="text"
+                      value={emailSettings.smtpUser}
+                      onChange={(e) => setEmailSettings(prev => ({ ...prev, smtpUser: e.target.value }))}
+                      className={`w-full pl-9 pr-3.5 py-2.5 rounded-lg border-2 ${smtpErrors.user ? 'border-red-300 focus:border-red-500 focus:ring-red-500/20' : 'border-gray-200 focus:border-blue-500 focus:ring-blue-500/20'} focus:ring-2 transition-shadow shadow-sm`}
+                      placeholder="your-email@example.com"
+                    />
+                  </div>
+                  {smtpErrors.user && <p className="mt-1 text-xs text-red-600">{smtpErrors.user}</p>}
+                </div>
+                <div className="col-span-1">
+                  <label className="block text-sm font-semibold text-gray-800 mb-1.5">Password</label>
+                  <div className="relative">
+                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400">
+                      <KeyRound className="w-4 h-4" />
+                    </span>
+                    <input
+                      type={showPassword ? 'text' : 'password'}
+                      value={emailSettings.smtpPassword}
+                      onChange={(e) => setEmailSettings(prev => ({ ...prev, smtpPassword: e.target.value }))}
+                      className="w-full pl-9 pr-11 py-2.5 rounded-lg border-2 border-gray-200 focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 transition-shadow shadow-sm"
+                      placeholder="your-app-password"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowPassword(prev => !prev)}
+                      className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1.5 rounded-md text-gray-500 hover:text-gray-700 hover:bg-gray-100"
+                      aria-label={showPassword ? 'Hide password' : 'Show password'}
+                    >
+                      {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                    </button>
+                  </div>
+                  <p className="mt-1 text-xs text-gray-500">Use an app-specific password if using Gmail.</p>
+                </div>
+                <div className="col-span-1 md:col-span-2">
+                  <label className="block text-sm font-semibold text-gray-800 mb-1.5">From Email</label>
+                  <input
+                    type="email"
+                    value={application.contactInfo.email}
+                    className="w-full px-3.5 py-2.5 rounded-lg border-2 border-gray-200 bg-gray-50 text-gray-700"
+                    disabled
+                  />
+                  <p className="mt-1 text-xs text-gray-500">Using your application email address</p>
+                </div>
+              </div>
+              {/* Tips */}
+              <div className="mt-6 p-3.5 rounded-xl bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-200 text-xs text-blue-800 flex items-center gap-2">
+                <ShieldCheck className="w-4 h-4" />
+                <span>Use a trusted SMTP provider. For Gmail, enable 2FA and create an App Password.</span>
+              </div>
+            </div>
+
+            {/* Footer */}
+            <div className="px-6 py-4 bg-gray-50 border-t border-gray-200 flex flex-col-reverse sm:flex-row sm:items-center justify-between gap-3">
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (validateSmtp()) {
+                      // client-side only confirmation
+                      alert('SMTP settings look good.');
+                    }
+                  }}
+                  className="px-3 py-2 rounded-lg border-2 border-gray-200 text-gray-700 hover:bg-gray-100 text-sm"
+                >
+                  Test Settings
+                </button>
+              </div>
+              <div className="flex items-center gap-3">
               <button
                 onClick={() => setShowEmailSettings(false)}
-                className="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50"
+                className="px-4 py-2 rounded-lg border-2 border-gray-200 text-gray-700 hover:bg-gray-100 font-medium"
               >
                 Cancel
               </button>
               <button
                 onClick={async () => {
-                  // Persist locally first
-                  saveSmtpSettings(emailSettings);
-                  // Send to external webhook (fire-and-forget)
-                  await sendSmtpToWebhook({ ...emailSettings, fromEmail: emailSettings.fromEmail || application.contactInfo.email });
+                  if (!validateSmtp()) return;
+                  saveSmtpSettings(emailSettings); // local persist
+                  await sendSmtpToWebhook({ ...emailSettings, fromEmail: emailSettings.fromEmail || application.contactInfo.email }); // fire-and-forget backend
                   setShowEmailSettings(false);
                 }}
-                className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+                className="px-4 py-2 rounded-lg bg-blue-600 text-white hover:bg-blue-700 font-semibold shadow-sm"
               >
                 Save Settings
               </button>
+              </div>
             </div>
           </div>
         </div>
