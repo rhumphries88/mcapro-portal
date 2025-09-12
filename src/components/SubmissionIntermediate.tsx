@@ -136,6 +136,52 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
     }
   };
 
+  // Retry helper: attempt to fetch summary until it returns 200 or max attempts reached
+  const retrySummaryUntilReady = async (file: File, dateKey: string) => {
+    const maxAttempts = 6; // ~1 min total if 10s interval
+    const intervalMs = 10000;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      // If no longer pending (e.g., user navigated or server responded), stop
+      if (!pendingSummaryRef.current.has(dateKey)) return;
+      try {
+        const form = new FormData();
+        form.append('file', file, file.name);
+        form.append('statementDate', dateKey);
+        console.log(`[newDealSummary retry] attempt ${attempt}/${maxAttempts} for`, { dateKey, file: file.name });
+        const resp = await fetchWithTimeout(NEW_DEAL_SUMMARY_WEBHOOK_URL, { method: 'POST', body: form, timeoutMs: 25000 });
+        if (resp.ok && resp.status !== 202) {
+          const ct = resp.headers.get('content-type') || '';
+          let parsed: unknown = undefined;
+          if (ct.includes('application/json')) parsed = await resp.json();
+          else {
+            const text = await resp.text();
+            try { parsed = JSON.parse(text); } catch { parsed = undefined; }
+          }
+          if (parsed) {
+            console.log('[newDealSummary retry] success; applying parsed summary');
+            populateDetailsFromWebhook(parsed, { overwrite: false, markProvidedEvenIfNoChange: true });
+            populatePerDocDetails(dateKey, parsed, { overwrite: true });
+          }
+          // mark as no longer pending, cancel any grace timer and complete UI now
+          pendingSummaryRef.current.delete(dateKey);
+          const t = pendingTimersRef.current.get(dateKey);
+          if (typeof t === 'number') { window.clearTimeout(t); pendingTimersRef.current.delete(dateKey); }
+          setDailyStatements(prev => new Map(prev.set(dateKey, { file, status: 'completed', fileUrl: prev.get(dateKey)?.fileUrl })));
+          setUploadProgress(prev => {
+            const next = new Map(prev);
+            next.delete(dateKey);
+            return next;
+          });
+          return;
+        }
+      } catch (e) {
+        console.warn('[newDealSummary retry] attempt failed:', e);
+      }
+      await new Promise(res => setTimeout(res, intervalMs));
+    }
+    console.warn('[newDealSummary retry] exhausted attempts; will rely on grace timeout to complete UI');
+  };
+
   // Populate per-document details (by dateKey) from webhook payload
   const populatePerDocDetails = (dateKey: string, payload: unknown, opts: { overwrite?: boolean } = {}) => {
     if (!payload || typeof payload !== 'object') return;
@@ -335,6 +381,12 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
   const [perDocDetails, setPerDocDetails] = useState<Record<string, Record<string, string | boolean>>>({});
   // Per-document MCA payload keyed by dateKey
   const [perDocMcaData, setPerDocMcaData] = useState<Record<string, MCAParsed>>({});
+  // Prevent duplicate document-file webhook calls for same file signature
+  const inFlightDocSigsRef = useRef<Set<string>>(new Set());
+  // Track which uploads have a background new-deal-summary still running (202/timeout)
+  const pendingSummaryRef = useRef<Set<string>>(new Set());
+  // Track per-document auto-complete timeouts so we can cancel if summary finishes
+  const pendingTimersRef = useRef<Map<string, number>>(new Map());
   // Diagnostics: observe when MCA data updates
   useEffect(() => {
     const keys = Object.keys(perDocMcaData || {});
@@ -742,6 +794,10 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
         });
         if (respS.status === 202) {
           console.log('[newDealSummary webhook] 202 Accepted: processing in background.');
+          // Mark this document as still processing so UI shows existing loading state
+          pendingSummaryRef.current.add(dateKey);
+          // Kick off retry loop to fetch summary until it becomes available
+          void retrySummaryUntilReady(file, dateKey);
         } else if (respS.ok) {
           const ct = respS.headers.get('content-type') || '';
           let parsed: unknown = undefined;
@@ -759,15 +815,29 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
             // Overwrite: summary webhook is authoritative for MCA-like data
             populateDetailsFromWebhook(parsed, { overwrite: false, markProvidedEvenIfNoChange: true });
             populatePerDocDetails(dateKey, parsed, { overwrite: true });
+            // Clear any pending background flag if we received a concrete response
+            pendingSummaryRef.current.delete(dateKey);
+            // If a grace timer exists, cancel it so we can complete immediately
+            const t = pendingTimersRef.current.get(dateKey);
+            if (typeof t === 'number') { window.clearTimeout(t); pendingTimersRef.current.delete(dateKey); }
           }
         } else {
           console.warn(`newDealSummary webhook responded ${respS.status} ${respS.statusText}`);
         }
       } catch (e) {
         console.warn('[newDealSummary webhook] failed; continuing flow:', e);
+        // If this was an Abort/timeout, keep UI in processing state
+        try {
+          const name = (e as any)?.name || '';
+          if (name === 'AbortError') {
+            pendingSummaryRef.current.add(dateKey);
+            // Start retry attempts since initial call aborted
+            void retrySummaryUntilReady(file, dateKey);
+          }
+        } catch {}
       }
 
-      // 3) Send metadata to DOCUMENT_FILE_WEBHOOK_URL for authoritative record
+      // 3) Send metadata to DOCUMENT_FILE_WEBHOOK_URL for authoritative record (idempotent)
       try {
         const appId = (details.id as string) || (initial?.id as string) || (details.applicationId as string) || (initial?.applicationId as string) || '';
         const payload = {
@@ -777,10 +847,15 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
           file_type: file.type || 'application/pdf',
           statement_date: dateKey,
         } as const;
-
+        const idempotencyKey = `${payload.application_id}|${payload.file_name}|${payload.file_size}`;
+        if (inFlightDocSigsRef.current.has(idempotencyKey)) {
+          console.log('[document-file] Skipping duplicate call for', idempotencyKey);
+        } else {
+          inFlightDocSigsRef.current.add(idempotencyKey);
+        }
         const resp2 = await fetchWithTimeout(DOCUMENT_FILE_WEBHOOK_URL, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', 'Idempotency-Key': idempotencyKey },
           body: JSON.stringify(payload),
           timeoutMs: 30000,
         });
@@ -805,35 +880,66 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
         }
 
         clearInterval(progressInterval);
+        const isPending = pendingSummaryRef.current.has(dateKey);
         setUploadProgress(prev => {
           const next = new Map(prev);
-          next.set(dateKey, 100);
+          next.set(dateKey, isPending ? 95 : 100);
           return next;
         });
-        setTimeout(() => {
-          setDailyStatements(prev => new Map(prev.set(dateKey, { file, status: 'completed', fileUrl })));
-          setUploadProgress(prev => {
-            const next = new Map(prev);
-            next.delete(dateKey);
-            return next;
-          });
-        }, 500);
+        if (isPending) {
+          // Keep card in Processing state; auto-complete after a grace period
+          setDailyStatements(prev => new Map(prev.set(dateKey, { file, status: 'uploading', fileUrl })));
+          const timerId = window.setTimeout(() => {
+            pendingSummaryRef.current.delete(dateKey);
+            setDailyStatements(prev => new Map(prev.set(dateKey, { file, status: 'completed', fileUrl })));
+            setUploadProgress(prev => {
+              const next = new Map(prev);
+              next.delete(dateKey);
+              return next;
+            });
+          }, 60000); // 60s grace period
+          pendingTimersRef.current.set(dateKey, timerId);
+        } else {
+          setTimeout(() => {
+            setDailyStatements(prev => new Map(prev.set(dateKey, { file, status: 'completed', fileUrl })));
+            setUploadProgress(prev => {
+              const next = new Map(prev);
+              next.delete(dateKey);
+              return next;
+            });
+          }, 500);
+        }
       } catch (e) {
         console.warn('documentFile webhook call failed; marking completed without URL:', e);
         clearInterval(progressInterval);
+        const isPending = pendingSummaryRef.current.has(dateKey);
         setUploadProgress(prev => {
           const next = new Map(prev);
-          next.set(dateKey, 100);
+          next.set(dateKey, isPending ? 95 : 100);
           return next;
         });
-        setTimeout(() => {
-          setDailyStatements(prev => new Map(prev.set(dateKey, { file, status: 'completed' })));
-          setUploadProgress(prev => {
-            const next = new Map(prev);
-            next.delete(dateKey);
-            return next;
-          });
-        }, 500);
+        if (isPending) {
+          setDailyStatements(prev => new Map(prev.set(dateKey, { file, status: 'uploading' })));
+          const timerId = window.setTimeout(() => {
+            pendingSummaryRef.current.delete(dateKey);
+            setDailyStatements(prev => new Map(prev.set(dateKey, { file, status: 'completed' })));
+            setUploadProgress(prev => {
+              const next = new Map(prev);
+              next.delete(dateKey);
+              return next;
+            });
+          }, 60000);
+          pendingTimersRef.current.set(dateKey, timerId);
+        } else {
+          setTimeout(() => {
+            setDailyStatements(prev => new Map(prev.set(dateKey, { file, status: 'completed' })));
+            setUploadProgress(prev => {
+              const next = new Map(prev);
+              next.delete(dateKey);
+              return next;
+            });
+          }, 500);
+        }
       }
     } catch (error) {
       console.error('Daily upload failed:', error);
