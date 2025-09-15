@@ -2,6 +2,7 @@
 // Receives document metadata to persist an authoritative record for uploaded statements.
 
 import { createClient } from "@supabase/supabase-js";
+import crypto from "node:crypto";
 
 const SUPABASE_URL = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -34,14 +35,35 @@ export async function handler(event) {
     const contentType = event.headers["content-type"] || event.headers["Content-Type"];
     const auth = process.env.N8N_AUTH;
 
-    const body = event.isBase64Encoded ? Buffer.from(event.body || "", "base64") : (event.body || "");
+    // Prepare body and inject a generated UUID when the payload is JSON
+    const raw = event.isBase64Encoded
+      ? Buffer.from(event.body || "", "base64").toString("utf8")
+      : (event.body || "");
+
+    let forwardBody = raw;
+    let forwardContentType = contentType;
+    try {
+      // Attempt to parse as JSON if content-type indicates JSON or parsing simply succeeds
+      const mightBeJson = (contentType || "").toLowerCase().includes("application/json");
+      const parsed = mightBeJson || raw.trim().startsWith("{") ? JSON.parse(raw || "{}") : null;
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        // Add id if not provided
+        if (!parsed.id) parsed.id = crypto.randomUUID();
+        forwardBody = JSON.stringify(parsed);
+        forwardContentType = "application/json";
+      }
+    } catch {
+      // If not JSON, pass through unchanged
+      forwardBody = raw;
+    }
+
     const resp = await fetch(url, {
       method: "POST",
       headers: {
-        ...(contentType ? { "Content-Type": contentType } : {}),
+        ...(forwardContentType ? { "Content-Type": forwardContentType } : {}),
         ...(auth ? { Authorization: auth } : {}),
       },
-      body,
+      body: forwardBody,
     });
 
     const text = await resp.text();
@@ -52,3 +74,4 @@ export async function handler(event) {
     return jsonResponse(500, { error: err?.message || "Unexpected server error" });
   }
 }
+

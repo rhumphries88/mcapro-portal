@@ -372,7 +372,48 @@ const SubmissionRecap: React.FC<SubmissionRecapProps> = ({
 </body>
 </html>`;
 
-    const template = savedTemplate || defaultTemplate;
+    let template = savedTemplate || defaultTemplate;
+
+    // Build dynamic documents list combining application_documents (appDocs) and inline application documents (application.documents)
+    const dbDocs = Array.isArray(appDocs) ? appDocs : [];
+    const inlineDocsList: string[] = Array.isArray(inlineDocs) ? inlineDocs : [];
+    // Merge filenames: prefer explicit file_name from dbDocs, and also include inline doc names
+    const mergedNames: string[] = [
+      ...dbDocs.map(d => d?.file_name || '').filter(Boolean),
+      ...inlineDocsList.filter(Boolean),
+    ];
+    // Deduplicate while preserving order
+    const seen = new Set<string>();
+    const uniqueNames = mergedNames.filter(name => {
+      const k = name.trim();
+      if (!k || seen.has(k.toLowerCase())) return false;
+      seen.add(k.toLowerCase());
+      return true;
+    });
+    if (uniqueNames.length > 0) {
+      const escapeHtml = (s: string) => s
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/\"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+      const items = uniqueNames
+        .map(name => `<li>${escapeHtml(name)}</li>`) 
+        .join('\n');
+      // Replace the default placeholder list with real documents
+      template = template.replace(
+        /<ul class=\"doc-list\">[\s\S]*?<\/ul>/,
+        `<ul class=\"doc-list\">\n${items}\n</ul>`
+      );
+
+      // Add a download-all ZIP link right after the documents section
+      const downloadUrl = `${window.location.origin}/.netlify/functions/application-docs-zip?applicationId=${application.id}`;
+      const zipCtaHtml = `\n<div class="download-zip" style="margin-top:16px; text-align:center;">\n  <a href="${downloadUrl}" style="display:inline-block; background:#10b981; color:#fff; padding:10px 16px; border-radius:8px; text-decoration:none; font-weight:600;">\n    Download all documents (ZIP)\n  </a>\n</div>`;
+      template = template.replace(
+        /(<div class=\"documents\">[\s\S]*?<\/div>)/,
+        `$1${zipCtaHtml}`
+      );
+    }
 
     // Replace template variables with actual data
     return template
