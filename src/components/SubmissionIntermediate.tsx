@@ -1,12 +1,17 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Building2, Upload, FileText, CheckCircle, RefreshCw, Trash2, RotateCcw } from 'lucide-react';
-import { getApplicationDocuments, deleteApplicationDocument, deleteApplicationDocumentByAppAndDate, type ApplicationDocument } from '../lib/supabase';
+import { getApplicationDocuments, deleteApplicationDocument, deleteApplicationDocumentByAppAndDate, type ApplicationDocument, supabase } from '../lib/supabase';
 
 
 const NEW_DEAL_WEBHOOK_URL = '/.netlify/functions/new-deal';
 const NEW_DEAL_SUMMARY_WEBHOOK_URL = '/.netlify/functions/new-deal-summary';
 const UPDATING_APPLICATIONS_WEBHOOK_URL = '/.netlify/functions/updating-applications';
 const DOCUMENT_FILE_WEBHOOK_URL = '/.netlify/functions/document-file';
+const SAVING_DETAILS_WEBHOOK_URL = 'https://primary-production-c8d0.up.railway.app/webhook/savingDetails';
+// Feature flag: temporarily disable updating applications webhook
+const DISABLE_UPDATING_APPLICATIONS = true;
+// Feature flag: control placement/visibility of global financial summary block
+const SHOW_GLOBAL_FINANCIAL_SUMMARY = false;
 
 
 type Props = {
@@ -348,11 +353,99 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
     return () => { cancelled = true; };
   }, [details.id, details.applicationId, initial?.id, initial?.applicationId]);
 
+  // Fetch and aggregate application_financials
+  useEffect(() => {
+    const appId = (details.id as string) || (initial?.id as string) || (details.applicationId as string) || (initial?.applicationId as string) || '';
+    if (!appId) return;
+    let cancelled = false;
+    const run = async () => {
+      try {
+        setFinancialsLoading(true);
+        const { data, error } = await supabase
+          .from('application_financials')
+          .select('*')
+          .eq('application_id', appId)
+          .order('created_at', { ascending: false });
+        if (error) throw error;
+        const rows = (data || []) as Array<Record<string, any>>;
+        // Count uploaded documents for this application directly from DB
+        const { count: docsCount, error: countErr } = await supabase
+          .from('application_documents')
+          .select('*', { count: 'exact', head: true })
+          .eq('application_id', appId);
+        if (countErr) console.warn('Count application_documents failed:', countErr.message);
+        const docCount = (typeof docsCount === 'number' ? docsCount : 0) || rows.length || 1;
+        setFinancialDocsCount(docCount);
+        // pick latest non-empty strings from the first rows
+        const pickString = (key: string): string | undefined => {
+          const r = rows.find(r => {
+            const v = r[key];
+            return typeof v === 'string' && v.trim() !== '';
+          });
+          return r ? String(r[key]) : undefined;
+        };
+        const sumNum = (key: string): number => rows.reduce((acc, r) => acc + (typeof r[key] === 'number' ? (r[key] as number) : Number(r[key] ?? 0)), 0);
+        const avg = (key: string): number => {
+          const s = sumNum(key);
+          return docCount > 0 ? s / docCount : s;
+        };
+        const summary = {
+          deal_name: pickString('deal_name') ?? (details.dealName as string | undefined),
+          industry: pickString('industry') ?? (details.industry as string | undefined),
+          entity_type: pickString('entity_type') ?? (details.entityType as string | undefined),
+          state: pickString('state') ?? (details.state as string | undefined),
+          time_in_biz_months: Number(avg('time_in_biz_months') || 0),
+          avg_monthly_revenue: Number(avg('avg_monthly_revenue') || 0),
+          avg_monthly_deposits: Number(avg('avg_monthly_deposits') || 0),
+          existing_business_debt: Number(avg('existing_business_debt') || 0),
+          gross_annual_revenue: Number(avg('gross_annual_revenue') || 0),
+          avg_daily_balance: Number(avg('avg_daily_balance') || 0),
+          avg_monthly_deposit_count: Number(avg('avg_monthly_deposit_count') || 0),
+          nsf_count: Number(avg('nsf_count') || 0),
+          negative_days: Number(avg('negative_days') || 0),
+          current_position_count: Number(avg('current_position_count') || 0),
+          holdback: Number(avg('holdback') || 0),
+        };
+        if (!cancelled) setFinancialSummary(summary);
+      } catch (e) {
+        console.warn('Failed to load application_financials:', e);
+        if (!cancelled) setFinancialSummary(null);
+      } finally {
+        if (!cancelled) setFinancialsLoading(false);
+      }
+    };
+    run();
+    return () => { cancelled = true; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [details.id, details.applicationId, initial?.id, initial?.applicationId]);
+
   const set = (key: string, value: string | boolean) => setDetails(prev => ({ ...prev, [key]: value }));
 
   const [submitting, setSubmitting] = useState(false);
   const [isDragOver, setIsDragOver] = useState(false);
-  const [uploadProgress, setUploadProgress] = useState<Map<string, number>>(new Map());
+  const [, setUploadProgress] = useState<Map<string, number>>(new Map());
+  // Track per-document saved state for inline Financial Details
+  const [savedDocs, setSavedDocs] = useState<Set<string>>(new Set());
+  // Aggregated financial summary (from application_financials)
+  const [financialSummary, setFinancialSummary] = useState<null | {
+    deal_name?: string;
+    industry?: string;
+    entity_type?: string;
+    state?: string;
+    time_in_biz_months?: number;
+    avg_monthly_revenue?: number;
+    avg_monthly_deposits?: number;
+    existing_business_debt?: number;
+    gross_annual_revenue?: number;
+    avg_daily_balance?: number;
+    avg_monthly_deposit_count?: number;
+    nsf_count?: number;
+    negative_days?: number;
+    current_position_count?: number;
+    holdback?: number;
+  }>(null);
+  const [financialsLoading, setFinancialsLoading] = useState(false);
+  const [financialDocsCount, setFinancialDocsCount] = useState<number>(0);
   // Animated progress for general loading/submitting screen
   const [loadingProgress, setLoadingProgress] = useState(0);
   useEffect(() => {
@@ -837,15 +930,31 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
         } catch {}
       }
 
-      // 3) Send metadata to DOCUMENT_FILE_WEBHOOK_URL for authoritative record (idempotent)
+      // 3) Upload to Supabase Storage first, then send metadata (with file_url) to DOCUMENT_FILE_WEBHOOK_URL
       try {
         const appId = (details.id as string) || (initial?.id as string) || (details.applicationId as string) || (initial?.applicationId as string) || '';
+        // Upload to Storage bucket 'application_documents' at root so URL is /application_documents/<file_name>
+        let fileUrlFromStorage: string | undefined = undefined;
+        try {
+          const path = `${file.name}`;
+          const { error: upErr } = await supabase.storage.from('application_documents').upload(path, file, { upsert: true });
+          if (upErr) {
+            console.warn('[storage] upload failed; proceeding without file_url:', upErr.message);
+          } else {
+            const { data: pub } = supabase.storage.from('application_documents').getPublicUrl(path);
+            fileUrlFromStorage = pub?.publicUrl;
+          }
+        } catch (e) {
+          console.warn('[storage] unexpected error during upload; proceeding without file_url:', e);
+        }
+
         const payload = {
           application_id: appId,
           file_name: file.name,
           file_size: file.size,
           file_type: file.type || 'application/pdf',
           statement_date: dateKey,
+          ...(fileUrlFromStorage ? { file_url: fileUrlFromStorage } : {}),
         } as const;
         const idempotencyKey = `${payload.application_id}|${payload.file_name}|${payload.file_size}`;
         if (inFlightDocSigsRef.current.has(idempotencyKey)) {
@@ -860,7 +969,7 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
           timeoutMs: 30000,
         });
 
-        let fileUrl: string | undefined = undefined;
+        let fileUrl: string | undefined = fileUrlFromStorage;
         const ct2 = resp2.headers.get('content-type') || '';
         if (ct2.includes('application/json')) {
           const data2 = await resp2.json().catch(() => undefined as unknown);
@@ -1270,8 +1379,8 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
           hasOpenJudgments: Boolean(sanitized.hasOpenJudgments ?? details.hasOpenJudgments ?? false),
         };
       }
-      // Only attempt the webhook if we have a valid applicationId
-      if (baseIds.applicationId && isValidUUID(baseIds.applicationId)) {
+      // Only attempt the webhook if enabled and we have a valid applicationId
+      if (!DISABLE_UPDATING_APPLICATIONS && baseIds.applicationId && isValidUUID(baseIds.applicationId)) {
         try { console.log('[updatingApplications] payload preview (flat)', payload); } catch {}
         const resp = await fetchWithTimeout(UPDATING_APPLICATIONS_WEBHOOK_URL, {
           method: 'POST',
@@ -1536,150 +1645,232 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
             <>
               {/* Business Information Section moved below Bank Statements */}
 
-              {/* Bank Statement Upload - List View */}
+              {/* Bank Statement Upload - Enhanced Professional Design */}
               <div className="mb-8">
-                  <div className="mb-8">
-                    <h3 className="text-xl font-semibold text-gray-900 mb-2 flex items-center gap-3">
-                      <div className="p-2 bg-blue-100 rounded-lg">
-                        <Upload className="w-5 h-5 text-blue-600" />
-                      </div>
-                      Bank Statement Documents
-                    </h3>
-                    <p className="text-gray-600 text-sm">Upload and manage your bank statements for processing</p>
-                  </div>
-
-                  {/* Uploaded Files List */}
-                  {(getUnifiedDocumentCards().length > 0) && (
-                    <div className="space-y-4 mb-8">
-                      <div className="flex items-center justify-end mb-6">
-                        <div className="flex items-center gap-3">
-                          <span className="inline-flex items-center px-4 py-2 rounded-full text-sm font-semibold bg-gradient-to-r from-blue-50 to-blue-100 text-blue-700 border border-blue-200">
-                            <FileText className="w-4 h-4 mr-2" />
-                            {getUnifiedDocumentCards().length} {getUnifiedDocumentCards().length === 1 ? 'Document' : 'Documents'}
-                          </span>
-                          {dbDocsLoading && (
-                            <span className="text-xs text-gray-500">Syncing…</span>
-                          )}
+                  <div className="mb-8 bg-gradient-to-r from-slate-50 to-blue-50/30 rounded-2xl p-6 border border-slate-200">
+                    <div className="flex items-center justify-between mb-4">
+                      <div className="flex items-center gap-4">
+                        <div className="p-3 bg-gradient-to-br from-blue-500 to-indigo-600 rounded-xl shadow-lg">
+                          <Upload className="w-6 h-6 text-white" />
+                        </div>
+                        <div>
+                          <h3 className="text-2xl font-bold text-slate-800 mb-1">Bank Statement Documents</h3>
+                          <p className="text-slate-600 font-medium">Secure document processing for financial analysis</p>
                         </div>
                       </div>
+                      <div className="hidden md:flex items-center gap-2 px-4 py-2 bg-white/60 backdrop-blur-sm rounded-lg border border-slate-200 shadow-sm">
+                        <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
+                        <span className="text-sm font-medium text-slate-700">System Ready</span>
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-4">
+                      <div className="flex items-center gap-3 p-3 bg-white/50 rounded-lg border border-slate-200">
+                        <div className="w-8 h-8 bg-emerald-100 rounded-lg flex items-center justify-center">
+                          <svg className="w-4 h-4 text-emerald-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                          </svg>
+                        </div>
+                        <div>
+                          <p className="text-sm font-semibold text-slate-800">Secure Upload</p>
+                          <p className="text-xs text-slate-600">Bank-grade encryption</p>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-3 p-3 bg-white/50 rounded-lg border border-slate-200">
+                        <div className="w-8 h-8 bg-blue-100 rounded-lg flex items-center justify-center">
+                          <svg className="w-4 h-4 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+                          </svg>
+                        </div>
+                        <div>
+                          <p className="text-sm font-semibold text-slate-800">Fast Processing</p>
+                          <p className="text-xs text-slate-600">AI-powered analysis</p>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-3 p-3 bg-white/50 rounded-lg border border-slate-200">
+                        <div className="w-8 h-8 bg-purple-100 rounded-lg flex items-center justify-center">
+                          <svg className="w-4 h-4 text-purple-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+                          </svg>
+                        </div>
+                        <div>
+                          <p className="text-sm font-semibold text-slate-800">Smart Extraction</p>
+                          <p className="text-xs text-slate-600">Auto-fill financial data</p>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Uploaded Files Table */}
+                  {(getUnifiedDocumentCards().length > 0) && (
+                    <div className="mb-8">
+                      <div className="flex items-center justify-between mb-6 p-4 bg-gradient-to-r from-white to-slate-50 rounded-xl border border-slate-200 shadow-sm">
+                        <div className="flex items-center gap-3">
+                          <div className="p-2 bg-gradient-to-br from-blue-500 to-indigo-600 rounded-lg shadow-sm">
+                            <FileText className="w-4 h-4 text-white" />
+                          </div>
+                          <div>
+                            <h4 className="text-lg font-bold text-slate-800">
+                              {getUnifiedDocumentCards().length} {getUnifiedDocumentCards().length === 1 ? 'Document' : 'Documents'} Uploaded
+                            </h4>
+                            <p className="text-sm text-slate-600">Ready for processing and analysis</p>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-3">
+                          {dbDocsLoading && (
+                            <div className="flex items-center gap-2 px-3 py-2 bg-blue-50 rounded-lg border border-blue-200">
+                              <div className="w-3 h-3 border-2 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
+                              <span className="text-sm font-medium text-blue-700">Syncing…</span>
+                            </div>
+                          )}
+                          <div className="px-3 py-2 bg-emerald-50 rounded-lg border border-emerald-200">
+                            <span className="text-sm font-semibold text-emerald-700">All Systems Active</span>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Table Layout */}
+                      <div className="bg-white rounded-2xl border border-slate-200 shadow-lg overflow-hidden">
+                        <div className="overflow-x-auto">
+                          <table className="w-full">
+                            <thead className="bg-gradient-to-r from-slate-50 to-blue-50/30 border-b border-slate-200">
+                              <tr>
+                                <th className="px-6 py-4 text-left text-sm font-bold text-slate-700 uppercase tracking-wider">Document</th>
+                                <th className="px-6 py-4 text-left text-sm font-bold text-slate-700 uppercase tracking-wider">Status</th>
+                                <th className="px-6 py-4 text-left text-sm font-bold text-slate-700 uppercase tracking-wider">Size</th>
+                                <th className="px-6 py-4 text-left text-sm font-bold text-slate-700 uppercase tracking-wider">Actions</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-100">
+                              {getUnifiedDocumentCards().map((item) => {
+                                const isUploading = item.status === 'uploading';
+                                const isCompleted = item.status === 'completed';
+                                const hasError = item.status === 'error';
+
+                                return (
+                                  <tr 
+                                    key={item.key}
+                                    className={`group hover:bg-slate-50/50 transition-all duration-200 ${isCompleted ? 'cursor-pointer' : ''}`}
+                                    onClick={() => {
+                                      if (!isCompleted) return;
+                                      setExpandedDocKey(item.key);
+                                    }}
+                                  >
+                                    {/* Document Column */}
+                                    <td className="px-6 py-4">
+                                      <div className="flex items-center gap-4">
+                                        <div className={`flex items-center justify-center w-12 h-12 rounded-xl shadow-sm border ${
+                                          isCompleted ? 'bg-gradient-to-br from-emerald-100 to-green-100 border-emerald-200' : 
+                                          isUploading ? 'bg-gradient-to-br from-blue-100 to-indigo-100 border-blue-200' : 
+                                          hasError ? 'bg-gradient-to-br from-red-100 to-rose-100 border-red-200' : 
+                                          'bg-gradient-to-br from-slate-100 to-gray-100 border-slate-200'
+                                        }`}>
+                                          <FileText className={`w-6 h-6 ${
+                                            isCompleted ? 'text-emerald-700' : isUploading ? 'text-blue-700' : hasError ? 'text-red-700' : 'text-slate-600'
+                                          }`} />
+                                        </div>
+                                        <div className="min-w-0 flex-1">
+                                          <h5 className="text-base font-semibold text-slate-900 truncate" title={item.file.name}>
+                                            {item.file.name}
+                                          </h5>
+                                          <p className="text-sm text-slate-500">PDF Document</p>
+                                          {isCompleted && item.fileUrl && (
+                                            <a
+                                              href={item.fileUrl}
+                                              target="_blank"
+                                              rel="noreferrer"
+                                              className="inline-flex items-center gap-1 text-xs text-blue-600 hover:text-blue-700 font-medium mt-1"
+                                              onClick={(e) => e.stopPropagation()}
+                                            >
+                                              <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                                              </svg>
+                                              View Document
+                                            </a>
+                                          )}
+                                        </div>
+                                      </div>
+                                    </td>
+
+                                    {/* Status Column */}
+                                    <td className="px-6 py-4">
+                                      <div className={`inline-flex items-center px-3 py-1.5 rounded-lg text-xs font-bold border ${
+                                        isCompleted 
+                                          ? 'bg-gradient-to-r from-emerald-50 to-green-50 text-emerald-800 border-emerald-200'
+                                          : isUploading
+                                          ? 'bg-gradient-to-r from-blue-50 to-indigo-50 text-blue-800 border-blue-200'
+                                          : hasError
+                                          ? 'bg-gradient-to-r from-red-50 to-rose-50 text-red-800 border-red-200'
+                                          : 'bg-gradient-to-r from-slate-50 to-gray-50 text-slate-800 border-slate-200'
+                                      }`}>
+                                        {isCompleted && <CheckCircle className="w-3 h-3 mr-1" />}
+                                        {isUploading && <div className="w-3 h-3 mr-1 border-2 border-blue-600 border-t-transparent rounded-full animate-spin" />}
+                                        {hasError && <span className="w-3 h-3 mr-1">⚠</span>}
+                                        {isCompleted ? 'Completed' : isUploading ? 'Processing' : hasError ? 'Error' : 'Uploaded'}
+                                      </div>
+                                    </td>
+
+                                    {/* Size Column */}
+                                    <td className="px-6 py-4">
+                                      <span className="inline-flex items-center gap-1 px-2 py-1 bg-slate-100 rounded-md text-xs font-semibold text-slate-700">
+                                        <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                                        </svg>
+                                        {(item.file.size / 1024 / 1024).toFixed(1)} MB
+                                      </span>
+                                    </td>
+
+                                    {/* Actions Column */}
+                                    <td className="px-6 py-4">
+                                      <div className="flex items-center gap-1">
+                                        {/* Replace Button */}
+                                        <button
+                                          type="button"
+                                          className="p-2 rounded-lg text-slate-400 hover:text-blue-600 hover:bg-blue-50 border border-transparent hover:border-blue-200 transition-all duration-200"
+                                          onClick={(e) => { e.stopPropagation(); handleReplaceClick(item); }}
+                                          title="Replace file"
+                                        >
+                                          <RefreshCw className="w-4 h-4" />
+                                        </button>
+                                        
+                                        {/* Retry Button (error only) */}
+                                        {item.source === 'local' && hasError && (
+                                          <button
+                                            type="button"
+                                            className="p-2 rounded-lg text-slate-400 hover:text-orange-600 hover:bg-orange-50 border border-transparent hover:border-orange-200 transition-all duration-200"
+                                            onClick={(e) => { e.stopPropagation(); handleRetryUpload(item.dateKey); }}
+                                            title="Retry upload"
+                                          >
+                                            <RotateCcw className="w-4 h-4" />
+                                          </button>
+                                        )}
+                                        
+                                        {/* Delete Button */}
+                                        <button
+                                          type="button"
+                                          className="p-2 rounded-lg text-slate-400 hover:text-red-600 hover:bg-red-50 border border-transparent hover:border-red-200 transition-all duration-200"
+                                          onClick={(e) => { e.stopPropagation(); handleDeleteClick(item); }}
+                                          title="Remove file"
+                                        >
+                                          <Trash2 className="w-4 h-4" />
+                                        </button>
+                                      </div>
+                                    </td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+
+                      {/* Expanded Details Section */}
                       {getUnifiedDocumentCards().map((item) => {
-                        const isUploading = item.status === 'uploading';
                         const isCompleted = item.status === 'completed';
-                        const hasError = item.status === 'error';
+                        if (!isCompleted || expandedDocKey !== item.key) return null;
 
                         return (
-                          <div
-                            key={item.key}
-                            className={`group bg-gradient-to-r from-white to-gray-50/50 border border-gray-200 rounded-2xl p-6 shadow-sm hover:shadow-xl hover:border-blue-200 hover:from-blue-50/30 hover:to-white transition-all duration-300 ${isCompleted ? 'cursor-pointer' : ''}`}
-                            onClick={() => {
-                              if (!isCompleted) return;
-                              // Open-only behavior: clicking the card opens this item, but does not close it.
-                              setExpandedDocKey(item.key);
-                            }}
-                            role={isCompleted ? 'button' : undefined}
-                            tabIndex={isCompleted ? 0 : -1}
-                            aria-expanded={isCompleted ? expandedDocKey === item.key : undefined}
-                          >
-                            <div className="flex items-center justify-between">
-                              {/* File Info */}
-                              <div className="flex items-center gap-4 min-w-0 flex-1">
-                                <div className={`flex items-center justify-center w-14 h-14 rounded-2xl shadow-sm ${
-                                  isCompleted ? 'bg-gradient-to-br from-green-100 to-green-200 border border-green-200' : isUploading ? 'bg-gradient-to-br from-blue-100 to-blue-200 border border-blue-200' : hasError ? 'bg-gradient-to-br from-red-100 to-red-200 border border-red-200' : 'bg-gradient-to-br from-gray-100 to-gray-200 border border-gray-200'
-                                }`}>
-                                  <FileText className={`w-7 h-7 ${
-                                    isCompleted ? 'text-green-700' : isUploading ? 'text-blue-700' : hasError ? 'text-red-700' : 'text-gray-600'
-                                  }`} />
-                                </div>
-                                <div className="min-w-0 flex-1">
-                                  <div className="flex items-center gap-3 mb-3">
-                                    <h5 className="text-lg font-bold text-gray-900" title={item.file.name}>
-                                      {item.file.name}
-                                    </h5>
-                                    <div className={`inline-flex items-center px-4 py-2 rounded-full text-xs font-bold shadow-sm border ${
-                                      isCompleted 
-                                        ? 'bg-gradient-to-r from-green-50 to-green-100 text-green-800 border-green-200'
-                                        : isUploading
-                                        ? 'bg-gradient-to-r from-blue-50 to-blue-100 text-blue-800 border-blue-200'
-                                        : hasError
-                                        ? 'bg-gradient-to-r from-red-50 to-red-100 text-red-800 border-red-200'
-                                        : 'bg-gradient-to-r from-gray-50 to-gray-100 text-gray-800 border-gray-200'
-                                    }`}>
-                                      {isCompleted && <CheckCircle className="w-3 h-3 mr-1.5" />}
-                                      {isUploading && <div className="w-3 h-3 mr-1.5 border-2 border-blue-600 border-t-transparent rounded-full animate-spin" />}
-                                      {hasError && <span className="w-3 h-3 mr-1.5">⚠</span>}
-                                      {isCompleted ? 'Completed' : isUploading ? 'Processing' : hasError ? 'Error' : 'Uploaded'}
-                                    </div>
-                                  </div>
-                                  <div className="flex items-center gap-2 text-sm text-gray-600">
-                                    <span className="px-2 py-1 bg-gray-100 rounded-md text-xs font-semibold text-gray-700">
-                                      {(item.file.size / 1024 / 1024).toFixed(1)} MB
-                                    </span>
-                                  </div>
-                                  {item.fileUrl && (
-                                    <div className="mt-1 text-sm">
-                                      <a
-                                        href={item.fileUrl}
-                                        target="_blank"
-                                        rel="noreferrer"
-                                        className="text-blue-600 hover:text-blue-700 underline"
-                                      >
-                                        View uploaded file
-                                      </a>
-                                    </div>
-                                  )}
-                                </div>
-                              </div>
-                              {/* Icon Actions */}
-                              <div className="flex items-center gap-2 ml-4">
-                                {/* Replace Icon (both db and local) */}
-                                <button
-                                  type="button"
-                                  className="p-3 rounded-xl text-gray-400 hover:text-blue-600 hover:bg-blue-50 border border-transparent hover:border-blue-200 transition-all duration-200 group-hover:text-gray-500 shadow-sm hover:shadow-md"
-                                  onClick={(e) => { e.stopPropagation(); handleReplaceClick(item); }}
-                                  title="Replace file"
-                                >
-                                  <RefreshCw className="w-4 h-4" />
-                                </button>
-                                
-                                {/* Retry Icon (local + error only) */}
-                                {item.source === 'local' && hasError && (
-                                  <button
-                                    type="button"
-                                    className="p-3 rounded-xl text-gray-400 hover:text-orange-600 hover:bg-orange-50 border border-transparent hover:border-orange-200 transition-all duration-200 shadow-sm hover:shadow-md"
-                                    onClick={(e) => { e.stopPropagation(); handleRetryUpload(item.dateKey); }}
-                                    title="Retry upload"
-                                  >
-                                    <RotateCcw className="w-4 h-4" />
-                                  </button>
-                                )}
-                                
-                                {/* Delete Icon (db and local) */}
-                                <button
-                                  type="button"
-                                  className="p-3 rounded-xl text-gray-400 hover:text-red-600 hover:bg-red-50 border border-transparent hover:border-red-200 transition-all duration-200 group-hover:text-gray-500 shadow-sm hover:shadow-md"
-                                  onClick={(e) => { e.stopPropagation(); handleDeleteClick(item); }}
-                                  title="Remove file"
-                                >
-                                  <Trash2 className="w-4 h-4" />
-                                </button>
-                              </div>
-                            </div>
-
-                            {/* Progress bar for uploading */}
-                            {isUploading && (
-                              <div className="mt-4">
-                                <div className="w-full bg-gray-200 rounded-full h-2 overflow-hidden">
-                                  <div 
-                                    className="bg-blue-600 h-2 rounded-full transition-all duration-500 ease-out"
-                                    style={{ width: `${Math.min(uploadProgress.get(item.dateKey) || 0, 100)}%` }}
-                                  ></div>
-                                </div>
-                                <p className="text-xs text-blue-600 mt-2 font-medium">
-                                  {(uploadProgress.get(item.dateKey) || 0) < 100 ? 'Processing document...' : 'Almost done...'}
-                                </p>
-                              </div>
-                            )}
-
+                          <div key={`expanded-${item.key}`} className="mt-6 bg-white rounded-2xl border border-slate-200 shadow-lg p-6">
                             {/* Inline Financial Details expansion */}
                             {isCompleted && expandedDocKey === item.key && (
                               <div className="mt-6 pt-6 border-t border-gray-200">
@@ -1722,15 +1913,88 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                                         </div>
                                       )}
                                       {/* Top row actions inside expanded area */}
-                                      <div className="mb-4 flex justify-end">
-                                        <button
-                                          type="button"
-                                          onClick={(e) => { e.stopPropagation(); setExpandedDocKey(null); }}
-                                          className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-semibold text-gray-700 bg-gray-100 hover:bg-gray-200 border border-gray-200 shadow-sm"
-                                          aria-label="Close details"
-                                        >
-                                          Close
-                                        </button>
+                                      <div className="mb-4 flex items-center justify-between">
+                                        <div>
+                                          {savedDocs.has(item.key) && (
+                                            <span className="inline-flex items-center gap-1 px-3 py-1 rounded-full text-xs font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                                              <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                                              </svg>
+                                              Saved
+                                            </span>
+                                          )}
+                                        </div>
+                                        <div className="flex items-center gap-2">
+                                          <button
+                                            type="button"
+                                            className="px-4 py-2 rounded-lg text-sm font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 border border-slate-300 transition-all"
+                                            onClick={() => setExpandedDocKey(null)}
+                                          >
+                                            Close
+                                          </button>
+                                          <button
+                                            type="button"
+                                            className="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-bold text-white bg-emerald-600 hover:bg-emerald-700 border border-emerald-700 shadow-sm hover:shadow transition-all"
+                                            onClick={async () => {
+                                              try {
+                                                const baseIds = {
+                                                  id: (details.id as string) || ((initial?.id as string) || ''),
+                                                  applicationId:
+                                                    (details.applicationId as string) ||
+                                                    ((initial?.applicationId as string) || (details.id as string) || (initial?.id as string) || ''),
+                                                } as const;
+                                                const payloadDocVals = perDocDetails[item.dateKey] || {};
+                                                // sanitize numeric fields like handleContinue
+                                                const numericNames = new Set([
+                                                  'creditScore','timeInBiz','avgMonthlyRevenue','averageMonthlyDeposits','existingDebt','requestedAmount','avgDailyBalance','avgMonthlyDepositCount','nsfCount','negativeDays','currentPositionCount','holdback','grossAnnualRevenue'
+                                                ]);
+                                                const sanitized: Record<string, unknown> = { ...payloadDocVals };
+                                                for (const k of Object.keys(sanitized)) {
+                                                  if (numericNames.has(k)) {
+                                                    const raw = String((sanitized as Record<string, unknown>)[k] ?? '');
+                                                    if (!raw) continue;
+                                                    const withoutCommas = raw.replace(/,/g, '');
+                                                    const cleanedStr = k === 'holdback' ? withoutCommas.replace(/%/g, '') : withoutCommas;
+                                                    sanitized[k] = cleanedStr;
+                                                  }
+                                                }
+                                                // Generate a new UUID for this save action
+                                                const generatedId = (typeof window !== 'undefined' && (window as any).crypto && typeof (window as any).crypto.randomUUID === 'function')
+                                                  ? (window as any).crypto.randomUUID()
+                                                  : 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+                                                      const r = (Math.random() * 16) | 0;
+                                                      const v = c === 'x' ? r : (r & 0x3) | 0x8;
+                                                      return v.toString(16);
+                                                    });
+                                                const body = {
+                                                  id: generatedId,
+                                                  applicationId: baseIds.applicationId,
+                                                  statement_date: item.dateKey,
+                                                  file_name: item.file.name,
+                                                  file_size: item.file.size,
+                                                  file_url: item.fileUrl,
+                                                  ...sanitized,
+                                                };
+                                                await fetchWithTimeout(SAVING_DETAILS_WEBHOOK_URL, {
+                                                  method: 'POST',
+                                                  headers: { 'Content-Type': 'application/json' },
+                                                  body: JSON.stringify(body),
+                                                  timeoutMs: 10000,
+                                                });
+                                                setSavedDocs(prev => new Set(prev).add(item.key));
+                                                setExpandedDocKey(null);
+                                              } catch (err) {
+                                                console.warn('[savingDetails webhook] failed:', err);
+                                                alert('Failed to save details. Please try again.');
+                                              }
+                                            }}
+                                          >
+                                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                                            </svg>
+                                            Save
+                                          </button>
+                                        </div>
                                       </div>
                                       {/* Business Information (per document) */}
                                       <div className="mb-6">
@@ -1820,7 +2084,79 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                                               </div>
                                             )}
 
-                                            {/* MCA Summary */}
+                  {/* Aggregated Financial Summary (hidden while relocating) */}
+                  {SHOW_GLOBAL_FINANCIAL_SUMMARY && (
+                  <div className="mt-6 mb-6">
+                    <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+                      <div className="flex items-center justify-between px-6 py-4 bg-gradient-to-r from-slate-50 to-blue-50/30 border-b border-slate-200">
+                        <div className="flex items-center gap-3">
+                          <div className="p-2 bg-emerald-100 rounded-lg">
+                            <svg className="w-4 h-4 text-emerald-700" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 7h18M3 12h18M3 17h18"/></svg>
+                          </div>
+                          <div>
+                            <h4 className="text-lg font-bold text-slate-800">Financial Summary</h4>
+                            <p className="text-sm text-slate-600">Averaged over {Math.max(financialDocsCount, 1)} document{Math.max(financialDocsCount,1) === 1 ? '' : 's'}</p>
+                          </div>
+                        </div>
+                        {financialsLoading && (
+                          <div className="flex items-center gap-2 px-3 py-1.5 bg-blue-50 rounded-lg border border-blue-200">
+                            <div className="w-3 h-3 border-2 border-blue-600 border-t-transparent rounded-full animate-spin"/>
+                            <span className="text-xs font-medium text-blue-700">Updating…</span>
+                          </div>
+                        )}
+                      </div>
+                      <div className="overflow-x-auto">
+                        <table className="min-w-full">
+                          <thead className="bg-white">
+                            {(() => {
+                              const headers: Array<string> = [
+                                'Deal Name', 'Industry', 'Entity Type', 'State', 'Time in Biz (months)', 'Avg Monthly Revenue', 'Avg Monthly Deposits', 'Existing Business Debt', 'Gross Annual Revenue', 'Avg Daily Balance', 'Avg Monthly Deposit Count', 'NSF Count', 'Negative Days', 'Current Position Count', 'Holdback (%)'
+                              ];
+                              return (
+                                <tr>
+                                  {headers.map((h, i) => (
+                                    <th key={i} className="px-4 py-3 text-left text-xs font-bold text-slate-600 uppercase tracking-wider whitespace-nowrap">{h}</th>
+                                  ))}
+                                </tr>
+                              );
+                            })()}
+                          </thead>
+                          <tbody className="text-sm">
+                            {(() => {
+                              const fmt = (n?: number) => typeof n === 'number' ? n.toLocaleString('en-US', { maximumFractionDigits: 2 }) : '';
+                              const s = financialSummary || {} as any;
+                              const values: Array<string | number | undefined> = [
+                                s.deal_name || 'Not Found',
+                                s.industry || 'Not Found',
+                                s.entity_type || 'Not Found',
+                                s.state || 'Not Found',
+                                fmt(s.time_in_biz_months),
+                                fmt(s.avg_monthly_revenue),
+                                fmt(s.avg_monthly_deposits),
+                                fmt(s.existing_business_debt),
+                                fmt(s.gross_annual_revenue),
+                                fmt(s.avg_daily_balance),
+                                fmt(s.avg_monthly_deposit_count),
+                                fmt(s.nsf_count),
+                                fmt(s.negative_days),
+                                fmt(s.current_position_count),
+                                fmt(s.holdback),
+                              ];
+                              return (
+                                <tr className="hover:bg-slate-50/50">
+                                  {values.map((v, i) => (
+                                    <td key={i} className="px-4 py-3 text-slate-900 whitespace-nowrap">{String(v ?? '')}</td>
+                                  ))}
+                                </tr>
+                              );
+                            })()}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  </div>
+                  )}
+                  {/* MCA Summary */}
                                             {Array.isArray(data.mca_summary) && data.mca_summary.length > 0 && (
                                               <div className="bg-gradient-to-br from-amber-50 to-orange-50 rounded-2xl p-6 border border-amber-200 shadow-sm">
                                                 <div className="mb-6 flex items-center gap-4">
@@ -1886,34 +2222,7 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                                           </div>
                                         );
                                       })()}
-                                      {/* Per-document footer action at bottom of financial details */}
-                                      <div className="flex items-center justify-end pt-4 mt-2">
-                                        <button
-                                          type="button"
-                                          onClick={(e) => { e.stopPropagation(); handleContinue(item); }}
-                                          disabled={submitting}
-                                          className={`inline-flex items-center gap-3 px-6 py-3 rounded-xl font-bold text-base shadow-md transition-all duration-200 focus:outline-none focus:ring-4 ${
-                                            submitting
-                                              ? 'bg-gradient-to-r from-gray-400 to-gray-500 text-white cursor-not-allowed'
-                                              : 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white hover:from-blue-700 hover:to-indigo-700 hover:shadow-lg hover:scale-[1.02] focus:ring-blue-500/40'
-                                          }`}
-                                          aria-label="Continue to Lender Matches"
-                                        >
-                                          {submitting ? (
-                                            <>
-                                              <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                                              Processing…
-                                            </>
-                                          ) : (
-                                            <>
-                                              Continue to Lender Matches
-                                              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7l5 5m0 0l-5 5m5-5H6" />
-                                              </svg>
-                                            </>
-                                          )}
-                                        </button>
-                                      </div>
+                                      {/* Per-document footer action removed: using a single global Continue button */}
                                     </>
                                   );
                                 })()}
@@ -1925,6 +2234,35 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                       })}
                     </div>
                   )}
+
+                  {/* Global Continue button (outside each document) */}
+                  <div className="flex items-center justify-end mt-6 mb-10">
+                    <button
+                      type="button"
+                      onClick={() => handleContinue()}
+                      disabled={submitting}
+                      className={`inline-flex items-center gap-3 px-6 py-3 rounded-xl font-bold text-base shadow-md transition-all duration-200 focus:outline-none focus:ring-4 ${
+                        submitting
+                          ? 'bg-gradient-to-r from-gray-400 to-gray-500 text-white cursor-not-allowed'
+                          : 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white hover:from-blue-700 hover:to-indigo-700 hover:shadow-lg hover:scale-[1.02] focus:ring-blue-500/40'
+                      }`}
+                      aria-label="Continue to Lender Matches"
+                    >
+                      {submitting ? (
+                        <>
+                          <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                          Processing…
+                        </>
+                      ) : (
+                        <>
+                          Continue to Lender Matches
+                          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7l5 5m0 0l-5 5m5-5H6" />
+                          </svg>
+                        </>
+                      )}
+                    </button>
+                  </div>
 
                   {/* Next month reminder removed per request */}
 
