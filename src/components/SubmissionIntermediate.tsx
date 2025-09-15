@@ -10,8 +10,6 @@ const DOCUMENT_FILE_WEBHOOK_URL = '/.netlify/functions/document-file';
 const SAVING_DETAILS_WEBHOOK_URL = 'https://primary-production-c8d0.up.railway.app/webhook/savingDetails';
 // Feature flag: temporarily disable updating applications webhook
 const DISABLE_UPDATING_APPLICATIONS = true;
-// Feature flag: control placement/visibility of global financial summary block
-const SHOW_GLOBAL_FINANCIAL_SUMMARY = false;
 
 
 type Props = {
@@ -2084,8 +2082,7 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                                               </div>
                                             )}
 
-                  {/* Aggregated Financial Summary (hidden while relocating) */}
-                  {SHOW_GLOBAL_FINANCIAL_SUMMARY && (
+                  {/* Aggregated Financial Summary */}
                   <div className="mt-6 mb-6">
                     <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
                       <div className="flex items-center justify-between px-6 py-4 bg-gradient-to-r from-slate-50 to-blue-50/30 border-b border-slate-200">
@@ -2155,8 +2152,8 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                       </div>
                     </div>
                   </div>
-                  )}
-                  {/* MCA Summary */}
+
+                                            {/* MCA Summary */}
                                             {Array.isArray(data.mca_summary) && data.mca_summary.length > 0 && (
                                               <div className="bg-gradient-to-br from-amber-50 to-orange-50 rounded-2xl p-6 border border-amber-200 shadow-sm">
                                                 <div className="mb-6 flex items-center gap-4">
