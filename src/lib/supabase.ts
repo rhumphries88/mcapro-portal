@@ -139,6 +139,53 @@ export const updateApplication = async (id: string, updates: Partial<Application
   return data
 }
 
+// Optional type for rows in application_financials (kept loose to avoid coupling to migrations)
+export interface ApplicationFinancialRow {
+  id: string
+  application_id: string
+  created_at?: string
+  updated_at?: string
+  [key: string]: unknown
+}
+
+// Prefer fetching financials from dedicated application_financials table
+export const getApplicationFinancialsByApplicationId = async (
+  applicationId: string
+): Promise<ApplicationFinancialRow | null> => {
+  const { data, error } = await supabase
+    .from('application_financials')
+    .select('*')
+    .eq('application_id', applicationId)
+    .limit(1)
+
+  if (error) throw error
+  const rows = data as unknown as ApplicationFinancialRow[] | null
+  return rows && rows.length ? rows[0] : null
+}
+
+// Optional type for rows in application_summary
+export interface ApplicationSummaryRow {
+  id: string
+  application_id: string
+  created_at?: string
+  updated_at?: string
+  [key: string]: unknown
+}
+
+// Fetch ALL application summary data by application_id
+export const getApplicationSummaryByApplicationId = async (
+  applicationId: string
+): Promise<ApplicationSummaryRow[]> => {
+  const { data, error } = await supabase
+    .from('application_summary')
+    .select('*')
+    .eq('application_id', applicationId)
+    .order('month', { ascending: true })
+
+  if (error) throw error
+  return (data as unknown as ApplicationSummaryRow[]) || []
+}
+
 export const deleteApplication = async (id: string) => {
   const { error } = await supabase
     .from('applications')
@@ -345,4 +392,31 @@ export const getMcaResult = async (jobId: string): Promise<McaResult | null> => 
 
   if (error) throw error
   return (data as unknown as McaResult) ?? null
+}
+
+// Get application financial data
+export const getApplicationFinancials = async (applicationId: string) => {
+  const { data, error } = await supabase
+    .from('applications')
+    .select(`
+      id,
+      business_name,
+      annual_revenue,
+      monthly_revenue,
+      monthly_deposits,
+      existing_debt,
+      credit_score,
+      requested_amount,
+      years_in_business,
+      number_of_employees,
+      industry,
+      business_type,
+      created_at,
+      updated_at
+    `)
+    .eq('id', applicationId)
+    .single()
+
+  if (error) throw error
+  return data
 }

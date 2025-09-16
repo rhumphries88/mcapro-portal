@@ -16,6 +16,7 @@ export async function handler(event, context) {
       contentType: event.headers?.['content-type'] || event.headers?.['Content-Type'] || 'unknown',
       isBase64: !!event.isBase64Encoded,
     });
+    
 
     // Decode inputs
     const contentType = event.headers?.['content-type'] || event.headers?.['Content-Type'] || '';

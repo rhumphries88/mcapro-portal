@@ -140,7 +140,12 @@ Application ID: {{applicationId}}`;
   const loadApplicationSubmissions = async (applicationId: string) => {
     try {
       const subs = await getLenderSubmissions(applicationId);
-      setApplicationSubmissions(subs as (DBLenderSubmission & { lender: DBLender })[]);
+      // Normalize any legacy/alias values to the live DB statuses
+      const normalized = (subs as (DBLenderSubmission & { lender: DBLender })[]).map(s => ({
+        ...s,
+        status: (canonicalizeSubmissionStatus(s.status) as any) ?? s.status,
+      }));
+      setApplicationSubmissions(normalized);
     } catch (error) {
       console.error('Error loading submissions:', error);
     }
@@ -219,11 +224,11 @@ Application ID: {{applicationId}}`;
     switch (status) {
       case 'active': case 'matched': case 'funded':
         return 'bg-green-100 text-green-800';
-      case 'inactive': case 'declined':
+      case 'inactive': case 'declined': case 'rejected':
         return 'bg-red-100 text-red-800';
-      case 'pending': case 'under-review':
+      case 'pending': case 'under-review': case 'sent':
         return 'bg-yellow-100 text-yellow-800';
-      case 'submitted':
+      case 'submitted': case 'responded':
         return 'bg-blue-100 text-blue-800';
       default:
         return 'bg-gray-100 text-gray-800';
@@ -371,15 +376,59 @@ Application ID: {{applicationId}}`;
     }
   };
 
-  const handleUpdateSubmission = async (submission: DBLenderSubmission, updates: Partial<DBLenderSubmission>) => {
+  // Optimistic local update to avoid async race conditions while typing
+  const updateSubmissionLocal = (submissionId: string, updates: Partial<DBLenderSubmission>) => {
+    setApplicationSubmissions(prev =>
+      prev.map(sub => (sub.id === submissionId ? { ...sub, ...updates } : sub))
+    );
+  };
+
+  // Canonicalize status variations to live DB statuses
+  const canonicalizeSubmissionStatus = (status?: string | null): DBLenderSubmission['status'] | undefined => {
+    if (!status) return undefined as any;
+    const s = status.trim().toLowerCase().replace(/_/g, '-');
+    // Map legacy aliases to DB statuses
+    if (s === 'decline' || s === 'declined' || s === 'rejected') return 'rejected' as any;
+    if (s === 'fund' || s === 'funded' || s === 'approved') return 'approved' as any;
+    if (s === 'counter-offer' || s === 'counter offer' || s === 'counteroffer' || s === 'responded') return 'responded' as any;
+    if (s === 'sent') return 'sent' as any;
+    if (s === 'pending') return 'pending' as any;
+    return status as any;
+  };
+
+  // Translate UI status values to DB-allowed values before persisting
+  // Live DB allows: pending, sent, responded, approved, rejected
+  const mapUiStatusToDb = (status?: string | null): string | undefined => {
+    if (!status) return undefined;
+    const s = status.trim().toLowerCase().replace(/_/g, '-');
+    if (s === 'pending') return 'pending';
+    if (s === 'approved') return 'approved';
+    if (s === 'declined' || s === 'decline' || s === 'rejected') return 'rejected';
+    if (s === 'counter-offer' || s === 'counter offer' || s === 'counteroffer' || s === 'responded') return 'responded';
+    if (s === 'fund' || s === 'funded') return 'approved';
+    if (s === 'sent') return 'sent';
+    return status || undefined;
+  };
+
+  // Persist changes to backend when user finishes editing (e.g., onBlur)
+  const persistSubmissionChange = async (submissionId: string, updates: Partial<DBLenderSubmission>) => {
     try {
-      const updatedSubmission = await updateLenderSubmission(submission.id, updates);
-      setApplicationSubmissions(prev => prev.map(sub => 
-        sub.id === submission.id ? { ...sub, ...updatedSubmission } : sub
-      ));
+      // Map UI status to DB-allowed values prior to persisting
+      const dbPatch: Partial<DBLenderSubmission> = { ...updates } as any;
+      if (Object.prototype.hasOwnProperty.call(updates, 'status')) {
+        const dbStatus = mapUiStatusToDb(updates.status as any);
+        if (dbStatus) (dbPatch as any).status = dbStatus as any;
+      }
+      const updatedSubmission = await updateLenderSubmission(submissionId, dbPatch);
+      // Normalize status back to the canonical values used by the UI options
+      const normalizedStatus = canonicalizeSubmissionStatus((updatedSubmission as any)?.status as string | undefined);
+      setApplicationSubmissions(prev =>
+        prev.map(sub => (sub.id === submissionId ? { ...sub, ...updatedSubmission, ...(normalizedStatus ? { status: normalizedStatus } : {}) } : sub))
+      );
     } catch (error) {
-      console.error('Error updating submission:', error);
-      alert('Error updating submission');
+      console.error('Error persisting submission change:', error);
+      const message = (error as any)?.message || (error as any)?.error_description || JSON.stringify(error);
+      alert(`Error updating submission: ${message}`);
     }
   };
 
@@ -1280,7 +1329,6 @@ Application ID: {{applicationId}}`;
                       Add Lender
                     </button>
                   </div>
-                  
                   <div className="space-y-4 max-h-96 overflow-y-auto">
                     {applicationSubmissions.map((submission) => (
                       <div key={submission.id} className="bg-gray-50 rounded-lg p-4">
@@ -1293,20 +1341,15 @@ Application ID: {{applicationId}}`;
                           </div>
                           <select
                             value={submission.status}
-                            onChange={(e) => handleUpdateSubmission(submission, { status: e.target.value as DBLenderSubmission['status'] })}
-                            className={`px-3 py-1 rounded-full text-xs font-medium border-0 ${
-                              submission.status === 'approved' ? 'bg-green-100 text-green-800' :
-                              submission.status === 'declined' ? 'bg-red-100 text-red-800' :
-                              submission.status === 'funded' ? 'bg-blue-100 text-blue-800' :
-                              submission.status === 'counter-offer' ? 'bg-yellow-100 text-yellow-800' :
-                              'bg-gray-100 text-gray-800'
-                            }`}
+                            onChange={(e) => updateSubmissionLocal(submission.id, { status: e.target.value as DBLenderSubmission['status'] })}
+                            onBlur={(e) => persistSubmissionChange(submission.id, { status: e.target.value as DBLenderSubmission['status'] })}
+                            className="px-3 py-1 rounded-full text-xs font-medium border border-gray-300 bg-white text-gray-700 focus:outline-none focus:ring-1 focus:ring-blue-500"
                           >
                             <option value="pending">Pending</option>
+                            <option value="sent">Sent</option>
+                            <option value="responded">Counter Offer</option>
                             <option value="approved">Approved</option>
-                            <option value="declined">Declined</option>
-                            <option value="counter-offer">Counter Offer</option>
-                            <option value="funded">Funded</option>
+                            <option value="rejected">Declined</option>
                           </select>
                         </div>
                         
@@ -1316,7 +1359,8 @@ Application ID: {{applicationId}}`;
                             <input
                               type="number"
                               value={submission.offered_amount || ''}
-                              onChange={(e) => handleUpdateSubmission(submission, { offered_amount: e.target.value === '' ? undefined : Number(e.target.value) })}
+                              onChange={(e) => updateSubmissionLocal(submission.id, { offered_amount: e.target.value === '' ? undefined : Number(e.target.value) })}
+                              onBlur={(e) => persistSubmissionChange(submission.id, { offered_amount: e.target.value === '' ? undefined : Number(e.target.value) })}
                               className="w-full px-2 py-1 text-sm border border-gray-300 rounded focus:ring-1 focus:ring-blue-500"
                               placeholder="Amount"
                             />
@@ -1326,7 +1370,8 @@ Application ID: {{applicationId}}`;
                             <input
                               type="text"
                               value={submission.factor_rate || ''}
-                              onChange={(e) => handleUpdateSubmission(submission, { factor_rate: e.target.value === '' ? undefined : e.target.value })}
+                              onChange={(e) => updateSubmissionLocal(submission.id, { factor_rate: e.target.value === '' ? undefined : e.target.value })}
+                              onBlur={(e) => persistSubmissionChange(submission.id, { factor_rate: e.target.value === '' ? undefined : e.target.value })}
                               className="w-full px-2 py-1 text-sm border border-gray-300 rounded focus:ring-1 focus:ring-blue-500"
                               placeholder="1.2"
                             />
@@ -1338,7 +1383,8 @@ Application ID: {{applicationId}}`;
                           <input
                             type="text"
                             value={submission.terms || ''}
-                            onChange={(e) => handleUpdateSubmission(submission, { terms: e.target.value === '' ? undefined : e.target.value })}
+                            onChange={(e) => updateSubmissionLocal(submission.id, { terms: e.target.value === '' ? undefined : e.target.value })}
+                            onBlur={(e) => persistSubmissionChange(submission.id, { terms: e.target.value === '' ? undefined : e.target.value })}
                             className="w-full px-2 py-1 text-sm border border-gray-300 rounded focus:ring-1 focus:ring-blue-500"
                             placeholder="12 months"
                           />
@@ -1348,7 +1394,8 @@ Application ID: {{applicationId}}`;
                           <label className="block text-xs font-medium text-gray-700 mb-1">Response</label>
                           <textarea
                             value={submission.response || ''}
-                            onChange={(e) => handleUpdateSubmission(submission, { response: e.target.value === '' ? undefined : e.target.value })}
+                            onChange={(e) => updateSubmissionLocal(submission.id, { response: e.target.value === '' ? undefined : e.target.value })}
+                            onBlur={(e) => persistSubmissionChange(submission.id, { response: e.target.value === '' ? undefined : e.target.value })}
                             className="w-full px-2 py-1 text-sm border border-gray-300 rounded focus:ring-1 focus:ring-blue-500"
                             rows={2}
                             placeholder="Lender response..."
@@ -1359,7 +1406,8 @@ Application ID: {{applicationId}}`;
                           <label className="block text-xs font-medium text-gray-700 mb-1">Notes</label>
                           <textarea
                             value={submission.notes || ''}
-                            onChange={(e) => handleUpdateSubmission(submission, { notes: e.target.value === '' ? undefined : e.target.value })}
+                            onChange={(e) => updateSubmissionLocal(submission.id, { notes: e.target.value === '' ? undefined : e.target.value })}
+                            onBlur={(e) => persistSubmissionChange(submission.id, { notes: e.target.value === '' ? undefined : e.target.value })}
                             className="w-full px-2 py-1 text-sm border border-gray-300 rounded focus:ring-1 focus:ring-blue-500"
                             rows={2}
                             placeholder="Internal notes..."

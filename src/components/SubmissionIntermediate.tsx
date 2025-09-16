@@ -1,13 +1,12 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Building2, Upload, FileText, CheckCircle, RefreshCw, Trash2, RotateCcw } from 'lucide-react';
-import { getApplicationDocuments, deleteApplicationDocument, deleteApplicationDocumentByAppAndDate, type ApplicationDocument, supabase } from '../lib/supabase';
+import { Building2, Upload, FileText, CheckCircle, RefreshCw, Trash2, RotateCcw, DollarSign, TrendingUp, Calendar } from 'lucide-react';
+import { getApplicationDocuments, deleteApplicationDocument, deleteApplicationDocumentByAppAndDate, getApplicationFinancialsByApplicationId, getApplicationSummaryByApplicationId, type ApplicationDocument, supabase } from '../lib/supabase';
 
 
 const NEW_DEAL_WEBHOOK_URL = '/.netlify/functions/new-deal';
 const NEW_DEAL_SUMMARY_WEBHOOK_URL = '/.netlify/functions/new-deal-summary';
 const UPDATING_APPLICATIONS_WEBHOOK_URL = '/.netlify/functions/updating-applications';
 const DOCUMENT_FILE_WEBHOOK_URL = '/.netlify/functions/document-file';
-const SAVING_DETAILS_WEBHOOK_URL = 'https://primary-production-c8d0.up.railway.app/webhook/savingDetails';
 // Feature flag: temporarily disable updating applications webhook
 const DISABLE_UPDATING_APPLICATIONS = true;
 
@@ -103,12 +102,6 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
       const v = (initial as Record<string, unknown>)[k];
       if (v !== undefined && v !== null && String(v).trim() !== '') provided.push(k);
     });
-    if (provided.length) {
-      setAutoPopulatedKeys(prev => {
-        const next = new Set<string>([...prev, ...provided]);
-        return next;
-      });
-    }
     setTimeout(() => {
       // Post-merge snapshot for verification
       console.log('[SubmissionIntermediate] details after merge snapshot:', {
@@ -150,6 +143,9 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
         const form = new FormData();
         form.append('file', file, file.name);
         form.append('statementDate', dateKey);
+        // Ensure backend ties summary to the correct application
+        const appId = (details.applicationId as string) || (initial?.applicationId as string) || (details.id as string) || (initial?.id as string) || '';
+        if (appId) form.append('application_id', appId);
         console.log(`[newDealSummary retry] attempt ${attempt}/${maxAttempts} for`, { dateKey, file: file.name });
         const resp = await fetchWithTimeout(NEW_DEAL_SUMMARY_WEBHOOK_URL, { method: 'POST', body: form, timeoutMs: 25000 });
         if (resp.ok && resp.status !== 202) {
@@ -351,99 +347,87 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
     return () => { cancelled = true; };
   }, [details.id, details.applicationId, initial?.id, initial?.applicationId]);
 
-  // Fetch and aggregate application_financials
-  useEffect(() => {
-    const appId = (details.id as string) || (initial?.id as string) || (details.applicationId as string) || (initial?.applicationId as string) || '';
-    if (!appId) return;
-    let cancelled = false;
-    const run = async () => {
-      try {
-        setFinancialsLoading(true);
-        const { data, error } = await supabase
-          .from('application_financials')
-          .select('*')
-          .eq('application_id', appId)
-          .order('created_at', { ascending: false });
-        if (error) throw error;
-        const rows = (data || []) as Array<Record<string, any>>;
-        // Count uploaded documents for this application directly from DB
-        const { count: docsCount, error: countErr } = await supabase
-          .from('application_documents')
-          .select('*', { count: 'exact', head: true })
-          .eq('application_id', appId);
-        if (countErr) console.warn('Count application_documents failed:', countErr.message);
-        const docCount = (typeof docsCount === 'number' ? docsCount : 0) || rows.length || 1;
-        setFinancialDocsCount(docCount);
-        // pick latest non-empty strings from the first rows
-        const pickString = (key: string): string | undefined => {
-          const r = rows.find(r => {
-            const v = r[key];
-            return typeof v === 'string' && v.trim() !== '';
-          });
-          return r ? String(r[key]) : undefined;
-        };
-        const sumNum = (key: string): number => rows.reduce((acc, r) => acc + (typeof r[key] === 'number' ? (r[key] as number) : Number(r[key] ?? 0)), 0);
-        const avg = (key: string): number => {
-          const s = sumNum(key);
-          return docCount > 0 ? s / docCount : s;
-        };
-        const summary = {
-          deal_name: pickString('deal_name') ?? (details.dealName as string | undefined),
-          industry: pickString('industry') ?? (details.industry as string | undefined),
-          entity_type: pickString('entity_type') ?? (details.entityType as string | undefined),
-          state: pickString('state') ?? (details.state as string | undefined),
-          time_in_biz_months: Number(avg('time_in_biz_months') || 0),
-          avg_monthly_revenue: Number(avg('avg_monthly_revenue') || 0),
-          avg_monthly_deposits: Number(avg('avg_monthly_deposits') || 0),
-          existing_business_debt: Number(avg('existing_business_debt') || 0),
-          gross_annual_revenue: Number(avg('gross_annual_revenue') || 0),
-          avg_daily_balance: Number(avg('avg_daily_balance') || 0),
-          avg_monthly_deposit_count: Number(avg('avg_monthly_deposit_count') || 0),
-          nsf_count: Number(avg('nsf_count') || 0),
-          negative_days: Number(avg('negative_days') || 0),
-          current_position_count: Number(avg('current_position_count') || 0),
-          holdback: Number(avg('holdback') || 0),
-        };
-        if (!cancelled) setFinancialSummary(summary);
-      } catch (e) {
-        console.warn('Failed to load application_financials:', e);
-        if (!cancelled) setFinancialSummary(null);
-      } finally {
-        if (!cancelled) setFinancialsLoading(false);
-      }
-    };
-    run();
-    return () => { cancelled = true; };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [details.id, details.applicationId, initial?.id, initial?.applicationId]);
+  // Financial summary loading/aggregation removed per request
 
   const set = (key: string, value: string | boolean) => setDetails(prev => ({ ...prev, [key]: value }));
 
   const [submitting, setSubmitting] = useState(false);
   const [isDragOver, setIsDragOver] = useState(false);
   const [, setUploadProgress] = useState<Map<string, number>>(new Map());
-  // Track per-document saved state for inline Financial Details
-  const [savedDocs, setSavedDocs] = useState<Set<string>>(new Set());
-  // Aggregated financial summary (from application_financials)
-  const [financialSummary, setFinancialSummary] = useState<null | {
-    deal_name?: string;
-    industry?: string;
-    entity_type?: string;
-    state?: string;
-    time_in_biz_months?: number;
-    avg_monthly_revenue?: number;
-    avg_monthly_deposits?: number;
-    existing_business_debt?: number;
-    gross_annual_revenue?: number;
-    avg_daily_balance?: number;
-    avg_monthly_deposit_count?: number;
-    nsf_count?: number;
-    negative_days?: number;
-    current_position_count?: number;
-    holdback?: number;
-  }>(null);
-  const [financialsLoading, setFinancialsLoading] = useState(false);
-  const [financialDocsCount, setFinancialDocsCount] = useState<number>(0);
+  const [fileBucket, setFileBucket] = useState<File[]>([]);
+  const [bucketSubmitting, setBucketSubmitting] = useState(false);
+  const [batchProcessing, setBatchProcessing] = useState(false);
+
+  const addFilesToBucket = (files: FileList | null) => {
+    if (!files || files.length === 0) return;
+    const newOnes: File[] = [];
+    Array.from(files).forEach((f) => {
+      if (f.type !== 'application/pdf') return; // enforce pdf only
+      if (f.size > 10 * 1024 * 1024) return; // 10MB limit
+      // Avoid duplicates by name+size
+      const dup = fileBucket.find((x) => x.name === f.name && x.size === f.size);
+      if (!dup) newOnes.push(f);
+    });
+    if (newOnes.length) setFileBucket((prev) => [...prev, ...newOnes]);
+  };
+
+  const removeFromBucket = (index: number) => {
+    setFileBucket((prev) => prev.filter((_, i) => i !== index));
+  };
+
+  const fileToBase64 = async (file: File): Promise<string> => {
+    const buf = await file.arrayBuffer();
+    let binary = '';
+    const bytes = new Uint8Array(buf);
+    const chunk = 0x8000;
+    for (let i = 0; i < bytes.length; i += chunk) {
+      binary += String.fromCharCode.apply(null, Array.from(bytes.subarray(i, i + chunk)) as any);
+    }
+    return btoa(binary);
+  };
+
+  const submitAllBucketFiles = async () => {
+    if (!fileBucket.length || bucketSubmitting) return;
+    const appId = (details.applicationId as string) || (initial?.applicationId as string) || (details.id as string) || (initial?.id as string) || '';
+    if (!appId) {
+      alert('Missing application ID');
+      return;
+    }
+    setBucketSubmitting(true);
+    setBatchProcessing(true);
+    try {
+      const filesPayload = await Promise.all(
+        fileBucket.map(async (f) => ({
+          file_name: f.name,
+          file_type: f.type || 'application/pdf',
+          file_bytes_base64: await fileToBase64(f),
+        }))
+      );
+      const resp = await fetchWithTimeout(NEW_DEAL_WEBHOOK_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ application_id: appId, files: filesPayload }),
+        timeoutMs: 45000,
+      });
+      const data = await resp.json().catch(() => ({ uploaded: [], upstream: null }));
+      const uploaded: Array<{ file_name: string; status: string; file_url?: string }> = (data && data.uploaded) || [];
+
+      const successNames = new Set(uploaded.filter((u) => u.status === 'uploaded').map((u) => u.file_name));
+      // Clear only successes after upstream completed
+      setFileBucket((prev) => prev.filter((f) => !successNames.has(f.name)));
+      // Financial summary polling/aggregation removed per request
+      // Refresh DB docs after processing is complete so rows appear with populated fields
+      try { if (appId) await refetchDbDocs(appId); } catch {}
+    } catch (e) {
+      console.warn('[bucket submit] failed:', e);
+      alert('Failed to submit files. Please try again.');
+    } finally {
+      setBucketSubmitting(false);
+      setBatchProcessing(false);
+    }
+  };
+  // Financial rows fetched from DB for cross-document summary
+  // Financial summary state removed per request
   // Animated progress for general loading/submitting screen
   const [loadingProgress, setLoadingProgress] = useState(0);
   useEffect(() => {
@@ -464,7 +448,7 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
   
   // Daily statements tracking (changed from monthly to daily)
   const [dailyStatements, setDailyStatements] = useState<Map<string, { file: File; status: 'uploading' | 'completed' | 'error'; fileUrl?: string }>>(new Map());
-  const [autoPopulatedKeys, setAutoPopulatedKeys] = useState<Set<string>>(new Set());
+
   // Persisted documents fetched from DB
   const [dbDocs, setDbDocs] = useState<ApplicationDocument[]>([]);
   const [dbDocsLoading, setDbDocsLoading] = useState(false);
@@ -493,11 +477,159 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
   }, [perDocMcaData]);
   // Track which item is being replaced (db/local)
   const [replaceTarget, setReplaceTarget] = useState<null | { source: 'db' | 'local'; dateKey: string; docId?: string }>(null);
-  // Track which completed document card is expanded to show inline Financial Details
-  const [expandedDocKey, setExpandedDocKey] = useState<string | null>(null);
+  // Inline document expansion removed per request
 
   // Create a ref for the replace file input
   const replaceFileInputRef = useRef<HTMLInputElement>(null);
+
+  // Financial data state
+  const [financialData, setFinancialData] = useState<any>(null);
+  const [financialDataLoading, setFinancialDataLoading] = useState(false);
+
+  // Bank Statement Summary data state
+  const [summaryData, setSummaryData] = useState<any[]>([]);
+  const [summaryDataLoading, setSummaryDataLoading] = useState(false);
+  const [expandedCards, setExpandedCards] = useState<Set<string>>(new Set());
+
+  // Fetch financial data when application ID is available
+  const fetchFinancialData = async (appId: string) => {
+    if (!appId) return;
+    
+    try {
+      setFinancialDataLoading(true);
+      console.log('[Financials] fetching application_financials for application_id:', appId);
+      const data = await getApplicationFinancialsByApplicationId(appId);
+      console.log('[Financials] fetched row:', data);
+      setFinancialData(data);
+    } catch (error) {
+      console.error('Failed to fetch financial data:', error);
+    } finally {
+      setFinancialDataLoading(false);
+    }
+  };
+
+  // Fetch summary data when application ID is available
+  const fetchSummaryData = async (appId: string) => {
+    if (!appId) return;
+    
+    console.log('[Summary] Starting fetch for application_id:', appId);
+    try {
+      setSummaryDataLoading(true);
+      console.log('[Summary] fetching application_summary for application_id:', appId);
+      const data = await getApplicationSummaryByApplicationId(appId);
+      console.log('[Summary] fetched row:', data);
+      console.log('[Summary] Boolean(data):', Boolean(data));
+      setSummaryData(data);
+    } catch (error) {
+      console.error('[Summary] Failed to fetch summary data:', error);
+      console.error('[Summary] Error details:', error);
+    } finally {
+      setSummaryDataLoading(false);
+      console.log('[Summary] Finished loading, summaryDataLoading set to false');
+    }
+  };
+
+  // Fetch financial data when application ID changes
+  useEffect(() => {
+    const appId = (details.applicationId as string) || (initial?.applicationId as string) || (details.id as string) || (initial?.id as string) || '';
+    if (appId) {
+      fetchFinancialData(appId);
+      fetchSummaryData(appId);
+    }
+  }, [details.applicationId, details.id, initial?.applicationId, initial?.id]);
+
+  // Realtime: listen for inserts/updates on application_financials for this application
+  useEffect(() => {
+    const appId = (details.applicationId as string) || (initial?.applicationId as string) || (details.id as string) || (initial?.id as string) || '';
+    if (!appId) return;
+    try {
+      const channel = supabase
+        .channel(`application_financials-${appId}`)
+        .on('postgres_changes', {
+          event: '*',
+          schema: 'public',
+          table: 'application_financials',
+          filter: `application_id=eq.${appId}`,
+        }, () => {
+          fetchFinancialData(appId);
+        })
+        .subscribe();
+      return () => { try { supabase.removeChannel(channel); } catch { /* ignore */ } };
+    } catch {
+      // ignore realtime subscription errors
+      return;
+    }
+  }, [details.applicationId, details.id, initial?.applicationId, initial?.id]);
+
+  // Realtime: listen for inserts/updates on application_summary for this application
+  useEffect(() => {
+    const appId = (details.applicationId as string) || (initial?.applicationId as string) || (details.id as string) || (initial?.id as string) || '';
+    if (!appId) return;
+    try {
+      const channel = supabase
+        .channel(`application_summary-${appId}`)
+        .on('postgres_changes', {
+          event: '*',
+          schema: 'public',
+          table: 'application_summary',
+          filter: `application_id=eq.${appId}`,
+        }, (payload) => {
+          console.log('[Summary] Real-time update received:', payload);
+          fetchSummaryData(appId);
+        })
+        .subscribe();
+      return () => { try { supabase.removeChannel(channel); } catch { /* ignore */ } };
+    } catch {
+      // ignore realtime subscription errors
+      return;
+    }
+  }, [details.applicationId, details.id, initial?.applicationId, initial?.id]);
+
+  // Simple format helpers for the financials
+  const toNumber = (v: unknown): number | undefined => {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : undefined;
+  };
+  const fmtCurrency = (v: unknown): string => {
+    const n = toNumber(v);
+    return typeof n === 'number' ? n.toLocaleString(undefined, { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }) : '—';
+  };
+  const fmtNumber = (v: unknown): string => {
+    const n = toNumber(v);
+    return typeof n === 'number' ? n.toLocaleString() : '—';
+  };
+  const fmtMonths = (v: unknown): string => {
+    const n = toNumber(v);
+    return typeof n === 'number' ? `${n} mo${n === 1 ? '' : 's'}` : '—';
+  };
+  const fmtPercent = (v: unknown): string => {
+    const n = toNumber(v);
+    if (typeof n !== 'number') return '—';
+    return `${n.toLocaleString(undefined, { maximumFractionDigits: 2 })}%`;
+  };
+
+  // Safely access a value from the fetched financial row by trying multiple aliases
+  const valueFromFinancial = (...keys: string[]): unknown => {
+    const row = financialData as Record<string, unknown> | null;
+    if (!row) return undefined;
+    for (const k of keys) {
+      if (k in row && row[k] !== null && row[k] !== undefined) return row[k];
+    }
+    return undefined;
+  };
+
+  // Toggle card expansion
+  const toggleCardExpansion = (cardId: string) => {
+    setExpandedCards(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(cardId)) {
+        newSet.delete(cardId);
+      } else {
+        newSet.add(cardId);
+      }
+      return newSet;
+    });
+  };
 
   
 
@@ -669,14 +801,6 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
       console.log('[populateDetailsFromWebhook] merged details snapshot:', merged);
       return merged;
     });
-    if (providedKeys.size) {
-      console.log('[populateDetailsFromWebhook] providedKeys for highlight:', Array.from(providedKeys));
-      setAutoPopulatedKeys(prev => {
-        const nextSet = new Set<string>([...prev, ...providedKeys]);
-        console.log('[populateDetailsFromWebhook] autoPopulatedKeys now:', Array.from(nextSet));
-        return nextSet;
-      });
-    }
   };
 
   // removed legacy uploadFilesToWebhook (replaced by month-aware handlers)
@@ -745,6 +869,9 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
         const form = new FormData();
         form.append('file', file, file.name);
         form.append('statementDate', dateKey);
+        // Include application_id so backend can associate this upload to the application
+        const appIdForNewDeal = (details.applicationId as string) || (initial?.applicationId as string) || (details.id as string) || (initial?.id as string) || '';
+        if (appIdForNewDeal) form.append('application_id', appIdForNewDeal);
 
         console.log('[newDeal webhook] Starting request', {
           url: NEW_DEAL_WEBHOOK_URL,
@@ -873,6 +1000,9 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
         const form2 = new FormData();
         form2.append('file', file, file.name);
         form2.append('statementDate', dateKey);
+        // Include application_id for summary linkage
+        const appIdForSummary = (details.applicationId as string) || (initial?.applicationId as string) || (details.id as string) || (initial?.id as string) || '';
+        if (appIdForSummary) form2.append('application_id', appIdForSummary);
         console.log('[newDealSummary webhook] Starting request', {
           url: NEW_DEAL_SUMMARY_WEBHOOK_URL,
           fileName: file.name,
@@ -930,7 +1060,8 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
 
       // 3) Upload to Supabase Storage first, then send metadata (with file_url) to DOCUMENT_FILE_WEBHOOK_URL
       try {
-        const appId = (details.id as string) || (initial?.id as string) || (details.applicationId as string) || (initial?.applicationId as string) || '';
+        // Prioritize applicationId over id to ensure we use the Applications table ID
+        const appId = (details.applicationId as string) || (initial?.applicationId as string) || (details.id as string) || (initial?.id as string) || '';
         // Upload to Storage bucket 'application_documents' at root so URL is /application_documents/<file_name>
         let fileUrlFromStorage: string | undefined = undefined;
         try {
@@ -1060,16 +1191,6 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
     }
   };
 
-  // Handle bulk upload (all files assigned to current date)
-  const handleBulkUpload = async (files: FileList | null) => {
-    if (!files || files.length === 0) return;
-    
-    const fileArray = Array.from(files);
-    for (const file of fileArray) {
-      await handleDailyUpload(file);
-    }
-  };
-
   // Handle file selection from replace dialog
   const handleReplaceFileSelected = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -1118,7 +1239,7 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
     e.preventDefault();
     e.stopPropagation();
     setIsDragOver(false);
-    handleBulkUpload(e.dataTransfer.files);
+    addFilesToBucket(e.dataTransfer.files);
   };
 
   // Helpers to build a unified list (DB docs + in-session uploads) rendered with the same card UI
@@ -1452,155 +1573,6 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
     }
   };
 
-  const Input = ({
-    label,
-    name,
-    type = 'text',
-    inputMode,
-    valueProp,
-    onValueChange,
-  }: { label: string; name: string; type?: string; inputMode?: React.HTMLAttributes<HTMLInputElement>['inputMode']; valueProp?: string; onValueChange?: (v: string) => void }) => {
-    const inputRef = useRef<HTMLInputElement | null>(null);
-    const mouseInsideRef = useRef(false);
-    const typingRef = useRef(false);
-    const typingTimerRef = useRef<number | null>(null);
-
-    const numericNames = new Set([
-      'creditScore',
-      'timeInBiz',
-      'avgMonthlyRevenue',
-      'averageMonthlyDeposits',
-      'existingDebt',
-      'requestedAmount',
-      'avgDailyBalance',
-      'avgMonthlyDepositCount',
-      'nsfCount',
-      'negativeDays',
-      'currentPositionCount',
-      'holdback',
-      'grossAnnualRevenue',
-    ]);
-
-    const addCommas = (raw: string) => {
-      if (!raw) return '';
-      // keep sign
-      let sign = '';
-      if (raw.startsWith('-')) {
-        sign = '-';
-        raw = raw.slice(1);
-      }
-      const parts = raw.split('.');
-      const intPart = parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, ',');
-      const decPart = parts.length > 1 ? `.${parts.slice(1).join('.')}` : '';
-      return `${sign}${intPart}${decPart}`;
-    };
-
-    const startTyping = () => {
-      typingRef.current = true;
-      if (typingTimerRef.current) window.clearTimeout(typingTimerRef.current);
-      typingTimerRef.current = window.setTimeout(() => {
-        typingRef.current = false; // finished typing
-        // Rule #2: if mouse is out when typing finished, blur
-        if (!mouseInsideRef.current) inputRef.current?.blur();
-      }, 600); // debounce window to consider "finished typing"
-    };
-
-    const handleMouseEnter = () => {
-      mouseInsideRef.current = true;
-      // Rule #1: ensure focus when mouse is inside while typing
-      if (inputRef.current) inputRef.current.focus();
-    };
-
-    const handleMouseLeave = () => {
-      mouseInsideRef.current = false;
-      // Rule #2: if not typing anymore, blur immediately
-      if (!typingRef.current) inputRef.current?.blur();
-    };
-
-    return (
-      <div className="relative">
-        <label className="block text-sm font-bold text-gray-800 mb-2" htmlFor={name}>{label}</label>
-        <div className="relative">
-          <input
-            ref={inputRef}
-            id={name}
-            name={name}
-            type={type}
-            inputMode={inputMode}
-            autoComplete="off"
-            value={valueProp ?? ((details[name] as string) || '')}
-            onFocus={() => { /* keep focus while inside */ }}
-            onMouseEnter={handleMouseEnter}
-            onMouseLeave={handleMouseLeave}
-            onKeyDown={startTyping}
-            onInput={startTyping}
-            onChange={(e) => {
-              startTyping();
-              let v = e.target.value;
-              if (numericNames.has(name)) {
-                let hadPercent = false;
-                if (name === 'holdback') {
-                  if (v.includes('%')) hadPercent = true;
-                }
-                v = v.replace(/,/g, '').replace(/[^0-9.-]/g, '');
-                if (name === 'holdback') {
-                  const n = Number(v);
-                  if (!Number.isNaN(n)) {
-                    if (n < 0) v = '0';
-                    else if (n > 100) v = '100';
-                  }
-                  if (hadPercent && v !== '') v = `${v}%`;
-                }
-              }
-              if (autoPopulatedKeys.has(name)) {
-                setAutoPopulatedKeys(prev => {
-                  const next = new Set(prev);
-                  next.delete(name);
-                  return next;
-                });
-              }
-              if (onValueChange) {
-                onValueChange(v);
-              } else {
-                set(name, v);
-              }
-            }}
-            onBlur={() => {
-              if (!numericNames.has(name)) return;
-              const current = inputRef.current?.value ?? '';
-              let hasPercent = false;
-              if (name === 'holdback') {
-                if (current.includes('%')) hasPercent = true;
-              }
-              // strip non-numeric for formatting (except dot and dash)
-              const stripped = current.replace(/,/g, '').replace(/[^0-9.-]/g, '');
-              if (stripped === '' || stripped === '-' || stripped === '.') return; // nothing meaningful to format
-              const formattedNum = addCommas(stripped);
-              const finalVal = hasPercent ? `${formattedNum}%` : formattedNum;
-              if (onValueChange) {
-                onValueChange(finalVal);
-              } else {
-                set(name, finalVal);
-              }
-            }}
-            className={`w-full rounded-xl border-2 px-4 py-3 text-gray-900 font-medium transition-all duration-200 ${
-              autoPopulatedKeys.has(name) 
-                ? 'border-emerald-300 bg-gradient-to-r from-emerald-50 to-green-50 ring-2 ring-emerald-200/50 shadow-sm focus:border-emerald-400 focus:ring-emerald-300/50' 
-                : 'border-gray-200 bg-white hover:border-gray-300 focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 shadow-sm hover:shadow-sm'
-            } focus:outline-none`}
-          />
-          {/* Removed floating AUTO badge per request */}
-        </div>
-        {autoPopulatedKeys.has(name) && (
-          <div className="mt-2 flex items-center gap-2 text-emerald-700 text-xs font-medium">
-            <div className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse"></div>
-            <span>Extracted from documents</span>
-          </div>
-        )}
-      </div>
-    );
-  };
-
   return (
     <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
       <div className="bg-white rounded-xl border border-gray-200 shadow-sm">
@@ -1720,6 +1692,15 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                               <span className="text-sm font-medium text-blue-700">Syncing…</span>
                             </div>
                           )}
+
+                  {batchProcessing && (
+                    <div className="mb-6 p-4 rounded-xl border border-blue-200 bg-blue-50 text-blue-800 text-sm flex items-center gap-3">
+                      <div className="w-4 h-4 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
+                      <div>
+                        Processing uploaded documents… Please wait while we finish extracting details. The form will populate once processing completes.
+                      </div>
+                    </div>
+                  )}
                           <div className="px-3 py-2 bg-emerald-50 rounded-lg border border-emerald-200">
                             <span className="text-sm font-semibold text-emerald-700">All Systems Active</span>
                           </div>
@@ -1747,11 +1728,7 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                                 return (
                                   <tr 
                                     key={item.key}
-                                    className={`group hover:bg-slate-50/50 transition-all duration-200 ${isCompleted ? 'cursor-pointer' : ''}`}
-                                    onClick={() => {
-                                      if (!isCompleted) return;
-                                      setExpandedDocKey(item.key);
-                                    }}
+                                    className={`group hover:bg-slate-50/50 transition-all duration-200`}
                                   >
                                     {/* Document Column */}
                                     <td className="px-6 py-4">
@@ -1862,390 +1839,296 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                         </div>
                       </div>
 
-                      {/* Expanded Details Section */}
-                      {getUnifiedDocumentCards().map((item) => {
-                        const isCompleted = item.status === 'completed';
-                        if (!isCompleted || expandedDocKey !== item.key) return null;
+                      {/* Expanded Details Section removed per request */}
+                    </div>
+                  )}
 
-                        return (
-                          <div key={`expanded-${item.key}`} className="mt-6 bg-white rounded-2xl border border-slate-200 shadow-lg p-6">
-                            {/* Inline Financial Details expansion */}
-                            {isCompleted && expandedDocKey === item.key && (
-                              <div className="mt-6 pt-6 border-t border-gray-200">
-                                {(() => {
-                                  const docVals = perDocDetails[item.dateKey] || {};
-                                  const bind = (field: string) => ({
-                                    valueProp: (docVals[field] as string) ?? '',
-                                    onValueChange: (v: string) => {
-                                      setPerDocDetails(prev => ({
-                                        ...prev,
-                                        [item.dateKey]: { ...prev[item.dateKey], [field]: v },
-                                      }));
-                                    },
-                                  });
-                                  const docAutoCount = Object.values(docVals).filter(v => String(v ?? '').trim() !== '').length;
-                                  return (
-                                    <>
-                                      {docAutoCount > 0 && (
-                                        <div className="mb-6 relative overflow-hidden rounded-2xl border border-emerald-200 bg-gradient-to-br from-emerald-50 via-green-50 to-teal-50 p-5 shadow-lg">
-                                          <div className="absolute inset-0 bg-gradient-to-r from-emerald-100/20 to-teal-100/20 opacity-50"></div>
-                                          <div className="relative flex items-start gap-4">
-                                            <div className="flex-shrink-0 p-2.5 bg-gradient-to-br from-emerald-100 to-green-100 rounded-2xl shadow-sm border border-emerald-200">
-                                              <CheckCircle className="w-5 h-5 text-emerald-700" />
-                                            </div>
-                                            <div className="flex-1">
-                                              <h5 className="text-base font-bold text-emerald-900 mb-1">Data Extraction Complete</h5>
-                                              <p className="text-emerald-800 font-medium mb-1 text-sm">
-                                                {docAutoCount} {docAutoCount === 1 ? 'field' : 'fields'} automatically populated from this document
-                                              </p>
-                                              <p className="text-xs text-emerald-700 leading-relaxed">
-                                                Review the highlighted fields below. All information can be edited if needed.
-                                              </p>
-                                            </div>
-                                            <div className="flex-shrink-0">
-                                              <span className="inline-flex items-center px-3 py-1.5 rounded-full text-xs font-bold bg-gradient-to-r from-emerald-100 to-green-100 text-emerald-800 border border-emerald-200 shadow-sm">
-                                                {docAutoCount} {docAutoCount === 1 ? 'Field' : 'Fields'}
-                                              </span>
-                                            </div>
-                                          </div>
-                                        </div>
-                                      )}
-                                      {/* Top row actions inside expanded area */}
-                                      <div className="mb-4 flex items-center justify-between">
-                                        <div>
-                                          {savedDocs.has(item.key) && (
-                                            <span className="inline-flex items-center gap-1 px-3 py-1 rounded-full text-xs font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
-                                              <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                                              </svg>
-                                              Saved
-                                            </span>
-                                          )}
-                                        </div>
-                                        <div className="flex items-center gap-2">
-                                          <button
-                                            type="button"
-                                            className="px-4 py-2 rounded-lg text-sm font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 border border-slate-300 transition-all"
-                                            onClick={() => setExpandedDocKey(null)}
-                                          >
-                                            Close
-                                          </button>
-                                          <button
-                                            type="button"
-                                            className="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-bold text-white bg-emerald-600 hover:bg-emerald-700 border border-emerald-700 shadow-sm hover:shadow transition-all"
-                                            onClick={async () => {
-                                              try {
-                                                const baseIds = {
-                                                  id: (details.id as string) || ((initial?.id as string) || ''),
-                                                  applicationId:
-                                                    (details.applicationId as string) ||
-                                                    ((initial?.applicationId as string) || (details.id as string) || (initial?.id as string) || ''),
-                                                } as const;
-                                                const payloadDocVals = perDocDetails[item.dateKey] || {};
-                                                // sanitize numeric fields like handleContinue
-                                                const numericNames = new Set([
-                                                  'creditScore','timeInBiz','avgMonthlyRevenue','averageMonthlyDeposits','existingDebt','requestedAmount','avgDailyBalance','avgMonthlyDepositCount','nsfCount','negativeDays','currentPositionCount','holdback','grossAnnualRevenue'
-                                                ]);
-                                                const sanitized: Record<string, unknown> = { ...payloadDocVals };
-                                                for (const k of Object.keys(sanitized)) {
-                                                  if (numericNames.has(k)) {
-                                                    const raw = String((sanitized as Record<string, unknown>)[k] ?? '');
-                                                    if (!raw) continue;
-                                                    const withoutCommas = raw.replace(/,/g, '');
-                                                    const cleanedStr = k === 'holdback' ? withoutCommas.replace(/%/g, '') : withoutCommas;
-                                                    sanitized[k] = cleanedStr;
-                                                  }
-                                                }
-                                                // Generate a new UUID for this save action
-                                                const generatedId = (typeof window !== 'undefined' && (window as any).crypto && typeof (window as any).crypto.randomUUID === 'function')
-                                                  ? (window as any).crypto.randomUUID()
-                                                  : 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
-                                                      const r = (Math.random() * 16) | 0;
-                                                      const v = c === 'x' ? r : (r & 0x3) | 0x8;
-                                                      return v.toString(16);
-                                                    });
-                                                const body = {
-                                                  id: generatedId,
-                                                  applicationId: baseIds.applicationId,
-                                                  statement_date: item.dateKey,
-                                                  file_name: item.file.name,
-                                                  file_size: item.file.size,
-                                                  file_url: item.fileUrl,
-                                                  ...sanitized,
-                                                };
-                                                await fetchWithTimeout(SAVING_DETAILS_WEBHOOK_URL, {
-                                                  method: 'POST',
-                                                  headers: { 'Content-Type': 'application/json' },
-                                                  body: JSON.stringify(body),
-                                                  timeoutMs: 10000,
-                                                });
-                                                setSavedDocs(prev => new Set(prev).add(item.key));
-                                                setExpandedDocKey(null);
-                                              } catch (err) {
-                                                console.warn('[savingDetails webhook] failed:', err);
-                                                alert('Failed to save details. Please try again.');
-                                              }
-                                            }}
-                                          >
-                                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                                            </svg>
-                                            Save
-                                          </button>
-                                        </div>
-                                      </div>
-                                      {/* Business Information (per document) */}
-                                      <div className="mb-6">
-                                        <div className="mb-4 flex items-center gap-3">
-                                          <div className="p-2 bg-gradient-to-br from-blue-100 to-indigo-100 rounded-xl shadow-sm border border-blue-200">
-                                            <Building2 className="w-5 h-5 text-blue-700" />
-                                          </div>
-                                          <h4 className="text-lg font-bold text-gray-900">Business Information</h4>
-                                        </div>
-                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                                          <Input label="Deal Name" name="dealName" {...bind('dealName')} />
-                                          <Input label="Industry" name="industry" {...bind('industry')} />
-                                          <Input label="Entity Type" name="entityType" {...bind('entityType')} />
-                                          <Input label="State" name="state" {...bind('state')} />
-                                        </div>
-                                      </div>
-
-                                      {/* Financial Details (per document) */}
-                                      <div className="mb-4 flex items-center gap-3">
-                                        <div className="p-2 bg-gradient-to-br from-purple-100 to-violet-100 rounded-xl shadow-sm border border-purple-200">
-                                          <Building2 className="w-5 h-5 text-purple-700" />
-                                        </div>
-                                        <h4 className="text-lg font-bold text-gray-900">Financial Details</h4>
-                                      </div>
-                                      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                                        <Input label="Credit Score" name="creditScore" type="text" inputMode="decimal" {...bind('creditScore')} />
-                                        <Input label="Time in Biz (months)" name="timeInBiz" type="text" inputMode="decimal" {...bind('timeInBiz')} />
-                                        <Input label="Avg Monthly Revenue" name="avgMonthlyRevenue" type="text" inputMode="decimal" {...bind('avgMonthlyRevenue')} />
-                                        <Input label="Avg Monthly Deposits" name="averageMonthlyDeposits" type="text" inputMode="decimal" {...bind('averageMonthlyDeposits')} />
-                                        <Input label="Existing Business Debt" name="existingDebt" type="text" inputMode="decimal" {...bind('existingDebt')} />
-                                        <Input label="Requested Amount" name="requestedAmount" type="text" inputMode="decimal" {...bind('requestedAmount')} />
-                                        <Input label="Gross Annual Revenue" name="grossAnnualRevenue" type="text" inputMode="decimal" {...bind('grossAnnualRevenue')} />
-                                        <Input label="Avg Daily Balance" name="avgDailyBalance" type="text" inputMode="decimal" {...bind('avgDailyBalance')} />
-                                        <Input label="Avg Monthly Deposit Count" name="avgMonthlyDepositCount" type="text" inputMode="decimal" {...bind('avgMonthlyDepositCount')} />
-                                        <Input label="NSF Count" name="nsfCount" type="text" inputMode="decimal" {...bind('nsfCount')} />
-                                        <Input label="Negative Days" name="negativeDays" type="text" inputMode="decimal" {...bind('negativeDays')} />
-                                        <Input label="Current Position Count" name="currentPositionCount" type="text" inputMode="decimal" {...bind('currentPositionCount')} />
-                                        <Input label="Holdback" name="holdback" type="text" inputMode="decimal" {...bind('holdback')} />
-                                      </div>
-                                      {/* MCA Data (full payload from MCA webhook) */}
-                                      {(() => {
-                                        const data = perDocMcaData[item.dateKey];
-                                        if (data) {
-                                          console.log('[MCA render]', {
-                                            dateKey: item.dateKey,
-                                            monthlyLen: Array.isArray(data.monthly_table) ? data.monthly_table.length : 0,
-                                            summaryLen: Array.isArray(data.mca_summary) ? data.mca_summary.length : 0,
-                                            flagsLen: Array.isArray(data.fraud_flags) ? data.fraud_flags.length : 0,
-                                          });
-                                        }
-                                        if (!data) {
-                                          console.log('[MCA render] No perDocMcaData for dateKey', item.dateKey, 'existing keys:', Object.keys(perDocMcaData || {}));
-                                          return (
-                                            <div className="mt-6 text-sm text-gray-500">
-                                              No MCA data parsed yet for this document.
-                                            </div>
-                                          );
-                                        }
-                                        return (
-                                          <div className="mt-8 space-y-8">
-                                            {/* Monthly Table */}
-                                            {Array.isArray(data.monthly_table) && data.monthly_table.length > 0 && (
-                                              <div className="bg-gradient-to-br from-slate-50 to-gray-50 rounded-2xl p-6 border border-slate-200 shadow-sm">
-                                                <div className="mb-6 flex items-center gap-4">
-                                                  <div className="p-3 bg-gradient-to-br from-blue-500 to-indigo-600 rounded-xl shadow-lg">
-                                                    <Building2 className="w-6 h-6 text-white" />
-                                                  </div>
-                                                  <div>
-                                                    <h4 className="text-xl font-bold text-gray-900">Statement Analysis</h4>
-                                                    <p className="text-sm text-gray-600">Financial performance overview</p>
-                                                  </div>
-                                                </div>
-                                                <div className="grid gap-4">
-                                                  {data.monthly_table.map((row: Record<string, string>, idx: number) => (
-                                                    <div key={idx} className="bg-white rounded-xl border border-gray-200 p-6 shadow-sm hover:shadow-md transition-shadow">
-                                                      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                                                        {Object.entries(row).map(([k, v]) => (
-                                                          <div key={k} className="space-y-1">
-                                                            <div className="text-xs font-semibold text-gray-500 uppercase tracking-wide">{k.replace(/_/g, ' ')}</div>
-                                                            <div className="text-lg font-bold text-gray-900">{v || '—'}</div>
-                                                          </div>
-                                                        ))}
-                                                      </div>
-                                                    </div>
-                                                  ))}
-                                                </div>
-                                              </div>
-                                            )}
-
-                  {/* Aggregated Financial Summary */}
-                  <div className="mt-6 mb-6">
-                    <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-                      <div className="flex items-center justify-between px-6 py-4 bg-gradient-to-r from-slate-50 to-blue-50/30 border-b border-slate-200">
+                  {/* Financial Overview (from application_financials by application_id) */}
+                  {Boolean(financialData) && (
+                    <div className="mb-8">
+                      <div className="px-5 py-4 mb-3 flex items-center justify-between bg-white rounded-xl border border-slate-200 shadow-sm">
                         <div className="flex items-center gap-3">
-                          <div className="p-2 bg-emerald-100 rounded-lg">
-                            <svg className="w-4 h-4 text-emerald-700" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 7h18M3 12h18M3 17h18"/></svg>
+                          <div className="p-2 rounded-lg bg-emerald-50 border border-emerald-200">
+                            <DollarSign className="w-4 h-4 text-emerald-700" />
                           </div>
                           <div>
-                            <h4 className="text-lg font-bold text-slate-800">Financial Summary</h4>
-                            <p className="text-sm text-slate-600">Averaged over {Math.max(financialDocsCount, 1)} document{Math.max(financialDocsCount,1) === 1 ? '' : 's'}</p>
+                            <h4 className="text-lg font-bold text-slate-800">Financial Overview</h4>
+                            <p className="text-xs text-slate-600">Data loaded from your application</p>
                           </div>
                         </div>
-                        {financialsLoading && (
-                          <div className="flex items-center gap-2 px-3 py-1.5 bg-blue-50 rounded-lg border border-blue-200">
-                            <div className="w-3 h-3 border-2 border-blue-600 border-t-transparent rounded-full animate-spin"/>
-                            <span className="text-xs font-medium text-blue-700">Updating…</span>
+                        {financialDataLoading && (
+                          <div className="flex items-center gap-2 text-blue-700 bg-blue-50 border border-blue-200 px-3 py-1.5 rounded-lg">
+                            <div className="w-3 h-3 border-2 border-blue-600 border-t-transparent rounded-full animate-spin" />
+                            <span className="text-xs font-semibold">Refreshing…</span>
                           </div>
                         )}
                       </div>
-                      <div className="overflow-x-auto">
-                        <table className="min-w-full">
-                          <thead className="bg-white">
-                            {(() => {
-                              const headers: Array<string> = [
-                                'Deal Name', 'Industry', 'Entity Type', 'State', 'Time in Biz (months)', 'Avg Monthly Revenue', 'Avg Monthly Deposits', 'Existing Business Debt', 'Gross Annual Revenue', 'Avg Daily Balance', 'Avg Monthly Deposit Count', 'NSF Count', 'Negative Days', 'Current Position Count', 'Holdback (%)'
-                              ];
-                              return (
-                                <tr>
-                                  {headers.map((h, i) => (
-                                    <th key={i} className="px-4 py-3 text-left text-xs font-bold text-slate-600 uppercase tracking-wider whitespace-nowrap">{h}</th>
-                                  ))}
-                                </tr>
-                              );
-                            })()}
-                          </thead>
-                          <tbody className="text-sm">
-                            {(() => {
-                              const fmt = (n?: number) => typeof n === 'number' ? n.toLocaleString('en-US', { maximumFractionDigits: 2 }) : '';
-                              const s = financialSummary || {} as any;
-                              const values: Array<string | number | undefined> = [
-                                s.deal_name || 'Not Found',
-                                s.industry || 'Not Found',
-                                s.entity_type || 'Not Found',
-                                s.state || 'Not Found',
-                                fmt(s.time_in_biz_months),
-                                fmt(s.avg_monthly_revenue),
-                                fmt(s.avg_monthly_deposits),
-                                fmt(s.existing_business_debt),
-                                fmt(s.gross_annual_revenue),
-                                fmt(s.avg_daily_balance),
-                                fmt(s.avg_monthly_deposit_count),
-                                fmt(s.nsf_count),
-                                fmt(s.negative_days),
-                                fmt(s.current_position_count),
-                                fmt(s.holdback),
-                              ];
-                              return (
-                                <tr className="hover:bg-slate-50/50">
-                                  {values.map((v, i) => (
-                                    <td key={i} className="px-4 py-3 text-slate-900 whitespace-nowrap">{String(v ?? '')}</td>
-                                  ))}
-                                </tr>
-                              );
-                            })()}
-                          </tbody>
-                        </table>
+                      {/* Panel hidden until data arrives */}
+                      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                        <div className="p-4 bg-white rounded-xl border border-slate-200 shadow-sm">
+                          <div className="text-sm text-slate-600">Deal Name</div>
+                          <div className="mt-1 text-base font-semibold text-slate-900">{(valueFromFinancial('deal_name','dealName','business_name') as string) || '—'}</div>
+                        </div>
+                        <div className="p-4 bg-white rounded-xl border border-slate-200 shadow-sm">
+                          <div className="text-sm text-slate-600">Industry</div>
+                          <div className="mt-1 text-base font-semibold text-slate-900">{(valueFromFinancial('industry','naics_description','industry_type') as string) || '—'}</div>
+                        </div>
+                        <div className="p-4 bg-white rounded-xl border border-slate-200 shadow-sm">
+                          <div className="text-sm text-slate-600">Entity Type</div>
+                          <div className="mt-1 text-base font-semibold text-slate-900">{(valueFromFinancial('entity_type','entity','business_type') as string) || '—'}</div>
+                        </div>
+                        <div className="p-4 bg-white rounded-xl border border-slate-200 shadow-sm">
+                          <div className="text-sm text-slate-600">State</div>
+                          <div className="mt-1 text-base font-semibold text-slate-900">{(valueFromFinancial('state','State') as string) || '—'}</div>
+                        </div>
+
+                        <div className="p-4 bg-white rounded-xl border border-slate-200 shadow-sm">
+                          <div className="flex items-center justify-between">
+                            <span className="text-sm text-slate-600">Time in Biz (months)</span>
+                            <Calendar className="w-4 h-4 text-slate-400" />
+                          </div>
+                          <div className="mt-1 text-xl font-extrabold text-slate-900">{fmtMonths(valueFromFinancial('time_in_biz_months','tib_months','time_in_business_months'))}</div>
+                        </div>
+
+                        <div className="p-4 bg-white rounded-xl border border-slate-200 shadow-sm">
+                          <div className="flex items-center justify-between">
+                            <span className="text-sm text-slate-600">Avg Monthly Revenue</span>
+                            <TrendingUp className="w-4 h-4 text-slate-400" />
+                          </div>
+                          <div className="mt-1 text-xl font-extrabold text-slate-900">{fmtCurrency(valueFromFinancial('avg_monthly_revenue','monthly_revenue','average_monthly_revenue'))}</div>
+                        </div>
+                        <div className="p-4 bg-white rounded-xl border border-slate-200 shadow-sm">
+                          <div className="flex items-center justify-between">
+                            <span className="text-sm text-slate-600">Avg Monthly Deposits</span>
+                            <DollarSign className="w-4 h-4 text-slate-400" />
+                          </div>
+                          <div className="mt-1 text-xl font-extrabold text-slate-900">{fmtCurrency(valueFromFinancial('avg_monthly_deposits','monthly_deposits','average_monthly_deposits'))}</div>
+                        </div>
+                        <div className="p-4 bg-white rounded-xl border border-slate-200 shadow-sm">
+                          <div className="flex items-center justify-between">
+                            <span className="text-sm text-slate-600">Existing Business Debt</span>
+                            <DollarSign className="w-4 h-4 text-slate-400" />
+                          </div>
+                          <div className="mt-1 text-xl font-extrabold text-slate-900">{fmtCurrency(valueFromFinancial('existing_business_debt','existing_debt','current_debt'))}</div>
+                        </div>
+                        <div className="p-4 bg-white rounded-xl border border-slate-200 shadow-sm">
+                          <div className="flex items-center justify-between">
+                            <span className="text-sm text-slate-600">Gross Annual Revenue</span>
+                            <TrendingUp className="w-4 h-4 text-slate-400" />
+                          </div>
+                          <div className="mt-1 text-xl font-extrabold text-slate-900">{fmtCurrency(valueFromFinancial('gross_annual_revenue','annual_revenue','annualRevenue'))}</div>
+                        </div>
+                        <div className="p-4 bg-white rounded-xl border border-slate-200 shadow-sm">
+                          <div className="flex items-center justify-between">
+                            <span className="text-sm text-slate-600">Avg Daily Balance</span>
+                            <DollarSign className="w-4 h-4 text-slate-400" />
+                          </div>
+                          <div className="mt-1 text-xl font-extrabold text-slate-900">{fmtCurrency(valueFromFinancial('avg_daily_balance'))}</div>
+                        </div>
+                        <div className="p-4 bg-white rounded-xl border border-slate-200 shadow-sm">
+                          <div className="text-sm text-slate-600">Avg Monthly Deposit Count</div>
+                          <div className="mt-1 text-xl font-extrabold text-slate-900">{fmtNumber(valueFromFinancial('avg_monthly_deposit_count'))}</div>
+                        </div>
+                        <div className="p-4 bg-white rounded-xl border border-slate-200 shadow-sm">
+                          <div className="text-sm text-slate-600">NSF Count</div>
+                          <div className="mt-1 text-xl font-extrabold text-slate-900">{fmtNumber(valueFromFinancial('nsf_count'))}</div>
+                        </div>
+                        <div className="p-4 bg-white rounded-xl border border-slate-200 shadow-sm">
+                          <div className="text-sm text-slate-600">Negative Days</div>
+                          <div className="mt-1 text-xl font-extrabold text-slate-900">{fmtNumber(valueFromFinancial('negative_days'))}</div>
+                        </div>
+                        <div className="p-4 bg-white rounded-xl border border-slate-200 shadow-sm">
+                          <div className="text-sm text-slate-600">Current Position Count</div>
+                          <div className="mt-1 text-xl font-extrabold text-slate-900">{fmtNumber(valueFromFinancial('current_position_count'))}</div>
+                        </div>
+                        <div className="p-4 bg-white rounded-xl border border-slate-200 shadow-sm">
+                          <div className="text-sm text-slate-600">Holdback</div>
+                          <div className="mt-1 text-xl font-extrabold text-slate-900">{fmtPercent(valueFromFinancial('holdback','holdback_percent'))}</div>
+                        </div>
                       </div>
                     </div>
-                  </div>
+                  )}
 
-                                            {/* MCA Summary */}
-                                            {Array.isArray(data.mca_summary) && data.mca_summary.length > 0 && (
-                                              <div className="bg-gradient-to-br from-amber-50 to-orange-50 rounded-2xl p-6 border border-amber-200 shadow-sm">
-                                                <div className="mb-6 flex items-center gap-4">
-                                                  <div className="p-3 bg-gradient-to-br from-amber-500 to-orange-600 rounded-xl shadow-lg">
-                                                    <Building2 className="w-6 h-6 text-white" />
-                                                  </div>
-                                                  <div>
-                                                    <h4 className="text-xl font-bold text-gray-900">MCA Opportunities</h4>
-                                                    <p className="text-sm text-gray-600">Merchant cash advance options</p>
-                                                  </div>
-                                                </div>
-                                                <div className="space-y-4">
-                                                  {data.mca_summary.map((row: MCASummaryItem, idx: number) => (
-                                                    <div key={idx} className="bg-white rounded-xl border border-amber-200 p-6 shadow-sm hover:shadow-md transition-all duration-200">
-                                                      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-                                                        <div className="space-y-1">
-                                                          <div className="text-xs font-semibold text-amber-600 uppercase tracking-wide">Funder</div>
-                                                          <div className="text-lg font-bold text-gray-900">{row.FUNDER || 'Not specified'}</div>
-                                                        </div>
-                                                        <div className="space-y-1">
-                                                          <div className="text-xs font-semibold text-amber-600 uppercase tracking-wide">Amount</div>
-                                                          <div className="text-lg font-bold text-green-700">{row.AMOUNT || 'Not specified'}</div>
-                                                        </div>
-                                                        <div className="space-y-1">
-                                                          <div className="text-xs font-semibold text-amber-600 uppercase tracking-wide">Daily/Weekly Debit</div>
-                                                          <div className="text-lg font-bold text-blue-700">{row['DAILY/WEEKLY Debit'] || 'Not specified'}</div>
-                                                        </div>
-                                                      </div>
-                                                      {row.NOTES && row.NOTES.trim() && (
-                                                        <div className="mt-4 pt-4 border-t border-amber-100">
-                                                          <div className="text-xs font-semibold text-amber-600 uppercase tracking-wide mb-2">Additional Notes</div>
-                                                          <div className="text-sm text-gray-700 leading-relaxed bg-amber-50 rounded-lg p-3">{row.NOTES}</div>
-                                                        </div>
-                                                      )}
-                                                    </div>
-                                                  ))}
-                                                </div>
-                                              </div>
-                                            )}
-
-                                            {/* Fraud Flags */}
-                                            {Array.isArray(data.fraud_flags) && data.fraud_flags.length > 0 && (
-                                              <div className="bg-gradient-to-br from-red-50 to-rose-50 rounded-2xl p-6 border border-red-200 shadow-sm">
-                                                <div className="mb-6 flex items-center gap-4">
-                                                  <div className="p-3 bg-gradient-to-br from-red-500 to-rose-600 rounded-xl shadow-lg">
-                                                    <Building2 className="w-6 h-6 text-white" />
-                                                  </div>
-                                                  <div>
-                                                    <h4 className="text-xl font-bold text-gray-900">Risk Assessment</h4>
-                                                    <p className="text-sm text-gray-600">Identified potential concerns</p>
-                                                  </div>
-                                                </div>
-                                                <div className="space-y-3">
-                                                  {data.fraud_flags.map((flag: string, idx: number) => (
-                                                    <div key={idx} className="bg-white rounded-lg border border-red-200 p-4 flex items-start gap-3 shadow-sm">
-                                                      <div className="w-2 h-2 bg-red-500 rounded-full mt-2 flex-shrink-0"></div>
-                                                      <div className="text-sm text-gray-800 leading-relaxed">{flag}</div>
-                                                    </div>
-                                                  ))}
-                                                </div>
-                                              </div>
-                                            )}
-                                          </div>
-                                        );
-                                      })()}
-                                      {/* Per-document footer action removed: using a single global Continue button */}
-                                    </>
-                                  );
-                                })()}
+                  {/* Bank Statement Summary (from application_summary by application_id) */}
+                  {(summaryDataLoading || (summaryData && summaryData.length > 0)) && (
+                    <div className="mb-8">
+                      <div className="bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-200 rounded-lg shadow-lg mb-6">
+                        <div className="px-8 py-6">
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-5">
+                              <div className="p-4 bg-blue-600 rounded-xl shadow-md">
+                                <FileText className="w-6 h-6 text-white" />
+                              </div>
+                              <div>
+                                <h4 className="text-2xl font-bold text-slate-800 mb-1">Bank Statement Analysis</h4>
+                                <p className="text-blue-700 font-medium">Financial Performance Review & Assessment</p>
+                              </div>
+                            </div>
+                            {summaryDataLoading && (
+                              <div className="flex items-center gap-3 text-blue-700 bg-blue-100 border border-blue-300 px-5 py-3 rounded-lg shadow-sm">
+                                <div className="w-4 h-4 border-2 border-blue-600 border-t-transparent rounded-full animate-spin" />
+                                <span className="text-sm font-semibold">Processing Analysis...</span>
                               </div>
                             )}
-
                           </div>
-                        );
-                      })}
+                        </div>
+                      </div>
+                      <div className="space-y-6">
+                        {summaryData && summaryData.length > 0 ? (
+                          summaryData.map((row: any, index: number) => {
+                            const cardId = row.id || `card-${index}`;
+                            const isExpanded = expandedCards.has(cardId);
+                            return (
+                            <div key={cardId} className="bg-white border border-slate-200 rounded-xl shadow-lg hover:shadow-xl transition-all duration-300">
+                              <div 
+                                className="px-8 py-6 cursor-pointer hover:bg-gradient-to-r hover:from-blue-50 hover:to-indigo-50 transition-all duration-300 rounded-t-xl border-b border-slate-100"
+                                onClick={() => toggleCardExpansion(cardId)}
+                              >
+                                <div className="flex items-center justify-between">
+                                  <div className="flex items-center gap-5">
+                                    <div className="w-4 h-4 bg-gradient-to-r from-blue-500 to-indigo-500 rounded-full shadow-sm"></div>
+                                    <h5 className="text-xl font-bold text-slate-800">
+                                      {row.month || `Period ${index + 1}`}
+                                    </h5>
+                                  </div>
+                                  <div className="flex items-center gap-4">
+                                    <div className="px-4 py-2 bg-gradient-to-r from-slate-100 to-slate-50 text-slate-700 text-sm font-semibold rounded-lg border border-slate-200 shadow-sm">
+                                      Statement Period
+                                    </div>
+                                    <button className="w-10 h-10 bg-gradient-to-r from-blue-500 to-indigo-500 hover:from-blue-600 hover:to-indigo-600 text-white rounded-lg shadow-md hover:shadow-lg transition-all duration-200 flex items-center justify-center">
+                                      {isExpanded ? (
+                                        <span className="font-bold text-lg leading-none">−</span>
+                                      ) : (
+                                        <span className="font-bold text-lg leading-none">+</span>
+                                      )}
+                                    </button>
+                                  </div>
+                                </div>
+                              </div>
+                              {isExpanded && (
+                                <div className="px-8 pb-8 bg-gradient-to-b from-white to-slate-50">
+                                  {/* Bank Statement Analysis Section */}
+                                  <div className="mb-8">
+                                    <div className="flex items-center gap-3 mb-6">
+                                      <div className="w-1 h-6 bg-gradient-to-b from-blue-500 to-indigo-500 rounded-full"></div>
+                                      <h6 className="text-lg font-bold text-slate-800">Financial Analysis Summary</h6>
+                                    </div>
+                                    <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+                                      <div className="overflow-x-auto">
+                                        <table className="w-full">
+                                          <thead>
+                                            <tr className="bg-gradient-to-r from-slate-50 to-blue-50 border-b border-slate-200">
+                                              <th className="text-left py-4 px-6 font-semibold text-slate-700">Metric</th>
+                                              <th className="text-right py-4 px-6 font-semibold text-slate-700">Value</th>
+                                            </tr>
+                                          </thead>
+                                          <tbody>
+                                            <tr className="border-b border-slate-100 hover:bg-blue-50/30 transition-colors duration-200">
+                                              <td className="py-4 px-6 font-medium text-slate-600">Monthly Revenue</td>
+                                              <td className="py-4 px-6 text-right font-mono text-lg font-bold text-slate-900">{row.monthly_revenue ? fmtCurrency(row.monthly_revenue) : 'N/A'}</td>
+                                            </tr>
+                                            <tr className="border-b border-slate-100 hover:bg-blue-50/30 transition-colors duration-200">
+                                              <td className="py-4 px-6 font-medium text-slate-600">Average Daily Balance</td>
+                                              <td className="py-4 px-6 text-right font-mono text-lg font-bold text-slate-900">{row.average_daily_balances ? fmtCurrency(row.average_daily_balances) : 'N/A'}</td>
+                                            </tr>
+                                            <tr className="border-b border-slate-100 hover:bg-blue-50/30 transition-colors duration-200">
+                                              <td className="py-4 px-6 font-medium text-slate-600">Ending Balance</td>
+                                              <td className="py-4 px-6 text-right font-mono text-lg font-bold text-slate-900">{row.ending_balances ? fmtCurrency(row.ending_balances) : 'N/A'}</td>
+                                            </tr>
+                                            <tr className="border-b border-slate-100 hover:bg-blue-50/30 transition-colors duration-200">
+                                              <td className="py-4 px-6 font-medium text-slate-600">Net Deposit Count</td>
+                                              <td className="py-4 px-6 text-right font-mono text-lg font-bold text-slate-900">{row.net_deposit_count ? fmtNumber(row.net_deposit_count) : 'N/A'}</td>
+                                            </tr>
+                                            <tr className="hover:bg-blue-50/30 transition-colors duration-200">
+                                              <td className="py-4 px-6 font-medium text-slate-600">Negative Days</td>
+                                              <td className="py-4 px-6 text-right font-mono text-lg font-bold text-slate-900">{row.negative_days ? fmtNumber(row.negative_days) : 'N/A'}</td>
+                                            </tr>
+                                          </tbody>
+                                        </table>
+                                      </div>
+                                    </div>
+                                  </div>
+
+                                  {/* Funding Information Section */}
+                                  {(row.funder || row.amount || row.debit_frequency || row.notes) && (
+                                    <div className="mb-6">
+                                      <div className="flex items-center gap-3 mb-6">
+                                        <div className="w-1 h-6 bg-gradient-to-b from-emerald-500 to-teal-500 rounded-full"></div>
+                                        <h6 className="text-lg font-bold text-slate-800">Funding Details</h6>
+                                      </div>
+                                      <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-0">
+                                          <div className="p-6 border-b md:border-b-0 md:border-r border-slate-200">
+                                            <div className="space-y-4">
+                                              <div>
+                                                <label className="text-sm font-semibold text-slate-600 uppercase tracking-wide">Funder</label>
+                                                <p className="text-lg font-bold text-slate-900 mt-1">{row.funder || 'Not Specified'}</p>
+                                              </div>
+                                              <div>
+                                                <label className="text-sm font-semibold text-slate-600 uppercase tracking-wide">Funding Amount</label>
+                                                <p className="text-xl font-bold text-emerald-600 mt-1 font-mono">{row.amount ? fmtCurrency(row.amount) : 'Not Specified'}</p>
+                                              </div>
+                                            </div>
+                                          </div>
+                                          <div className="p-6">
+                                            <div className="space-y-4">
+                                              <div>
+                                                <label className="text-sm font-semibold text-slate-600 uppercase tracking-wide">Debit Frequency</label>
+                                                <p className="text-lg font-bold text-slate-900 mt-1">{row.debit_frequency || 'Not Specified'}</p>
+                                              </div>
+                                              <div>
+                                                <label className="text-sm font-semibold text-slate-600 uppercase tracking-wide">Notes</label>
+                                                <p className="text-slate-700 mt-1 leading-relaxed">{row.notes || 'No additional notes'}</p>
+                                              </div>
+                                            </div>
+                                          </div>
+                                        </div>
+                                      </div>
+                                    </div>
+                                  )}
+
+                                  {/* Statement Footer */}
+                                  <div className="mt-8 pt-6 border-t border-slate-200">
+                                    <div className="flex justify-between items-center text-sm text-slate-500">
+                                      <div className="flex items-center gap-2">
+                                        <Calendar className="w-4 h-4" />
+                                        <span>Statement Period: {row.month || 'Not Specified'}</span>
+                                      </div>
+                                      <span>Generated: {new Date().toLocaleDateString()}</span>
+                                    </div>
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                            );
+                          })
+                        ) : (
+                          <div className="p-6 bg-slate-50 rounded-xl border border-slate-200 text-center">
+                            <div className="text-slate-600">No bank statement data available</div>
+                          </div>
+                        )}
+                      </div>
                     </div>
                   )}
+
+
+                  {/* Financial Summary removed per request */}
 
                   {/* Global Continue button (outside each document) */}
                   <div className="flex items-center justify-end mt-6 mb-10">
                     <button
                       type="button"
                       onClick={() => handleContinue()}
-                      disabled={submitting}
+                      disabled={submitting || batchProcessing}
                       className={`inline-flex items-center gap-3 px-6 py-3 rounded-xl font-bold text-base shadow-md transition-all duration-200 focus:outline-none focus:ring-4 ${
-                        submitting
+                        submitting || batchProcessing
                           ? 'bg-gradient-to-r from-gray-400 to-gray-500 text-white cursor-not-allowed'
                           : 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white hover:from-blue-700 hover:to-indigo-700 hover:shadow-lg hover:scale-[1.02] focus:ring-blue-500/40'
                       }`}
                       aria-label="Continue to Lender Matches"
+                      aria-busy={submitting || batchProcessing}
                     >
-                      {submitting ? (
+                      {submitting || batchProcessing ? (
                         <>
                           <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
                           Processing…
@@ -2284,7 +2167,7 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                       <p className="text-sm text-gray-600 mb-8 max-w-md mx-auto leading-relaxed">
                         Drag & drop PDF files here or click to browse.
                       </p>
-                      <label className="cursor-pointer inline-flex items-center gap-3 px-8 py-4 rounded-2xl bg-gradient-to-r from-blue-600 to-indigo-600 text-white font-bold hover:from-blue-700 hover:to-indigo-700 focus:outline-none focus:ring-4 focus:ring-blue-500/40 transition-all duration-200 shadow-lg hover:shadow-xl hover:scale-105">
+                      <label className={`cursor-pointer inline-flex items-center gap-3 px-8 py-4 rounded-2xl font-bold focus:outline-none focus:ring-4 focus:ring-blue-500/40 transition-all duration-200 shadow-lg ${batchProcessing ? 'pointer-events-none opacity-60 bg-gray-400 text-white' : 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white hover:from-blue-700 hover:to-indigo-700 hover:shadow-xl hover:scale-105'}`}>
                         <Upload className="w-5 h-5" />
                         Choose Files
                         <input
@@ -2292,12 +2175,51 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                           className="sr-only"
                           accept=".pdf"
                           multiple
-                          onChange={(e) => handleBulkUpload(e.target.files)}
+                          onChange={(e) => !batchProcessing && addFilesToBucket(e.target.files)}
                         />
                       </label>
                       <p className="text-xs text-gray-500 mt-4 font-medium">PDF files only, max 10MB each</p>
                     </div>
                   </div>
+                  {/* Local Bucket Preview and Submit All */}
+                  {fileBucket.length > 0 && (
+                    <div className="mt-6 bg-white rounded-2xl border border-slate-200 shadow-lg overflow-hidden">
+                      <div className="px-6 py-4 bg-gradient-to-r from-slate-50 to-blue-50/30 border-b border-slate-200 flex items-center justify-between">
+                        <div className="text-slate-800 font-bold">Files Staged ({fileBucket.length})</div>
+                        <button
+                          type="button"
+                          onClick={submitAllBucketFiles}
+                          disabled={bucketSubmitting || batchProcessing}
+                          className={`inline-flex items-center gap-2 px-4 py-2 rounded-lg font-semibold text-white ${(bucketSubmitting || batchProcessing) ? 'bg-gray-400' : 'bg-blue-600 hover:bg-blue-700'} transition-colors`}
+                        >
+                          {(bucketSubmitting || batchProcessing) ? 'Submitting…' : 'Submit All'}
+                        </button>
+                      </div>
+                      <div className="divide-y divide-slate-100">
+                        {fileBucket.map((f, idx) => (
+                          <div key={`${f.name}-${idx}`} className="flex items-center justify-between px-6 py-4">
+                            <div className="flex items-center gap-3 min-w-0">
+                              <div className="w-10 h-10 rounded-xl bg-slate-100 flex items-center justify-center">
+                                <FileText className="w-5 h-5 text-slate-600" />
+                              </div>
+                              <div className="min-w-0">
+                                <div className="text-sm font-semibold text-slate-900 truncate" title={f.name}>{f.name}</div>
+                                <div className="text-xs text-slate-600">{(f.size/1024/1024).toFixed(1)} MB • {f.type || 'application/pdf'}</div>
+                              </div>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => removeFromBucket(idx)}
+                              className="px-3 py-1.5 text-sm rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50"
+                              title="Remove"
+                            >
+                              Remove
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
               </div>
 
               {/* Global Financial Details section removed; details now expand inline under a clicked completed document */}
