@@ -1949,9 +1949,8 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                     </div>
                   )}
 
-                  {/* Bank Statement Summary (from application_summary by application_id) */}
-                  {(summaryDataLoading || (summaryData && summaryData.length > 0)) && (
-                    <div className="mb-8">
+                  {/* Bank Statement Summary (from application_summary by application_id) - Always show */}
+                  <div className="mb-8">
                       <div className="bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-200 rounded-lg shadow-lg mb-6">
                         <div className="px-8 py-6">
                           <div className="flex items-center justify-between">
@@ -1971,10 +1970,36 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                               </div>
                             )}
                           </div>
+                          {summaryDataLoading && (
+                            <div className="mt-4 p-4 bg-amber-50 border border-amber-200 rounded-lg">
+                              <div className="flex items-start gap-3">
+                                <div className="flex-shrink-0 w-5 h-5 rounded-full bg-amber-400 flex items-center justify-center mt-0.5">
+                                  <span className="text-xs font-bold text-white">!</span>
+                                </div>
+                                <div>
+                                  <p className="text-amber-800 font-semibold text-sm mb-1">Analysis in Progress</p>
+                                  <p className="text-amber-700 text-sm leading-relaxed">
+                                    Bank statement analysis may take a few minutes to complete. Please wait for the summary to appear before proceeding to lender matching. 
+                                    This comprehensive analysis ensures accurate financial assessment for better loan matching.
+                                  </p>
+                                </div>
+                              </div>
+                            </div>
+                          )}
                         </div>
                       </div>
                       <div className="space-y-6">
-                        {summaryData && summaryData.length > 0 ? (
+                        {summaryDataLoading ? (
+                          <div className="p-8 bg-white rounded-xl border border-slate-200 text-center">
+                            <div className="flex flex-col items-center gap-4">
+                              <div className="w-12 h-12 border-4 border-blue-200 border-t-blue-600 rounded-full animate-spin"></div>
+                              <div>
+                                <h6 className="text-lg font-semibold text-slate-800 mb-2">Processing Bank Statements</h6>
+                                <p className="text-slate-600 text-sm">Analyzing your financial data to generate comprehensive reports...</p>
+                              </div>
+                            </div>
+                          </div>
+                        ) : summaryData && summaryData.length > 0 ? (
                           summaryData.map((row: any, index: number) => {
                             const cardId = row.id || `card-${index}`;
                             const isExpanded = expandedCards.has(cardId);
@@ -2109,7 +2134,6 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                         )}
                       </div>
                     </div>
-                  )}
 
 
                   {/* Financial Summary removed per request */}
