@@ -490,6 +490,17 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
   const [summaryData, setSummaryData] = useState<any[]>([]);
   const [summaryDataLoading, setSummaryDataLoading] = useState(false);
   const [expandedCards, setExpandedCards] = useState<Set<string>>(new Set());
+  // Analysis in-progress flag: covers loading, background processing, and active uploads
+  const isAnalysisInProgress = (
+    summaryDataLoading ||
+    batchProcessing ||
+    (Array.from(dailyStatements.values()).some(v => v.status === 'uploading')) ||
+    ((pendingSummaryRef.current?.size || 0) > 0)
+  );
+  // Detect if user has uploaded or has documents present
+  const hasAnyDocs = ((dbDocs?.length || 0) > 0) || (dailyStatements.size > 0);
+  // Show notice when user has docs but the Financial Overview row hasn't loaded yet
+  const showFinancialOverviewNotice = !financialData && hasAnyDocs;
 
   // Fetch financial data when application ID is available
   const fetchFinancialData = async (appId: string) => {
@@ -1863,7 +1874,6 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                           </div>
                         )}
                       </div>
-                      {/* Panel hidden until data arrives */}
                       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                         <div className="p-4 bg-white rounded-xl border border-slate-200 shadow-sm">
                           <div className="text-sm text-slate-600">Deal Name</div>
@@ -1946,11 +1956,29 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                           <div className="mt-1 text-xl font-extrabold text-slate-900">{fmtPercent(valueFromFinancial('holdback','holdback_percent'))}</div>
                         </div>
                       </div>
+                      {(!Array.isArray(summaryData) || summaryData.length === 0) && (
+                        <div className="mt-3 p-4 rounded-lg border border-amber-200 bg-amber-50 text-amber-800 text-sm flex items-start gap-3">
+                          <FileText className="w-4 h-4 mt-0.5 text-amber-700" />
+                          <div>
+                            <div className="font-semibold">Bank Statement Analysis is processing</div>
+                            <p className="mt-0.5">Please wait here and do not proceed to <span className="font-semibold">Lender Matches</span> yet. The <span className="font-semibold">Financial Performance Review & Assessment</span> will automatically appear below once ready.</p>
+                          </div>
+                        </div>
+                      )}
                     </div>
                   )}
-
-                  {/* Bank Statement Summary (from application_summary by application_id) - Always show */}
-                  <div className="mb-8">
+                  {showFinancialOverviewNotice && (
+                    <div className="mb-6 p-4 rounded-lg border border-amber-200 bg-amber-50 text-amber-800 text-sm flex items-start gap-3">
+                      <FileText className="w-4 h-4 mt-0.5 text-amber-700" />
+                      <div>
+                        <div className="font-semibold">Preparing Financial Overview</div>
+                        <p className="mt-0.5">Your documents have been uploaded and are being processed. The <span className="font-semibold">Financial Overview</span> will appear here shortly. Please wait before proceeding to <span className="font-semibold">Lender Matches</span>.</p>
+                      </div>
+                    </div>
+                  )}
+                  {/* Bank Statement Summary (from application_summary by application_id) - Show only when analysis in progress or has data */}
+                  {(isAnalysisInProgress || (summaryData && summaryData.length > 0)) && (
+                    <div className="mb-8">
                       <div className="bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-200 rounded-lg shadow-lg mb-6">
                         <div className="px-8 py-6">
                           <div className="flex items-center justify-between">
@@ -1963,39 +1991,22 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                                 <p className="text-blue-700 font-medium">Financial Performance Review & Assessment</p>
                               </div>
                             </div>
-                            {summaryDataLoading && (
-                              <div className="flex items-center gap-3 text-blue-700 bg-blue-100 border border-blue-300 px-5 py-3 rounded-lg shadow-sm">
-                                <div className="w-4 h-4 border-2 border-blue-600 border-t-transparent rounded-full animate-spin" />
-                                <span className="text-sm font-semibold">Processing Analysis...</span>
-                              </div>
-                            )}
                           </div>
-                          {summaryDataLoading && (
-                            <div className="mt-4 p-4 bg-amber-50 border border-amber-200 rounded-lg">
-                              <div className="flex items-start gap-3">
-                                <div className="flex-shrink-0 w-5 h-5 rounded-full bg-amber-400 flex items-center justify-center mt-0.5">
-                                  <span className="text-xs font-bold text-white">!</span>
-                                </div>
-                                <div>
-                                  <p className="text-amber-800 font-semibold text-sm mb-1">Analysis in Progress</p>
-                                  <p className="text-amber-700 text-sm leading-relaxed">
-                                    Bank statement analysis may take a few minutes to complete. Please wait for the summary to appear before proceeding to lender matching. 
-                                    This comprehensive analysis ensures accurate financial assessment for better loan matching.
-                                  </p>
-                                </div>
-                              </div>
-                            </div>
-                          )}
                         </div>
                       </div>
                       <div className="space-y-6">
-                        {summaryDataLoading ? (
+                        {isAnalysisInProgress ? (
                           <div className="p-8 bg-white rounded-xl border border-slate-200 text-center">
                             <div className="flex flex-col items-center gap-4">
                               <div className="w-12 h-12 border-4 border-blue-200 border-t-blue-600 rounded-full animate-spin"></div>
                               <div>
                                 <h6 className="text-lg font-semibold text-slate-800 mb-2">Processing Bank Statements</h6>
                                 <p className="text-slate-600 text-sm">Analyzing your financial data to generate comprehensive reports...</p>
+                                <p className="text-slate-700 text-sm mt-2">
+                                  Please stay on this page — your <span className="font-semibold">Bank Statement Analysis</span> is still processing.
+                                  Wait for the <span className="font-semibold">Financial Performance Review & Assessment</span> to appear here
+                                  before proceeding to <span className="font-semibold">Lender Matches</span>.
+                                </p>
                               </div>
                             </div>
                           </div>
@@ -2127,15 +2138,10 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                             </div>
                             );
                           })
-                        ) : (
-                          <div className="p-6 bg-slate-50 rounded-xl border border-slate-200 text-center">
-                            <div className="text-slate-600">No bank statement data available</div>
-                          </div>
-                        )}
+                        ) : null}
                       </div>
                     </div>
-
-
+                  )}
                   {/* Financial Summary removed per request */}
 
                   {/* Global Continue button (outside each document) */}
