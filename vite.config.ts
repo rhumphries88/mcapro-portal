@@ -9,6 +9,11 @@ export default defineConfig({
   },
   server: {
     proxy: {
+      '/.netlify/functions': {
+        target: 'http://localhost:9999',
+        changeOrigin: true,
+        secure: false,
+      },
       '/webhook': {
         target: 'https://primary-production-c8d0.up.railway.app',
         changeOrigin: true,

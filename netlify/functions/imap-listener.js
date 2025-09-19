@@ -4,9 +4,9 @@
 // - Safe for scheduled runs or on-demand POSTs.
 // - No infinite loops, no process.exit.
 
-import { ImapFlow } from 'imapflow';
-import { createClient } from '@supabase/supabase-js';
-import { simpleParser } from 'mailparser';
+const { ImapFlow } = require('imapflow');
+const { createClient } = require('@supabase/supabase-js');
+const { simpleParser } = require('mailparser');
 
 // ----- Environment -----
 const SUPABASE_URL = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
@@ -381,7 +381,7 @@ async function processUnseenSince(client, sinceDate) {
 }
 
 // ----- Netlify Function Entrypoint -----
-export async function handler(event, context) {
+exports.handler = async function (event, context) {
   if (event.httpMethod === 'OPTIONS') {
     return jsonResponse(200, { ok: true });
   }

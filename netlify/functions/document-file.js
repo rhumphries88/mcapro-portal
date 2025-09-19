@@ -192,6 +192,19 @@ export async function handler(event) {
       if (uploaded) return jsonResponse(resp.status, uploaded);
       return jsonResponse(resp.status, {});
     }
+
+    // Ensure the response includes the document id for frontend consumption
+    try {
+      // Prefer id from uploaded result if available
+      if (uploaded && uploaded.id && !payload.id) payload.id = uploaded.id;
+      // If upstream omitted id, but our parsedBody had one, merge it back
+      if (parsedBody && typeof parsedBody === 'object' && parsedBody.id && !payload.id) {
+        payload.id = parsedBody.id;
+      }
+      // Mirror id as document_id for compatibility
+      if (payload.id && !payload.document_id) payload.document_id = payload.id;
+    } catch {}
+
     return jsonResponse(resp.status, payload);
   } catch (err) {
     return jsonResponse(500, { error: err?.message || "Unexpected server error" });

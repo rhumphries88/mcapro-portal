@@ -5,9 +5,9 @@
  - Accepts attachments from URLs
 */
  
-import nodemailer from "nodemailer";
-import axios from "axios";
-import { createClient } from "@supabase/supabase-js";
+const nodemailer = require("nodemailer");
+const axios = require("axios");
+const { createClient } = require("@supabase/supabase-js");
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -85,7 +85,7 @@ function validateRequestBody(body) {
   return errors;
 }
 
-export async function handler(event, context) {
+exports.handler = async function (event, context) {
   if (event.httpMethod === "OPTIONS") {
     return jsonResponse(200, { ok: true });
   }

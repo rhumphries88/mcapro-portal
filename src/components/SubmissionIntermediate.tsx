@@ -132,6 +132,41 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
     }
   };
 
+  // Utility: parse various amount representations into a number
+  const parseAmount = (v: any): number => {
+    if (typeof v === 'number') return Number.isFinite(v) ? v : 0;
+    const s = String(v ?? '')
+      .replace(/[,\s]/g, '')
+      .replace(/[^0-9.+-]/g, '');
+    const n = parseFloat(s);
+    return Number.isFinite(n) ? n : 0;
+  };
+
+  // Utility: strict currency formatter with 2 decimals
+  const fmtCurrency2 = (n: number): string =>
+    n.toLocaleString('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+  // Utility: turn a category name into a safe DOM id
+  const slugify = (s: string) => String(s || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/(^-|-$)/g, '');
+
+  // Utility: format YYYY-MM-DD into Month DD, YYYY
+  const formatDateHuman = (value: any): string => {
+    const raw = String(value || '').trim();
+    // If already human text, return as-is
+    const m = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (!m) return raw || '—';
+    const [_, y, mo, d] = m;
+    const date = new Date(Number(y), Number(mo) - 1, Number(d));
+    try {
+      return date.toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: '2-digit' });
+    } catch {
+      return raw;
+    }
+  };
+
   // Retry helper: attempt to fetch summary until it returns 200 or max attempts reached
   const retrySummaryUntilReady = async (file: File, dateKey: string) => {
     const maxAttempts = 6; // ~1 min total if 10s interval
@@ -477,7 +512,44 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
   }, [perDocMcaData]);
   // Track which item is being replaced (db/local)
   const [replaceTarget, setReplaceTarget] = useState<null | { source: 'db' | 'local'; dateKey: string; docId?: string }>(null);
+  // View Details modal state
+  const [detailsModal, setDetailsModal] = useState<null | { item: UICardItem }>(null);
+  const [documentDetails, setDocumentDetails] = useState<any>(null);
+  const [documentDetailsLoading, setDocumentDetailsLoading] = useState(false);
   // Inline document expansion removed per request
+  // Category filter for Document Details modal - now multi-select
+  const [selectedCategories, setSelectedCategories] = useState<Set<string>>(new Set());
+  // Search box for filtering transactions within categories
+  const [categorySearch, setCategorySearch] = useState<string>('');
+  // Dropdown open state for category filter
+  const [categoryDropdownOpen, setCategoryDropdownOpen] = useState<boolean>(false);
+  
+  // Close dropdown when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      const target = event.target as HTMLElement;
+      if (categoryDropdownOpen && !target.closest('.category-dropdown')) {
+        setCategoryDropdownOpen(false);
+      }
+    };
+    
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [categoryDropdownOpen]);
+
+  // When selecting specific categories, scroll to first selected in the modal
+  useEffect(() => {
+    if (!detailsModal) return;
+    if (selectedCategories.size === 0) return;
+    const firstCategory = Array.from(selectedCategories)[0];
+    const id = `cat-${slugify(firstCategory)}`;
+    // Delay to ensure DOM is rendered after filter change
+    const t = setTimeout(() => {
+      const el = document.getElementById(id);
+      if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 100);
+    return () => clearTimeout(t);
+  }, [selectedCategories, detailsModal]);
 
   // Create a ref for the replace file input
   const replaceFileInputRef = useRef<HTMLInputElement>(null);
@@ -875,205 +947,12 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
     }, 200);
 
     try {
-      // 1) Send to NEW_DEAL_WEBHOOK_URL (extract business/financial fields)
+      // 1) Upload to Supabase Storage first and create/ensure document row via DOCUMENT_FILE_WEBHOOK_URL
+      //    Capture the returned document id to pass along to new-deal and summary
+      let documentId: string | undefined = undefined;
+      let persistedFileUrl: string | undefined = undefined;
       try {
-        const form = new FormData();
-        form.append('file', file, file.name);
-        form.append('statementDate', dateKey);
-        // Include application_id so backend can associate this upload to the application
-        const appIdForNewDeal = (details.applicationId as string) || (initial?.applicationId as string) || (details.id as string) || (initial?.id as string) || '';
-        if (appIdForNewDeal) form.append('application_id', appIdForNewDeal);
-
-        console.log('[newDeal webhook] Starting request', {
-          url: NEW_DEAL_WEBHOOK_URL,
-          fileName: file.name,
-          dateKey,
-        });
-        const resp = await fetchWithTimeout(NEW_DEAL_WEBHOOK_URL, {
-          method: 'POST',
-          body: form,
-          timeoutMs: 45000, // increase to 45s to reduce AbortError frequency on slow network/backend
-        });
-
-        if (resp.status === 202) {
-          console.log('[newDeal webhook] 202 Accepted: processing in background. Skipping response parsing.');
-          // Leave fields as-is; downstream steps can proceed. UI remains non-error.
-        } else if (resp.ok) {
-          const contentType = resp.headers.get('content-type') || '';
-          console.log('[newDeal webhook] Response received', { status: resp.status, contentType });
-          try {
-            let parsed: unknown = undefined;
-            if (contentType.includes('application/json')) {
-              parsed = await resp.json();
-            } else {
-              const text = await resp.text();
-              try { parsed = JSON.parse(text); } catch { parsed = undefined; }
-            }
-            if (parsed) {
-              const isArray = Array.isArray(parsed);
-              console.log('[newDeal webhook - daily] Parsed response summary:', {
-                dateKey,
-                isArray,
-                arrayLength: isArray ? (parsed as unknown[]).length : undefined,
-                topLevelKeys: !isArray && typeof parsed === 'object' ? Object.keys(parsed as Record<string, unknown>) : undefined,
-              });
-              populateDetailsFromWebhook(parsed, { overwrite: true, markProvidedEvenIfNoChange: true });
-              populatePerDocDetails(dateKey, parsed, { overwrite: true });
-
-              // Additionally, if newDeal returns MCA-like data (monthly_table, mca_summary, fraud_flags),
-              // deep-search anywhere in the payload and store it.
-              const monthlyCandidates = deepFindAllByKey(parsed, 'monthly_table');
-              const summaryCandidates = deepFindAllByKey(parsed, 'mca_summary');
-              const flagCandidates = deepFindAllByKey(parsed, 'fraud_flags');
-              console.log('[newDeal webhook] deep-search candidates', {
-                dateKey,
-                monthlyCandidates: monthlyCandidates.length,
-                summaryCandidates: summaryCandidates.length,
-                flagCandidates: flagCandidates.length,
-              });
-
-              let monthly_table: MCAMonthlyRow[] | undefined;
-              let mca_summary: MCASummaryItem[] | undefined;
-              let fraud_flags: string[] | undefined;
-
-              const monthlyRaw = monthlyCandidates.find((x) => Array.isArray(x));
-              if (Array.isArray(monthlyRaw)) {
-                monthly_table = (monthlyRaw as unknown[]).map((r) => {
-                  const rec = (r && typeof r === 'object') ? (r as Record<string, unknown>) : {};
-                  const out: Record<string, string> = {};
-                  Object.keys(rec).forEach((k) => { out[k] = String(rec[k] ?? ''); });
-                  return out;
-                });
-                console.log('[newDeal webhook] monthly_table extracted rows:', monthly_table.length);
-              }
-
-              const summaryRaw = summaryCandidates.find((x) => Array.isArray(x) || (x && typeof x === 'object'));
-              if (Array.isArray(summaryRaw)) {
-                mca_summary = (summaryRaw as unknown[]).map((row) => {
-                  const r = row as Record<string, unknown>;
-                  return {
-                    FUNDER: String(r.FUNDER ?? ''),
-                    AMOUNT: String(r.AMOUNT ?? ''),
-                    'DAILY/WEEKLY Debit': String((r as Record<string, unknown>)['DAILY/WEEKLY Debit'] ?? ''),
-                    NOTES: String(r.NOTES ?? ''),
-                  } as MCASummaryItem;
-                });
-                console.log('[newDeal webhook] mca_summary extracted rows:', mca_summary.length);
-              } else if (summaryRaw && typeof summaryRaw === 'object') {
-                const r = summaryRaw as Record<string, unknown>;
-                mca_summary = [{
-                  FUNDER: String(r.FUNDER ?? ''),
-                  AMOUNT: String(r.AMOUNT ?? ''),
-                  'DAILY/WEEKLY Debit': String((r as Record<string, unknown>)['DAILY/WEEKLY Debit'] ?? ''),
-                  NOTES: String(r.NOTES ?? ''),
-                }];
-                console.log('[newDeal webhook] mca_summary extracted 1 object row');
-              }
-
-              const flagsRaw = flagCandidates.find((x) => Array.isArray(x));
-              if (Array.isArray(flagsRaw)) {
-                fraud_flags = (flagsRaw as unknown[]).map((x) => String(x));
-                console.log('[newDeal webhook] fraud_flags extracted count:', fraud_flags.length);
-              }
-
-              const payload: MCAParsed = { monthly_table, mca_summary, fraud_flags };
-              if (monthly_table || mca_summary || fraud_flags) {
-                console.log('[newDeal webhook] Storing MCA-like payload from newDeal', {
-                  dateKey,
-                  monthlyRows: monthly_table?.length || 0,
-                  summaryRows: mca_summary?.length || 0,
-                  fraudFlags: fraud_flags?.length || 0,
-                });
-                setPerDocMcaData((prev: Record<string, MCAParsed>) => ({ ...prev, [dateKey]: payload }));
-              } else {
-                console.log('[newDeal webhook] No MCA-like fields found in response (monthly_table, mca_summary, fraud_flags) for', dateKey);
-              }
-            }
-          } catch (e) {
-            console.warn('Unable to read daily webhook response:', e);
-          }
-        } else {
-          console.warn(`newDeal webhook responded ${resp.status} ${resp.statusText}; continuing upload flow`);
-        }
-      } catch (err: unknown) {
-        if (err instanceof DOMException && err.name === 'AbortError') {
-          console.warn('[newDeal webhook] Request aborted due to timeout (45s). Continuing upload flow.', {
-            fileName: file.name,
-            dateKey,
-          });
-        } else {
-          console.warn('newDeal webhook failed; continuing upload flow:', err);
-        }
-      }
-
-      // 2) Call NEW_DEAL_SUMMARY_WEBHOOK_URL to derive MCA summary if backend provides it
-      try {
-        const form2 = new FormData();
-        form2.append('file', file, file.name);
-        form2.append('statementDate', dateKey);
-        // Include application_id for summary linkage
-        const appIdForSummary = (details.applicationId as string) || (initial?.applicationId as string) || (details.id as string) || (initial?.id as string) || '';
-        if (appIdForSummary) form2.append('application_id', appIdForSummary);
-        console.log('[newDealSummary webhook] Starting request', {
-          url: NEW_DEAL_SUMMARY_WEBHOOK_URL,
-          fileName: file.name,
-          dateKey,
-        });
-        const respS = await fetchWithTimeout(NEW_DEAL_SUMMARY_WEBHOOK_URL, {
-          method: 'POST',
-          body: form2,
-          timeoutMs: 45000,
-        });
-        if (respS.status === 202) {
-          console.log('[newDealSummary webhook] 202 Accepted: processing in background.');
-          // Mark this document as still processing so UI shows existing loading state
-          pendingSummaryRef.current.add(dateKey);
-          // Kick off retry loop to fetch summary until it becomes available
-          void retrySummaryUntilReady(file, dateKey);
-        } else if (respS.ok) {
-          const ct = respS.headers.get('content-type') || '';
-          let parsed: unknown = undefined;
-          if (ct.includes('application/json')) {
-            parsed = await respS.json();
-          } else {
-            const text = await respS.text();
-            try { parsed = JSON.parse(text); } catch { parsed = undefined; }
-          }
-          if (parsed) {
-            console.log('[newDealSummary webhook] Parsed response; attempting to populate MCA/fields', {
-              dateKey,
-              keys: (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) ? Object.keys(parsed as Record<string, unknown>) : undefined,
-            });
-            // Overwrite: summary webhook is authoritative for MCA-like data
-            populateDetailsFromWebhook(parsed, { overwrite: false, markProvidedEvenIfNoChange: true });
-            populatePerDocDetails(dateKey, parsed, { overwrite: true });
-            // Clear any pending background flag if we received a concrete response
-            pendingSummaryRef.current.delete(dateKey);
-            // If a grace timer exists, cancel it so we can complete immediately
-            const t = pendingTimersRef.current.get(dateKey);
-            if (typeof t === 'number') { window.clearTimeout(t); pendingTimersRef.current.delete(dateKey); }
-          }
-        } else {
-          console.warn(`newDealSummary webhook responded ${respS.status} ${respS.statusText}`);
-        }
-      } catch (e) {
-        console.warn('[newDealSummary webhook] failed; continuing flow:', e);
-        // If this was an Abort/timeout, keep UI in processing state
-        try {
-          const name = (e as any)?.name || '';
-          if (name === 'AbortError') {
-            pendingSummaryRef.current.add(dateKey);
-            // Start retry attempts since initial call aborted
-            void retrySummaryUntilReady(file, dateKey);
-          }
-        } catch {}
-      }
-
-      // 3) Upload to Supabase Storage first, then send metadata (with file_url) to DOCUMENT_FILE_WEBHOOK_URL
-      try {
-        // Prioritize applicationId over id to ensure we use the Applications table ID
         const appId = (details.applicationId as string) || (initial?.applicationId as string) || (details.id as string) || (initial?.id as string) || '';
-        // Upload to Storage bucket 'application_documents' at root so URL is /application_documents/<file_name>
         let fileUrlFromStorage: string | undefined = undefined;
         try {
           const path = `${file.name}`;
@@ -1097,108 +976,178 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
           ...(fileUrlFromStorage ? { file_url: fileUrlFromStorage } : {}),
         } as const;
         const idempotencyKey = `${payload.application_id}|${payload.file_name}|${payload.file_size}`;
-        if (inFlightDocSigsRef.current.has(idempotencyKey)) {
-          console.log('[document-file] Skipping duplicate call for', idempotencyKey);
-        } else {
+        if (!inFlightDocSigsRef.current.has(idempotencyKey)) {
           inFlightDocSigsRef.current.add(idempotencyKey);
+        } else {
+          console.log('[document-file] Skipping duplicate call for', idempotencyKey);
         }
-        const resp2 = await fetchWithTimeout(DOCUMENT_FILE_WEBHOOK_URL, {
+        const respDoc = await fetchWithTimeout(DOCUMENT_FILE_WEBHOOK_URL, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'Idempotency-Key': idempotencyKey },
           body: JSON.stringify(payload),
           timeoutMs: 30000,
         });
-
-        let fileUrl: string | undefined = fileUrlFromStorage;
-        const ct2 = resp2.headers.get('content-type') || '';
-        if (ct2.includes('application/json')) {
-          const data2 = await resp2.json().catch(() => undefined as unknown);
-          if (data2 && typeof data2 === 'object') {
-            const u = (data2 as Record<string, unknown>)['file_url'];
-            if (typeof u === 'string' && u) fileUrl = u;
-          }
+        const ctDoc = respDoc.headers.get('content-type') || '';
+        let docResp: any = undefined;
+        if (ctDoc.includes('application/json')) {
+          docResp = await respDoc.json().catch(() => undefined);
         } else {
-          const t2 = await resp2.text();
-          try {
-            const data2 = JSON.parse(t2);
-            const u = (data2 as Record<string, unknown>)['file_url'];
-            if (typeof u === 'string' && u) fileUrl = u;
-          } catch {
-            // ignore
-          }
+          const txt = await respDoc.text();
+          try { docResp = JSON.parse(txt); } catch { docResp = undefined; }
         }
-
-        clearInterval(progressInterval);
-        const isPending = pendingSummaryRef.current.has(dateKey);
-        setUploadProgress(prev => {
-          const next = new Map(prev);
-          next.set(dateKey, isPending ? 95 : 100);
-          return next;
-        });
-        if (isPending) {
-          // Keep card in Processing state; auto-complete after a grace period
-          setDailyStatements(prev => new Map(prev.set(dateKey, { file, status: 'uploading', fileUrl })));
-          const timerId = window.setTimeout(() => {
-            pendingSummaryRef.current.delete(dateKey);
-            setDailyStatements(prev => new Map(prev.set(dateKey, { file, status: 'completed', fileUrl })));
-            setUploadProgress(prev => {
-              const next = new Map(prev);
-              next.delete(dateKey);
-              return next;
-            });
-          }, 60000); // 60s grace period
-          pendingTimersRef.current.set(dateKey, timerId);
-        } else {
-          setTimeout(() => {
-            setDailyStatements(prev => new Map(prev.set(dateKey, { file, status: 'completed', fileUrl })));
-            setUploadProgress(prev => {
-              const next = new Map(prev);
-              next.delete(dateKey);
-              return next;
-            });
-          }, 500);
+        if (docResp && typeof docResp === 'object') {
+          const idVal = (docResp.id || docResp.document_id || docResp.documentId);
+          if (typeof idVal === 'string' && idVal) documentId = idVal;
+          const urlVal = docResp.file_url;
+          if (typeof urlVal === 'string' && urlVal) persistedFileUrl = urlVal;
         }
       } catch (e) {
-        console.warn('documentFile webhook call failed; marking completed without URL:', e);
-        clearInterval(progressInterval);
-        const isPending = pendingSummaryRef.current.has(dateKey);
-        setUploadProgress(prev => {
-          const next = new Map(prev);
-          next.set(dateKey, isPending ? 95 : 100);
-          return next;
-        });
-        if (isPending) {
-          setDailyStatements(prev => new Map(prev.set(dateKey, { file, status: 'uploading' })));
-          const timerId = window.setTimeout(() => {
-            pendingSummaryRef.current.delete(dateKey);
-            setDailyStatements(prev => new Map(prev.set(dateKey, { file, status: 'completed' })));
-            setUploadProgress(prev => {
-              const next = new Map(prev);
-              next.delete(dateKey);
-              return next;
-            });
-          }, 60000);
-          pendingTimersRef.current.set(dateKey, timerId);
+        console.warn('[document-file] failed to persist document before new-deal:', e);
+      }
+
+      // 2) Send to NEW_DEAL_WEBHOOK_URL (extract business/financial fields), including document_id if available
+      try {
+        const form = new FormData();
+        form.append('file', file, file.name);
+        form.append('statementDate', dateKey);
+        const appIdForNewDeal = (details.applicationId as string) || (initial?.applicationId as string) || (details.id as string) || (initial?.id as string) || '';
+        if (appIdForNewDeal) form.append('application_id', appIdForNewDeal);
+        if (documentId) form.append('document_id', documentId);
+
+        console.log('[newDeal webhook] Starting request', { url: NEW_DEAL_WEBHOOK_URL, fileName: file.name, dateKey, documentId });
+        const resp = await fetchWithTimeout(NEW_DEAL_WEBHOOK_URL, { method: 'POST', body: form, timeoutMs: 45000 });
+
+        if (resp.status === 202) {
+          console.log('[newDeal webhook] 202 Accepted: processing in background. Skipping response parsing.');
+        } else if (resp.ok) {
+          const contentType = resp.headers.get('content-type') || '';
+          console.log('[newDeal webhook] Response received', { status: resp.status, contentType });
+          try {
+            let parsed: unknown = undefined;
+            if (contentType.includes('application/json')) parsed = await resp.json();
+            else {
+              const text = await resp.text();
+              try { parsed = JSON.parse(text); } catch { parsed = undefined; }
+            }
+            if (parsed) {
+              const isArray = Array.isArray(parsed);
+              console.log('[newDeal webhook - daily] Parsed response summary:', { dateKey, isArray, arrayLength: isArray ? (parsed as unknown[]).length : undefined, topLevelKeys: !isArray && typeof parsed === 'object' ? Object.keys(parsed as Record<string, unknown>) : undefined });
+              populateDetailsFromWebhook(parsed, { overwrite: true, markProvidedEvenIfNoChange: true });
+              populatePerDocDetails(dateKey, parsed, { overwrite: true });
+
+              // Deep-search MCA-like data
+              const monthlyCandidates = deepFindAllByKey(parsed, 'monthly_table');
+              const summaryCandidates = deepFindAllByKey(parsed, 'mca_summary');
+              const flagCandidates = deepFindAllByKey(parsed, 'fraud_flags');
+              let monthly_table: MCAMonthlyRow[] | undefined;
+              let mca_summary: MCASummaryItem[] | undefined;
+              let fraud_flags: string[] | undefined;
+              const monthlyRaw = monthlyCandidates.find((x) => Array.isArray(x));
+              if (Array.isArray(monthlyRaw)) {
+                monthly_table = (monthlyRaw as unknown[]).map((r) => {
+                  const rec = (r && typeof r === 'object') ? (r as Record<string, unknown>) : {};
+                  const out: Record<string, string> = {};
+                  Object.keys(rec).forEach((k) => { out[k] = String(rec[k] ?? ''); });
+                  return out;
+                });
+              }
+              const summaryRaw = summaryCandidates.find((x) => Array.isArray(x) || (x && typeof x === 'object'));
+              if (Array.isArray(summaryRaw)) {
+                mca_summary = (summaryRaw as unknown[]).map((row) => {
+                  const r = row as Record<string, unknown>;
+                  return { FUNDER: String(r.FUNDER ?? ''), AMOUNT: String(r.AMOUNT ?? ''), 'DAILY/WEEKLY Debit': String((r as Record<string, unknown>)['DAILY/WEEKLY Debit'] ?? ''), NOTES: String(r.NOTES ?? '') } as MCASummaryItem;
+                });
+              } else if (summaryRaw && typeof summaryRaw === 'object') {
+                const r = summaryRaw as Record<string, unknown>;
+                mca_summary = [{ FUNDER: String(r.FUNDER ?? ''), AMOUNT: String(r.AMOUNT ?? ''), 'DAILY/WEEKLY Debit': String((r as Record<string, unknown>)['DAILY/WEEKLY Debit'] ?? ''), NOTES: String(r.NOTES ?? '') }];
+              }
+              const flagsRaw = flagCandidates.find((x) => Array.isArray(x));
+              if (Array.isArray(flagsRaw)) fraud_flags = (flagsRaw as unknown[]).map((x) => String(x));
+              const payload: MCAParsed = { monthly_table, mca_summary, fraud_flags };
+              if (monthly_table || mca_summary || fraud_flags) setPerDocMcaData((prev: Record<string, MCAParsed>) => ({ ...prev, [dateKey]: payload }));
+            }
+          } catch (e) {
+            console.warn('Unable to read daily webhook response:', e);
+          }
         } else {
-          setTimeout(() => {
-            setDailyStatements(prev => new Map(prev.set(dateKey, { file, status: 'completed' })));
-            setUploadProgress(prev => {
-              const next = new Map(prev);
-              next.delete(dateKey);
-              return next;
-            });
-          }, 500);
+          console.warn(`newDeal webhook responded ${resp.status} ${resp.statusText}; continuing upload flow`);
         }
+      } catch (err: unknown) {
+        if (err instanceof DOMException && err.name === 'AbortError') {
+          console.warn('[newDeal webhook] Request aborted due to timeout (45s). Continuing upload flow.', { fileName: file.name, dateKey });
+        } else {
+          console.warn('newDeal webhook failed; continuing upload flow:', err);
+        }
+      }
+
+      // 3) Call NEW_DEAL_SUMMARY_WEBHOOK_URL to derive MCA summary, including document_id if available
+      try {
+        const form2 = new FormData();
+        form2.append('file', file, file.name);
+        form2.append('statementDate', dateKey);
+        const appIdForSummary = (details.applicationId as string) || (initial?.applicationId as string) || (details.id as string) || (initial?.id as string) || '';
+        if (appIdForSummary) form2.append('application_id', appIdForSummary);
+        if (documentId) form2.append('document_id', documentId);
+        console.log('[newDealSummary webhook] Starting request', { url: NEW_DEAL_SUMMARY_WEBHOOK_URL, fileName: file.name, dateKey, documentId });
+        const respS = await fetchWithTimeout(NEW_DEAL_SUMMARY_WEBHOOK_URL, { method: 'POST', body: form2, timeoutMs: 45000 });
+        if (respS.status === 202) {
+          console.log('[newDealSummary webhook] 202 Accepted: processing in background.');
+          pendingSummaryRef.current.add(dateKey);
+          void retrySummaryUntilReady(file, dateKey);
+        } else if (respS.ok) {
+          const ct = respS.headers.get('content-type') || '';
+          let parsed: unknown = undefined;
+          if (ct.includes('application/json')) parsed = await respS.json();
+          else { const text = await respS.text(); try { parsed = JSON.parse(text); } catch { parsed = undefined; } }
+          if (parsed) {
+            console.log('[newDealSummary webhook] Parsed response; attempting to populate MCA/fields', { dateKey, keys: (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) ? Object.keys(parsed as Record<string, unknown>) : undefined });
+            populateDetailsFromWebhook(parsed, { overwrite: false, markProvidedEvenIfNoChange: true });
+            populatePerDocDetails(dateKey, parsed, { overwrite: true });
+            pendingSummaryRef.current.delete(dateKey);
+            const t = pendingTimersRef.current.get(dateKey);
+            if (typeof t === 'number') { window.clearTimeout(t); pendingTimersRef.current.delete(dateKey); }
+          }
+        } else {
+          console.warn(`newDealSummary webhook responded ${respS.status} ${respS.statusText}`);
+        }
+      } catch (e) {
+        console.warn('[newDealSummary webhook] failed; continuing flow:', e);
+        try {
+          const name = (e as any)?.name || '';
+          if (name === 'AbortError') {
+            pendingSummaryRef.current.add(dateKey);
+            void retrySummaryUntilReady(file, dateKey);
+          }
+        } catch {}
+      }
+
+      // 4) Complete UI state using any persistedFileUrl
+      clearInterval(progressInterval);
+      const isPending = pendingSummaryRef.current.has(dateKey);
+      setUploadProgress(prev => {
+        const next = new Map(prev);
+        next.set(dateKey, isPending ? 95 : 100);
+        return next;
+      });
+      if (isPending) {
+        setDailyStatements(prev => new Map(prev.set(dateKey, { file, status: 'uploading', fileUrl: persistedFileUrl })));
+        const timerId = window.setTimeout(() => {
+          pendingSummaryRef.current.delete(dateKey);
+          setDailyStatements(prev => new Map(prev.set(dateKey, { file, status: 'completed', fileUrl: persistedFileUrl })));
+          setUploadProgress(prev => { const next = new Map(prev); next.delete(dateKey); return next; });
+        }, 60000);
+        pendingTimersRef.current.set(dateKey, timerId);
+      } else {
+        setTimeout(() => {
+          setDailyStatements(prev => new Map(prev.set(dateKey, { file, status: 'completed', fileUrl: persistedFileUrl })));
+          setUploadProgress(prev => { const next = new Map(prev); next.delete(dateKey); return next; });
+        }, 500);
       }
     } catch (error) {
       console.error('Daily upload failed:', error);
       clearInterval(progressInterval);
       setDailyStatements(prev => new Map(prev.set(dateKey, { file, status: 'error' })));
-      setUploadProgress(prev => {
-        const next = new Map(prev);
-        next.delete(dateKey);
-        return next;
-      });
+      setUploadProgress(prev => { const next = new Map(prev); next.delete(dateKey); return next; });
     }
   };
 
@@ -1387,6 +1336,41 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
       setReplaceTarget({ source: 'local', dateKey: item.dateKey });
     }
     replaceFileInputRef.current?.click();
+  };
+
+  // View Details handlers
+  const handleViewDetailsClick = async (item: UICardItem) => {
+    setDetailsModal({ item });
+    setDocumentDetails(null);
+    setSelectedCategories(new Set());
+    setCategorySearch('');
+    
+    // Fetch document details from database if it's a DB item
+    if (item.source === 'db' && item.docId) {
+      setDocumentDetailsLoading(true);
+      try {
+        const { data, error } = await supabase
+          .from('application_documents')
+          .select('*')
+          .eq('id', item.docId)
+          .maybeSingle();
+        
+        if (error) {
+          console.error('Failed to fetch document details:', error);
+        } else {
+          setDocumentDetails(data);
+        }
+      } catch (err) {
+        console.error('Error fetching document details:', err);
+      } finally {
+        setDocumentDetailsLoading(false);
+      }
+    }
+  };
+  
+  const closeDetailsModal = () => {
+    setDetailsModal(null);
+    setDocumentDetails(null);
   };
 
   const handleContinue = async (item?: UICardItem) => {
@@ -1809,6 +1793,15 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                                     {/* Actions Column */}
                                     <td className="px-6 py-4">
                                       <div className="flex items-center gap-1">
+                                        {/* View Details Button */}
+                                        <button
+                                          type="button"
+                                          className="p-2 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-50 border border-transparent hover:border-slate-200 transition-all duration-200"
+                                          onClick={(e) => { e.stopPropagation(); handleViewDetailsClick(item); }}
+                                          title="View details"
+                                        >
+                                          <FileText className="w-4 h-4" />
+                                        </button>
                                         {/* Replace Button */}
                                         <button
                                           type="button"
@@ -1850,7 +1843,694 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                         </div>
                       </div>
 
-                      {/* Expanded Details Section removed per request */}
+                      {/* Details Modal */}
+                      {detailsModal && (
+                        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+                          <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={closeDetailsModal} />
+                          <div className="relative z-10 w-full max-w-6xl mx-auto bg-white rounded-2xl border border-slate-300 shadow-2xl max-h-[90vh] flex flex-col overflow-hidden">
+                            {/* Header */}
+                            <div className="px-8 py-6 bg-gradient-to-r from-slate-50 to-blue-50 border-b border-slate-200 flex items-center justify-between flex-shrink-0">
+                              <div className="flex items-center gap-4">
+                                <div className="p-3 bg-blue-600 rounded-xl shadow-lg">
+                                  <FileText className="w-6 h-6 text-white" />
+                                </div>
+                                <div>
+                                  <h4 className="text-xl font-bold text-slate-900 tracking-tight">Bank Statement Analysis</h4>
+                                  <p className="text-sm text-slate-600 mt-1">Transaction Categories & Details</p>
+                                </div>
+                              </div>
+                              <button 
+                                onClick={closeDetailsModal} 
+                                className="p-2 rounded-xl text-slate-400 hover:text-slate-600 hover:bg-white/80 transition-all duration-200"
+                              >
+                                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                                </svg>
+                              </button>
+                            </div>
+                            
+                            {/* Content */}
+                            <div className="p-8 space-y-6 overflow-y-auto flex-1 bg-slate-50/30">
+                              {(() => {
+                                const item = detailsModal.item;
+                                return (
+                                  <div className="space-y-4">
+                                    {/* Loading state */}
+                                    {documentDetailsLoading && (
+                                      <div className="flex items-center justify-center py-8">
+                                        <div className="flex items-center gap-2 text-blue-700">
+                                          <div className="w-4 h-4 border-2 border-blue-600 border-t-transparent rounded-full animate-spin" />
+                                          <span className="text-sm">Loading document details...</span>
+                                        </div>
+                                      </div>
+                                    )}
+
+                                    {/* Monthly Categories Data */}
+                                    {documentDetails && documentDetails.categories && (
+                                      <div>
+                                        {(() => {
+                                          try {
+                                            // Parse categories if it's a string
+                                            const categoriesData = typeof documentDetails.categories === 'string' 
+                                              ? JSON.parse(documentDetails.categories) 
+                                              : documentDetails.categories;
+                                            
+                                            // Group data by month
+                                            const monthlyData: Record<string, Record<string, any[]>> = {};
+                                            
+                                            // Handle different data structures
+                                            if (Array.isArray(categoriesData)) {
+                                              categoriesData.forEach((item: any) => {
+                                                if (item && typeof item === 'object') {
+                                                  const month = item.month || item.date || 'Unknown';
+                                                  if (!monthlyData[month]) monthlyData[month] = {};
+                                                  
+                                                  // Process categories
+                                                  Object.entries(item).forEach(([key, value]: [string, any]) => {
+                                                    if (key !== 'month' && key !== 'date') {
+                                                      if (!monthlyData[month][key]) monthlyData[month][key] = [];
+                                                      
+                                                      if (Array.isArray(value)) {
+                                                        monthlyData[month][key].push(...value);
+                                                      } else {
+                                                        monthlyData[month][key].push(value);
+                                                      }
+                                                    }
+                                                  });
+                                                }
+                                              });
+                                            } else if (categoriesData && typeof categoriesData === 'object') {
+                                              Object.entries(categoriesData).forEach(([month, monthData]: [string, any]) => {
+                                                if (monthData && typeof monthData === 'object') {
+                                                  monthlyData[month] = monthData;
+                                                }
+                                              });
+                                            }
+                                            
+                                            // Build category list for filter dropdown
+                                            const allCategoriesSet = new Set<string>();
+                                            Object.entries(monthlyData).forEach(([m, cats]) => {
+                                              if (Array.isArray(cats)) {
+                                                allCategoriesSet.add(m);
+                                              } else if (cats && typeof cats === 'object') {
+                                                Object.keys(cats as Record<string, any>).forEach((k) => allCategoriesSet.add(k));
+                                              }
+                                            });
+                                            const allCategories = Array.from(allCategoriesSet).sort();
+
+                                            // Apply filter to monthlyData
+                                            const filteredMonthlyData: Record<string, any> = {};
+                                            Object.entries(monthlyData).forEach(([m, cats]) => {
+                                              if (selectedCategories.size === 0) {
+                                                // Show all categories when none selected
+                                                filteredMonthlyData[m] = cats;
+                                              } else if (Array.isArray(cats)) {
+                                                // Direct category array shape
+                                                if (selectedCategories.has(m)) filteredMonthlyData[m] = cats;
+                                              } else if (cats && typeof cats === 'object') {
+                                                // Filter to only selected categories
+                                                const filtered: Record<string, any> = {};
+                                                Object.entries(cats as Record<string, any>).forEach(([catName, catData]) => {
+                                                  if (selectedCategories.has(catName)) {
+                                                    filtered[catName] = catData;
+                                                  }
+                                                });
+                                                if (Object.keys(filtered).length > 0) {
+                                                  filteredMonthlyData[m] = filtered;
+                                                }
+                                              }
+                                            });
+
+                                            // Compute if any row matches current search across all (filtered) categories
+                                            const qGlobal = categorySearch.trim().toLowerCase();
+                                            const hasAnyResults = (() => {
+                                              if (!qGlobal) return true; // when no query, we always show tables
+                                              let found = false;
+                                              for (const [, cats] of Object.entries(filteredMonthlyData)) {
+                                                if (Array.isArray(cats)) {
+                                                  for (const t of cats as any[]) {
+                                                    const date = String(t?.date || t?.Date || t?.transaction_date || '');
+                                                    const desc = String(t?.description || t?.Description || t?.desc || t?.memo || '');
+                                                    const amt = String(t?.amount || t?.Amount || t?.value || t?.amt || '');
+                                                    if ((date + ' ' + desc + ' ' + amt).toLowerCase().includes(qGlobal)) { found = true; break; }
+                                                  }
+                                                  if (found) break;
+                                                } else if (cats && typeof cats === 'object') {
+                                                  for (const [, txs] of Object.entries(cats as Record<string, any>)) {
+                                                    const arr = Array.isArray(txs) ? txs : Object.values(txs || {}).flat() as any[];
+                                                    for (const t of arr) {
+                                                      const date = String(t?.date || t?.Date || t?.transaction_date || '');
+                                                      const desc = String(t?.description || t?.Description || t?.desc || t?.memo || '');
+                                                      const amt = String(t?.amount || t?.Amount || t?.value || t?.amt || '');
+                                                      if ((date + ' ' + desc + ' ' + amt).toLowerCase().includes(qGlobal)) { found = true; break; }
+                                                    }
+                                                    if (found) break;
+                                                  }
+                                                  if (found) break;
+                                                }
+                                              }
+                                              return found;
+                                            })();
+
+                                            return (
+                                              <>
+                                                {/* Controls Bar */}
+                                                <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6 mb-6">
+                                                  <div className="flex flex-col lg:flex-row items-stretch lg:items-center justify-between gap-4">
+                                                    <div className="flex flex-col gap-3">
+                                                      <div className="flex items-center gap-3">
+                                                        <label className="text-sm font-semibold text-slate-700 min-w-fit">Filter by Category:</label>
+                                                        <div className="relative category-dropdown">
+                                                          <button
+                                                            type="button"
+                                                            onClick={() => setCategoryDropdownOpen(!categoryDropdownOpen)}
+                                                            className="text-sm border border-slate-300 rounded-lg px-4 py-2.5 bg-white hover:border-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all duration-200 min-w-[200px] flex items-center justify-between"
+                                                          >
+                                                            <span>
+                                                              {selectedCategories.size === 0 
+                                                                ? 'All Categories' 
+                                                                : selectedCategories.size === 1 
+                                                                ? Array.from(selectedCategories)[0]
+                                                                : `${selectedCategories.size} selected`
+                                                              }
+                                                            </span>
+                                                            <svg className="w-4 h-4 ml-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                                                            </svg>
+                                                          </button>
+                                                          {categoryDropdownOpen && (
+                                                            <div className="absolute z-10 mt-1 w-full bg-white border border-slate-300 rounded-lg shadow-lg max-h-60 overflow-y-auto">
+                                                              <div className="p-2">
+                                                                <button
+                                                                  type="button"
+                                                                  onClick={() => {
+                                                                    setSelectedCategories(new Set());
+                                                                    setCategoryDropdownOpen(false);
+                                                                  }}
+                                                                  className="w-full text-left px-3 py-2 text-sm hover:bg-slate-100 rounded font-semibold text-slate-700"
+                                                                >
+                                                                  Clear All
+                                                                </button>
+                                                                <button
+                                                                  type="button"
+                                                                  onClick={() => {
+                                                                    setSelectedCategories(new Set(allCategories));
+                                                                    setCategoryDropdownOpen(false);
+                                                                  }}
+                                                                  className="w-full text-left px-3 py-2 text-sm hover:bg-slate-100 rounded font-semibold text-slate-700"
+                                                                >
+                                                                  Select All
+                                                                </button>
+                                                                <hr className="my-2" />
+                                                                {allCategories.map((category) => (
+                                                                  <label key={category} className="flex items-center px-3 py-2 text-sm hover:bg-slate-100 rounded cursor-pointer">
+                                                                    <input
+                                                                      type="checkbox"
+                                                                      checked={selectedCategories.has(category)}
+                                                                      onChange={(e) => {
+                                                                        const newSelected = new Set(selectedCategories);
+                                                                        if (e.target.checked) {
+                                                                          newSelected.add(category);
+                                                                        } else {
+                                                                          newSelected.delete(category);
+                                                                        }
+                                                                        setSelectedCategories(newSelected);
+                                                                      }}
+                                                                      className="mr-3 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                                                                    />
+                                                                    <span className="text-slate-700">{category}</span>
+                                                                  </label>
+                                                                ))}
+                                                              </div>
+                                                            </div>
+                                                          )}
+                                                        </div>
+                                                      </div>
+                                                    </div>
+                                                    <div className="flex items-center gap-3">
+                                                      <label className="text-sm font-semibold text-slate-700 min-w-fit">Search Transactions:</label>
+                                                      <input
+                                                        type="text"
+                                                        value={categorySearch}
+                                                        onChange={(e) => setCategorySearch(e.target.value)}
+                                                        onKeyDown={(e) => {
+                                                          if (e.key === 'Enter') {
+                                                            const q = categorySearch.trim().toLowerCase();
+                                                            if (!q) return;
+                                                            // Try to select category that matches the search
+                                                            const match = allCategories.find((c) => c.toLowerCase().includes(q));
+                                                            if (match) {
+                                                              const newSelected = new Set(selectedCategories);
+                                                              newSelected.add(match);
+                                                              setSelectedCategories(newSelected);
+                                                            }
+                                                          }
+                                                        }}
+                                                        placeholder="Search by date, description, or amount..."
+                                                        className="w-full lg:w-80 text-sm border border-slate-300 rounded-lg px-4 py-2.5 bg-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all duration-200"
+                                                      />
+                                                    </div>
+                                                  </div>
+                                                </div>
+
+                                                {/* Monthly Total Deposits Summary - moved below controls */}
+                                                {documentDetails && (documentDetails.total_deposits !== undefined && documentDetails.total_deposits !== null) && (
+                                                  (() => {
+                                                    // Calculate total from all categories with breakdown
+                                                    let totalFromCategories = 0;
+                                                    const categoryTotals: Record<string, number> = {};
+                                                    
+                                                    try {
+                                                      Object.entries(filteredMonthlyData).forEach(([month, categories]) => {
+                                                        if (Array.isArray(categories)) {
+                                                          // Direct category array (month is the category name)
+                                                          if (!categoryTotals[month]) categoryTotals[month] = 0;
+                                                          categories.forEach((transaction: any) => {
+                                                            const amount = parseFloat(String(transaction?.amount || transaction?.Amount || transaction?.value || transaction?.amt || 0).replace(/[^0-9.-]/g, '')) || 0;
+                                                            totalFromCategories += amount;
+                                                            categoryTotals[month] += amount;
+                                                          });
+                                                        } else if (categories && typeof categories === 'object') {
+                                                          Object.entries(categories as Record<string, any>).forEach(([categoryName, transactions]) => {
+                                                            if (!categoryTotals[categoryName]) categoryTotals[categoryName] = 0;
+                                                            
+                                                            const normalizeTransactions = (tx: any): any[] => {
+                                                              if (!tx) return [];
+                                                              if (Array.isArray(tx)) return tx.flat().filter(Boolean);
+                                                              if (typeof tx === 'object') {
+                                                                const vals = Object.values(tx);
+                                                                const merged = vals.reduce<any[]>((acc, v) => {
+                                                                  if (Array.isArray(v)) acc.push(...v);
+                                                                  else if (v && typeof v === 'object') {
+                                                                    const maybe = (v as any).transactions;
+                                                                    if (Array.isArray(maybe)) acc.push(...maybe);
+                                                                  }
+                                                                  return acc;
+                                                                }, []);
+                                                                return merged.filter(Boolean);
+                                                              }
+                                                              return [];
+                                                            };
+                                                            
+                                                            const rows = normalizeTransactions(transactions);
+                                                            rows.forEach((transaction: any) => {
+                                                              const amount = parseFloat(String(transaction?.amount || transaction?.Amount || transaction?.value || transaction?.amt || 0).replace(/[^0-9.-]/g, '')) || 0;
+                                                              totalFromCategories += amount;
+                                                              categoryTotals[categoryName] += amount;
+                                                            });
+                                                          });
+                                                        }
+                                                      });
+                                                    } catch (error) {
+                                                      console.error('Error calculating category totals:', error);
+                                                    }
+                                                    
+                                                    const totalDeposits = parseFloat(String(documentDetails.total_deposits).replace(/[^0-9.-]/g, '')) || 0;
+                                                    const difference = totalDeposits - totalFromCategories;
+                                                    
+                                                    return (
+                                                      <div className="space-y-4 mb-6">
+                                                        {/* Summary Card */}
+                                                        <div className="rounded-xl border border-slate-200 bg-white shadow-sm p-4">
+                                                          <div className="flex items-center justify-between">
+                                                            <div>
+                                                              <div className="text-xs uppercase tracking-wide text-slate-500">Month</div>
+                                                              <div className="text-lg font-bold text-slate-900">{String(documentDetails.month || (documentDetails.statement_date || '').slice(0,7) || '—')}</div>
+                                                            </div>
+                                                            <div className="text-right">
+                                                              <div className="text-xs uppercase tracking-wide text-slate-500">Total Deposits</div>
+                                                              <div className="text-2xl font-extrabold text-slate-900">
+                                                                ${totalDeposits.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                                              </div>
+                                                            </div>
+                                                          </div>
+                                                        </div>
+                                                        
+                                                        {/* Receipt/Calculation Summary */}
+                                                        <div className="rounded-xl border-2 border-blue-200 bg-gradient-to-br from-blue-50 to-indigo-50 shadow-lg p-6">
+                                                          <div className="text-center mb-4">
+                                                            <h3 className="text-lg font-bold text-slate-800 mb-1">Transaction Summary</h3>
+                                                          
+                                                          </div>
+                                                          
+                                                          <div className="space-y-3">
+                                                            <div className="flex justify-between items-center py-2 border-b border-blue-200">
+                                                              <span className="text-sm font-semibold text-slate-700">Total Deposits</span>
+                                                              <span className="text-lg font-bold text-green-600">
+                                                                ${totalDeposits.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                                              </span>
+                                                            </div>
+                                                            
+                                                            <div className="flex justify-between items-center py-2 border-b border-blue-200">
+                                                              <span className="text-sm font-semibold text-slate-700">Total from Categories</span>
+                                                              <span className="text-lg font-bold text-blue-600">
+                                                                ${totalFromCategories.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                                              </span>
+                                                            </div>
+                                                            
+                                                            {/* Category Breakdown */}
+                                                            {Object.keys(categoryTotals).length > 0 && (
+                                                              <div className="bg-white rounded-lg p-4 border border-slate-200">
+                                                                <div className="text-sm font-semibold text-slate-700 mb-3">Categories Included in Calculation:</div>
+                                                                <div className="space-y-2 max-h-40 overflow-y-auto">
+                                                                  {Object.entries(categoryTotals)
+                                                                    .filter(([, amount]) => amount > 0)
+                                                                    .sort(([, a], [, b]) => b - a)
+                                                                    .map(([categoryName, amount]) => (
+                                                                      <div key={categoryName} className="flex justify-between items-center py-1 px-2 bg-slate-50 rounded text-xs">
+                                                                        <span className="font-medium text-slate-600">{categoryName}</span>
+                                                                        <span className="font-bold text-slate-800">
+                                                                          ${amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                                                        </span>
+                                                                      </div>
+                                                                    ))}
+                                                                </div>
+                                                                {Object.keys(categoryTotals).length > 5 && (
+                                                                  <div className="text-xs text-slate-500 mt-2 text-center">
+                                                                    {Object.keys(categoryTotals).length} categories total
+                                                                  </div>
+                                                                )}
+                                                              </div>
+                                                            )}
+                                                            
+                                                            <div className="flex justify-between items-center py-3 bg-white rounded-lg px-4 border-2 border-slate-300">
+                                                              <span className="text-base font-bold text-slate-800">Difference</span>
+                                                              <span className={`text-xl font-extrabold ${difference >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                                                                {difference >= 0 ? '+' : ''}${Math.abs(difference).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                                              </span>
+                                                            </div>
+                                                            
+                                                            
+                                                          </div>
+                                                        </div>
+                                                      </div>
+                                                    );
+                                                  })()
+                                                )}
+
+                                                {/* No Results State */}
+                                                {!hasAnyResults && (
+                                                  <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-12 text-center">
+                                                    <div className="w-16 h-16 bg-slate-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                                                      <svg className="w-8 h-8 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                                                      </svg>
+                                                    </div>
+                                                    <h3 className="text-lg font-semibold text-slate-900 mb-2">No transactions found</h3>
+                                                    <p className="text-slate-500">Try adjusting your search criteria or category filter.</p>
+                                                  </div>
+                                                )}
+
+                                                {/* Transaction Categories */}
+                                                {hasAnyResults && Object.entries(filteredMonthlyData).map(([month, categories]) => (
+                                                  <div key={month || 'CATEGORIES'} className="mb-8">
+                                                    {/* Month Header */}
+                                                    {!Array.isArray(categories) && (
+                                                      <div className="bg-gradient-to-r from-slate-700 to-slate-600 text-white rounded-t-xl px-6 py-4 mb-0">
+                                                        <h3 className="text-lg font-bold tracking-wide">{month || 'Transaction Categories'}</h3>
+                                                      </div>
+                                                    )}
+
+                                                    {/* Category Tables */}
+                                                    <div className="space-y-6">
+                                                      {Array.isArray(categories) ? (
+                                                        // Handle shape: { "ONLINE TRANSFERS": [ {date, amount, description}, ... ] }
+                                                        (() => {
+                                                          const q = categorySearch.trim().toLowerCase();
+                                                          const arr = (categories as any[]);
+                                                          const filtered = !q ? arr : arr.filter((transaction: any) => {
+                                                            const date = String(transaction?.date || transaction?.Date || transaction?.transaction_date || '');
+                                                            const desc = String(transaction?.description || transaction?.Description || transaction?.desc || transaction?.memo || '');
+                                                            const amt = String(transaction?.amount || transaction?.Amount || transaction?.value || transaction?.amt || '');
+                                                            return (date + ' ' + desc + ' ' + amt).toLowerCase().includes(q);
+                                                          });
+                                                          if (q && filtered.length === 0) return null; // hide entire category section during search if no matches
+                                                          return (
+                                                            <div key={month} className="bg-white rounded-xl shadow-lg border border-slate-200/60 overflow-hidden mb-8">
+                                                              <div className="bg-gradient-to-r from-blue-500 to-blue-600 text-white px-8 py-5 relative">
+                                                                <div className="absolute inset-0 bg-black/5"></div>
+                                                                <div className="relative flex items-center gap-3">
+                                                                  <div className="w-2 h-2 bg-white rounded-full opacity-80"></div>
+                                                                  <h4 className="text-base font-bold uppercase tracking-wider">{month}</h4>
+                                                                </div>
+                                                              </div>
+                                                              <div className="bg-gradient-to-r from-slate-50 to-slate-100/50 px-8 py-4 border-b border-slate-200/60">
+                                                                <div className="grid grid-cols-12 gap-6">
+                                                                  <div className="col-span-3">
+                                                                    <span className="text-xs font-bold text-slate-600 uppercase tracking-wider">Date</span>
+                                                                  </div>
+                                                                  <div className="col-span-6">
+                                                                    <span className="text-xs font-bold text-slate-600 uppercase tracking-wider">Description</span>
+                                                                  </div>
+                                                                  <div className="col-span-3 text-right">
+                                                                    <span className="text-xs font-bold text-slate-600 uppercase tracking-wider">Amount</span>
+                                                                  </div>
+                                                                </div>
+                                                              </div>
+                                                              <div className="bg-white">
+                                                                {filtered.length ? filtered.map((transaction: any, index: number) => (
+                                                                  <div key={index} className="px-8 py-5 border-b border-slate-100/70 hover:bg-gradient-to-r hover:from-blue-50/30 hover:to-transparent transition-all duration-300 group">
+                                                                    <div className="grid grid-cols-12 gap-6 items-center">
+                                                                      <div className="col-span-3">
+                                                                        <div className="flex items-center gap-3">
+                                                                          <div className="w-1 h-8 bg-blue-400 rounded-full opacity-60 group-hover:opacity-100 transition-opacity duration-300"></div>
+                                                                          <span className="text-sm font-semibold text-slate-900">{formatDateHuman(transaction?.date || transaction?.Date || transaction?.transaction_date || '')}</span>
+                                                                        </div>
+                                                                      </div>
+                                                                      <div className="col-span-6">
+                                                                        <span className="text-sm text-slate-700 leading-relaxed font-medium">{transaction?.description || transaction?.Description || transaction?.desc || transaction?.memo || String(transaction)}</span>
+                                                                      </div>
+                                                                      <div className="col-span-3 text-right">
+                                                                        <div className="inline-flex items-center px-3 py-1.5 bg-slate-50 rounded-lg border border-slate-200/60">
+                                                                          <span className="text-sm font-bold text-slate-900">${Number(transaction?.amount || transaction?.Amount || transaction?.value || transaction?.amt || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                                                                        </div>
+                                                                      </div>
+                                                                    </div>
+                                                                  </div>
+                                                                )) : (
+                                                                  <div className="px-8 py-16 text-center">
+                                                                    <div className="w-16 h-16 bg-slate-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                                                                      <svg className="w-8 h-8 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                                                                      </svg>
+                                                                    </div>
+                                                                    <p className="text-slate-500 font-medium">{q ? 'No matching transactions found' : 'No transaction data available'}</p>
+                                                                  </div>
+                                                                )}
+                                                                {filtered.length > 0 && (
+                                                                  <div className="bg-gradient-to-r from-slate-100 to-slate-50 px-8 py-6 border-t-2 border-slate-200">
+                                                                    <div className="grid grid-cols-12 gap-6 items-center">
+                                                                      <div className="col-span-9">
+                                                                        <div className="flex items-center gap-3">
+                                                                          <div className="w-2 h-2 bg-slate-600 rounded-full"></div>
+                                                                          <span className="text-base font-bold text-slate-700 uppercase tracking-wider">Total</span>
+                                                                        </div>
+                                                                      </div>
+                                                                      <div className="col-span-3 text-right">
+                                                                        <div className="inline-flex items-center px-4 py-2 bg-white rounded-lg border-2 border-slate-300 shadow-sm">
+                                                                          <span className="text-base font-extrabold text-slate-900">
+                                                                            {fmtCurrency2(filtered.reduce((acc: number, tr: any) => acc + parseAmount(tr?.amount ?? tr?.Amount ?? tr?.value ?? tr?.amt), 0))}
+                                                                          </span>
+                                                                        </div>
+                                                                      </div>
+                                                                    </div>
+                                                                  </div>
+                                                                )}
+                                                              </div>
+                                                            </div>
+                                                          );
+                                                        })()
+                                                      ) : (
+                                                        Object.entries(categories as Record<string, any>).map(([categoryName, transactions]) => (
+                                                          (() => {
+                                                            // Normalize and filter first; if no match during search, do not render this category at all
+                                                            const normalizeTransactions = (tx: any): any[] => {
+                                                              if (!tx) return [];
+                                                              if (Array.isArray(tx)) return tx.flat().filter(Boolean);
+                                                              if (typeof tx === 'object') {
+                                                                const vals = Object.values(tx);
+                                                                const merged = vals.reduce<any[]>((acc, v) => {
+                                                                  if (Array.isArray(v)) acc.push(...v);
+                                                                  else if (v && typeof v === 'object') {
+                                                                    const maybe = (v as any).transactions;
+                                                                    if (Array.isArray(maybe)) acc.push(...maybe);
+                                                                  }
+                                                                  return acc;
+                                                                }, []);
+                                                                return merged.filter(Boolean);
+                                                              }
+                                                              return [];
+                                                            };
+
+                                                            const rows = normalizeTransactions(transactions);
+                                                            const q = categorySearch.trim().toLowerCase();
+                                                            const filtered = !q ? rows : rows.filter((transaction: any) => {
+                                                              const date = String(transaction?.date || transaction?.Date || transaction?.transaction_date || '');
+                                                              const desc = String(transaction?.description || transaction?.Description || transaction?.desc || transaction?.memo || '');
+                                                              const amt = String(transaction?.amount || transaction?.Amount || transaction?.value || transaction?.amt || '');
+                                                              return (date + ' ' + desc + ' ' + amt).toLowerCase().includes(q);
+                                                            });
+                                                            if (q && !filtered.length) return null; // hide this category entirely during search if no matches
+
+                                                            return (
+                                                              <div key={categoryName} className="bg-white rounded-xl shadow-lg border border-slate-200/60 overflow-hidden mb-8">
+                                                                <div className="bg-gradient-to-r from-blue-500 to-blue-600 text-white px-8 py-5 relative">
+                                                                  <div className="absolute inset-0 bg-black/5"></div>
+                                                                  <div className="relative flex items-center gap-3">
+                                                                    <div className="w-2 h-2 bg-white rounded-full opacity-80"></div>
+                                                                    <h4 className="text-base font-bold uppercase tracking-wider">{categoryName}</h4>
+                                                                  </div>
+                                                                </div>
+                                                                <div className="bg-gradient-to-r from-slate-50 to-slate-100/50 px-8 py-4 border-b border-slate-200/60">
+                                                                  <div className="grid grid-cols-12 gap-6">
+                                                                    <div className="col-span-3">
+                                                                      <span className="text-xs font-bold text-slate-600 uppercase tracking-wider">Date</span>
+                                                                    </div>
+                                                                    <div className="col-span-6">
+                                                                      <span className="text-xs font-bold text-slate-600 uppercase tracking-wider">Description</span>
+                                                                    </div>
+                                                                    <div className="col-span-3 text-right">
+                                                                      <span className="text-xs font-bold text-slate-600 uppercase tracking-wider">Amount</span>
+                                                                    </div>
+                                                                  </div>
+                                                                </div>
+                                                                <div className="bg-white">
+                                                                  {filtered.length ? filtered.map((transaction: any, index: number) => (
+                                                                    <div key={index} className="px-8 py-5 border-b border-slate-100/70 hover:bg-gradient-to-r hover:from-blue-50/30 hover:to-transparent transition-all duration-300 group">
+                                                                      <div className="grid grid-cols-12 gap-6 items-center">
+                                                                        <div className="col-span-3">
+                                                                          <div className="flex items-center gap-3">
+                                                                            <div className="w-1 h-8 bg-blue-400 rounded-full opacity-60 group-hover:opacity-100 transition-opacity duration-300"></div>
+                                                                            <span className="text-sm font-semibold text-slate-900">
+                                                                              {formatDateHuman(transaction?.date || transaction?.Date || transaction?.transaction_date || '')}
+                                                                            </span>
+                                                                          </div>
+                                                                        </div>
+                                                                        <div className="col-span-6">
+                                                                          <span className="text-sm text-slate-700 leading-relaxed font-medium">
+                                                                            {transaction?.description || transaction?.Description || transaction?.desc || transaction?.memo || String(transaction)}
+                                                                          </span>
+                                                                        </div>
+                                                                        <div className="col-span-3 text-right">
+                                                                          <div className="inline-flex items-center px-3 py-1.5 bg-slate-50 rounded-lg border border-slate-200/60">
+                                                                            <span className="text-sm font-bold text-slate-900">
+                                                                              ${Number(transaction?.amount || transaction?.Amount || transaction?.value || transaction?.amt || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                                                            </span>
+                                                                          </div>
+                                                                        </div>
+                                                                      </div>
+                                                                    </div>
+                                                                  )) : (
+                                                                    <div className="px-8 py-16 text-center">
+                                                                      <div className="w-16 h-16 bg-slate-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                                                                        <svg className="w-8 h-8 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                                                                        </svg>
+                                                                      </div>
+                                                                      <p className="text-slate-500 font-medium">{q ? 'No matching transactions found' : 'No transaction data available'}</p>
+                                                                    </div>
+                                                                  )}
+                                                                  {filtered.length > 0 && (
+                                                                    <div className="bg-gradient-to-r from-slate-100 to-slate-50 px-8 py-6 border-t-2 border-slate-200">
+                                                                      <div className="grid grid-cols-12 gap-6 items-center">
+                                                                        <div className="col-span-9">
+                                                                          <div className="flex items-center gap-3">
+                                                                            <div className="w-2 h-2 bg-slate-600 rounded-full"></div>
+                                                                            <span className="text-base font-bold text-slate-700 uppercase tracking-wider">Total</span>
+                                                                          </div>
+                                                                        </div>
+                                                                        <div className="col-span-3 text-right">
+                                                                          <div className="inline-flex items-center px-4 py-2 bg-white rounded-lg border-2 border-slate-300 shadow-sm">
+                                                                            <span className="text-base font-extrabold text-slate-900">
+                                                                              {fmtCurrency2(filtered.reduce((acc: number, tr: any) => acc + parseAmount(tr?.amount ?? tr?.Amount ?? tr?.value ?? tr?.amt), 0))}
+                                                                            </span>
+                                                                          </div>
+                                                                        </div>
+                                                                      </div>
+                                                                    </div>
+                                                                  )}
+                                                                </div>
+                                                              </div>
+                                                            );
+                                                          })()
+                                                        ))
+                                                      )}
+                                                    </div>
+                                                  </div>
+                                                ))}
+                                              </>
+                                            );
+                                          } catch (error) {
+                                            console.error('Error parsing categories data:', error);
+                                            return (
+                                              <div className="px-4 py-8 text-center text-slate-500 italic">
+                                                Unable to parse categories data
+                                              </div>
+                                            );
+                                          }
+                                        })()}
+                                      </div>
+                                    )}
+
+                                    {/* Basic info for local items or when DB fetch fails */}
+                                    {(!documentDetails && !documentDetailsLoading) && (
+                                      <div>
+                                        <div className="text-slate-700 font-semibold mb-3">Document Information</div>
+                                        <div className="grid grid-cols-2 gap-3 text-sm">
+                                          <div>
+                                            <div className="text-slate-500">File name</div>
+                                            <div className="font-medium text-slate-900">{item.file.name}</div>
+                                          </div>
+                                          <div>
+                                            <div className="text-slate-500">Size</div>
+                                            <div className="font-medium text-slate-900">{(item.file.size / 1024 / 1024).toFixed(2)} MB</div>
+                                          </div>
+                                          <div>
+                                            <div className="text-slate-500">Status</div>
+                                            <div className="font-medium text-slate-900">{item.status}</div>
+                                          </div>
+                                          <div>
+                                            <div className="text-slate-500">Date Key</div>
+                                            <div className="font-medium text-slate-900">{item.dateKey}</div>
+                                          </div>
+                                          <div>
+                                            <div className="text-slate-500">Source</div>
+                                            <div className="font-medium text-slate-900">{item.source}</div>
+                                          </div>
+                                          {item.docId && (
+                                            <div>
+                                              <div className="text-slate-500">Document ID</div>
+                                              <div className="font-mono text-xs text-slate-900">{item.docId}</div>
+                                            </div>
+                                          )}
+                                        </div>
+
+                                        {item.fileUrl && (
+                                          <div className="mt-3">
+                                            <a href={item.fileUrl} target="_blank" rel="noreferrer" className="text-blue-600 hover:text-blue-700 text-sm">Open file</a>
+                                          </div>
+                                        )}
+                                      </div>
+                                    )}
+                                  </div>
+                                );
+                              })()}
+                            </div>
+                            {/* Footer */}
+                            <div className="px-8 py-6 bg-slate-50 border-t border-slate-200 flex justify-between items-center flex-shrink-0">
+                              <div className="text-sm text-slate-500">
+                                Bank Statement Analysis • {detailsModal.item.file.name}
+                              </div>
+                              <button 
+                                onClick={closeDetailsModal} 
+                                className="px-6 py-2.5 bg-slate-600 hover:bg-slate-700 text-white text-sm font-semibold rounded-lg transition-colors duration-200 shadow-sm"
+                              >
+                                Close Analysis
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      )}
                     </div>
                   )}
 

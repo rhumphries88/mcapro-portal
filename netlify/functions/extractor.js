@@ -50,6 +50,8 @@ export async function handler(event) {
     const auth = process.env.N8N_AUTH;
 
     const body = event.isBase64Encoded ? Buffer.from(event.body || "", "base64") : (event.body || "");
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 25000);
     const resp = await fetch(url, {
       method: "POST",
       headers: {
@@ -57,12 +59,23 @@ export async function handler(event) {
         ...(auth ? { Authorization: auth } : {}),
       },
       body,
+      signal: controller.signal,
     });
+    clearTimeout(timer);
 
-    const text = await resp.text();
-    let payload;
-    try { payload = text ? JSON.parse(text) : null; } catch { payload = text; }
-    return jsonResponse(resp.status, payload == null ? {} : payload);
+    // Read upstream, but cap what we return to Netlify CLI to avoid "Stream body too big"
+    const txt = await resp.text();
+    const capped = (txt || "").slice(0, 5000);
+    let parsed = null; try { parsed = capped ? JSON.parse(capped) : null; } catch {}
+
+    if (!resp.ok) {
+      return jsonResponse(202, {
+        accepted: true,
+        note: `upstream responded ${resp.status}`,
+        body: capped,
+      });
+    }
+    return jsonResponse(200, parsed ?? { body: capped });
   } catch (err) {
     return jsonResponse(500, { error: err?.message || "Unexpected server error" });
   }

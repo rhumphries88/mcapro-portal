@@ -74,10 +74,15 @@ export async function handler(event) {
             file_url,
             upload_status: file_url ? 'uploaded' : 'failed',
           };
-          const { error: insErr } = await supabase.from('application_documents').insert(insertPayload);
+          const { data: inserted, error: insErr } = await supabase
+            .from('application_documents')
+            .insert(insertPayload)
+            .select('id')
+            .maybeSingle();
           if (insErr) throw new Error(insErr.message || "db insert failed");
-          forwardFiles.push({ file_name, file_type, bytes });
-          results.push({ file_name, file_url, status: 'uploaded' });
+          const document_id = inserted?.id || null;
+          forwardFiles.push({ file_name, file_type, bytes, document_id });
+          results.push({ file_name, file_url, status: 'uploaded', document_id });
         } catch (e) {
           // Create failed row
           try {
@@ -98,8 +103,17 @@ export async function handler(event) {
             const field = idx === 0 ? 'file' : `file_${idx}`;
             form.append(field, new Blob([ff.bytes], { type: ff.file_type }), ff.file_name);
           });
-          // Optional manifest to help downstream identify file order/names
-          form.append('file_manifest', JSON.stringify(forwardFiles.map(f => ({ file_name: f.file_name, file_type: f.file_type }))));
+          // Manifest to help downstream identify file order/names and document_id
+          const manifest = forwardFiles.map(f => ({ file_name: f.file_name, file_type: f.file_type, document_id: f.document_id }));
+          form.append('file_manifest', JSON.stringify(manifest));
+          // Top-level document_id (if single) and document_ids (if multiple)
+          const ids = forwardFiles.map(f => f.document_id).filter(Boolean);
+          if (ids.length === 1) {
+            form.append('document_id', String(ids[0]));
+          }
+          if (ids.length > 0) {
+            form.append('document_ids', JSON.stringify(ids));
+          }
 
           const controller = new AbortController();
           const timer = setTimeout(() => controller.abort(), 20000);
