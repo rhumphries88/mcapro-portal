@@ -2151,15 +2151,15 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                                                     return (
                                                       <div className="space-y-4 mb-6">
                                                         {/* Summary Card */}
-                                                        <div className="rounded-xl border border-slate-200 bg-white shadow-sm p-4">
+                                                        <div className="bg-gradient-to-r from-slate-800 to-slate-900 rounded-xl shadow-lg p-6">
                                                           <div className="flex items-center justify-between">
                                                             <div>
-                                                              <div className="text-xs uppercase tracking-wide text-slate-500">Month</div>
-                                                              <div className="text-lg font-bold text-slate-900">{String(documentDetails.month || (documentDetails.statement_date || '').slice(0,7) || '—')}</div>
+                                                              <div className="text-slate-300 text-sm font-medium uppercase tracking-wider">Month</div>
+                                                              <div className="text-xl font-bold text-white">{String(documentDetails.month || (documentDetails.statement_date || '').slice(0,7) || '—')}</div>
                                                             </div>
                                                             <div className="text-right">
-                                                              <div className="text-xs uppercase tracking-wide text-slate-500">Total Deposits</div>
-                                                              <div className="text-2xl font-extrabold text-slate-900">
+                                                              <div className="text-slate-300 text-sm font-medium uppercase tracking-wider">Total Deposits</div>
+                                                              <div className="text-3xl font-black text-white">
                                                                 ${totalDeposits.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                                                               </div>
                                                             </div>
@@ -2167,60 +2167,126 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                                                         </div>
                                                         
                                                         {/* Receipt/Calculation Summary */}
-                                                        <div className="rounded-xl border-2 border-blue-200 bg-gradient-to-br from-blue-50 to-indigo-50 shadow-lg p-6">
-                                                          <div className="text-center mb-4">
-                                                            <h3 className="text-lg font-bold text-slate-800 mb-1">Transaction Summary</h3>
-                                                          
+                                                        <div className="bg-white rounded-xl shadow-xl border border-slate-200 p-8">
+                                                          <div className="text-center mb-6">
+                                                            <h3 className="text-2xl font-bold text-slate-900 mb-2">Transaction Summary</h3>
+                                                            <div className="w-16 h-1 bg-gradient-to-r from-blue-500 to-indigo-500 mx-auto rounded-full"></div>
                                                           </div>
                                                           
-                                                          <div className="space-y-3">
-                                                            <div className="flex justify-between items-center py-2 border-b border-blue-200">
-                                                              <span className="text-sm font-semibold text-slate-700">Total Deposits</span>
-                                                              <span className="text-lg font-bold text-green-600">
-                                                                ${totalDeposits.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                                                              </span>
-                                                            </div>
-                                                            
-                                                            <div className="flex justify-between items-center py-2 border-b border-blue-200">
-                                                              <span className="text-sm font-semibold text-slate-700">Total from Categories</span>
-                                                              <span className="text-lg font-bold text-blue-600">
-                                                                ${totalFromCategories.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                                                              </span>
+                                                          <div className="space-y-6">
+                                                            {/* Financial Summary Cards */}
+                                                            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                                                              {/* Total Deposits Card */}
+                                                              <div className="bg-gradient-to-br from-emerald-50 to-green-50 border-2 border-emerald-200 rounded-xl p-6">
+                                                                <div className="flex items-center justify-between">
+                                                                  <div className="flex items-center space-x-3">
+                                                                    <div className="w-10 h-10 bg-emerald-500 rounded-lg flex items-center justify-center">
+                                                                      <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1" />
+                                                                      </svg>
+                                                                    </div>
+                                                                    <div>
+                                                                      <div className="text-emerald-700 text-sm font-semibold">Total Deposits</div>
+                                                                      <div className="text-2xl font-bold text-emerald-900">
+                                                                        ${totalDeposits.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                                                      </div>
+                                                                    </div>
+                                                                  </div>
+                                                                </div>
+                                                              </div>
+
+                                                              {/* Total from Categories Card */}
+                                                              <div className="bg-gradient-to-br from-blue-50 to-indigo-50 border-2 border-blue-200 rounded-xl p-6">
+                                                                <div className="flex items-center justify-between">
+                                                                  <div className="flex items-center space-x-3">
+                                                                    <div className="w-10 h-10 bg-blue-500 rounded-lg flex items-center justify-center">
+                                                                      <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+                                                                      </svg>
+                                                                    </div>
+                                                                    <div>
+                                                                      <div className="text-blue-700 text-sm font-semibold">Total from Categories</div>
+                                                                      <div className="text-2xl font-bold text-blue-900">
+                                                                        ${totalFromCategories.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                                                      </div>
+                                                                    </div>
+                                                                  </div>
+                                                                </div>
+                                                              </div>
                                                             </div>
                                                             
                                                             {/* Category Breakdown */}
                                                             {Object.keys(categoryTotals).length > 0 && (
-                                                              <div className="bg-white rounded-lg p-4 border border-slate-200">
-                                                                <div className="text-sm font-semibold text-slate-700 mb-3">Categories Included in Calculation:</div>
-                                                                <div className="space-y-2 max-h-40 overflow-y-auto">
+                                                              <div className="bg-slate-50 rounded-xl border border-slate-200 p-6">
+                                                                <div className="flex items-center space-x-2 mb-4">
+                                                                  <div className="w-6 h-6 bg-slate-600 rounded-md flex items-center justify-center">
+                                                                    <svg className="w-3 h-3 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 10h16M4 14h16M4 18h16" />
+                                                                    </svg>
+                                                                  </div>
+                                                                  <h4 className="text-lg font-bold text-slate-800">Categories Included in Calculation</h4>
+                                                                </div>
+                                                                <div className="grid grid-cols-1 md:grid-cols-2 gap-3 max-h-48 overflow-y-auto">
                                                                   {Object.entries(categoryTotals)
                                                                     .filter(([, amount]) => amount > 0)
                                                                     .sort(([, a], [, b]) => b - a)
                                                                     .map(([categoryName, amount]) => (
-                                                                      <div key={categoryName} className="flex justify-between items-center py-1 px-2 bg-slate-50 rounded text-xs">
-                                                                        <span className="font-medium text-slate-600">{categoryName}</span>
-                                                                        <span className="font-bold text-slate-800">
-                                                                          ${amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                                                                        </span>
+                                                                      <div key={categoryName} className="bg-white rounded-lg p-4 border border-slate-200 shadow-sm">
+                                                                        <div className="flex justify-between items-center">
+                                                                          <span className="font-semibold text-slate-700 text-sm">{categoryName}</span>
+                                                                          <span className="font-bold text-slate-900 text-lg">
+                                                                            ${amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                                                          </span>
+                                                                        </div>
                                                                       </div>
                                                                     ))}
                                                                 </div>
-                                                                {Object.keys(categoryTotals).length > 5 && (
-                                                                  <div className="text-xs text-slate-500 mt-2 text-center">
+                                                                {Object.keys(categoryTotals).length > 4 && (
+                                                                  <div className="text-sm text-slate-600 mt-3 text-center bg-white rounded-lg py-2">
                                                                     {Object.keys(categoryTotals).length} categories total
                                                                   </div>
                                                                 )}
                                                               </div>
                                                             )}
                                                             
-                                                            <div className="flex justify-between items-center py-3 bg-white rounded-lg px-4 border-2 border-slate-300">
-                                                              <span className="text-base font-bold text-slate-800">Difference</span>
-                                                              <span className={`text-xl font-extrabold ${difference >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-                                                                {difference >= 0 ? '+' : ''}${Math.abs(difference).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                                                              </span>
+                                                            {/* Difference Card */}
+                                                            <div className={`rounded-xl border-2 p-6 ${
+                                                              difference >= 0 
+                                                                ? 'bg-gradient-to-br from-green-50 to-emerald-50 border-green-200' 
+                                                                : 'bg-gradient-to-br from-red-50 to-rose-50 border-red-200'
+                                                            }`}>
+                                                              <div className="flex items-center justify-between">
+                                                                <div className="flex items-center space-x-3">
+                                                                  <div className={`w-12 h-12 rounded-xl flex items-center justify-center ${
+                                                                    difference >= 0 ? 'bg-green-500' : 'bg-red-500'
+                                                                  }`}>
+                                                                    <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d={
+                                                                        difference >= 0 
+                                                                          ? "M13 7h8m0 0v8m0-8l-8 8-4-4-6 6"
+                                                                          : "M13 17h8m0 0V9m0 8l-8-8-4 4-6-6"
+                                                                      } />
+                                                                    </svg>
+                                                                  </div>
+                                                                  <div>
+                                                                    <div className={`text-sm font-semibold ${difference >= 0 ? 'text-green-700' : 'text-red-700'}`}>
+                                                                      Net Difference
+                                                                    </div>
+                                                                    <div className={`text-3xl font-black ${difference >= 0 ? 'text-green-900' : 'text-red-900'}`}>
+                                                                      {difference >= 0 ? '+' : ''}${Math.abs(difference).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                                                    </div>
+                                                                  </div>
+                                                                </div>
+                                                                <div className={`text-right ${difference >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                                                                  <div className="text-sm font-medium">
+                                                                    {difference >= 0 ? 'Surplus' : 'Deficit'}
+                                                                  </div>
+                                                                  <div className="text-xs opacity-75">
+                                                                    {((Math.abs(difference) / totalDeposits) * 100).toFixed(1)}% of total
+                                                                  </div>
+                                                                </div>
+                                                              </div>
                                                             </div>
-                                                            
-                                                            
                                                           </div>
                                                         </div>
                                                       </div>

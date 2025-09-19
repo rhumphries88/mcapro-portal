@@ -1196,7 +1196,7 @@ const ApplicationForm: React.FC<ApplicationFormProps> = ({ onSubmit, initialStep
               {errors.yearsInBusiness && <p className="mt-1 text-sm text-red-600">{errors.yearsInBusiness}</p>}
             </div>
             <div className="relative">
-              <label className="block text-sm font-bold text-gray-800 mb-2" htmlFor="numberOfEmployees">Number of Employees</label>
+              <label className="block text-sm font-bold text-gray-800 mb-2" htmlFor="numberOfEmployees">Ownership*</label>
               <input
                 type="number"
                 id="numberOfEmployees"
