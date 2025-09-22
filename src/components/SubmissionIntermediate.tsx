@@ -19,23 +19,7 @@ type Props = {
   loading?: boolean;
 };
 
-// Structured type based on MCA webhook response sample
-type MCASummaryItem = {
-  FUNDER: string;
-  AMOUNT: string;
-  'DAILY/WEEKLY Debit': string;
-  NOTES: string;
-};
-
-// Generic monthly table row: keys and values are strings
-type MCAMonthlyRow = Record<string, string>;
-
-// Full parsed MCA payload we care about per document
-type MCAParsed = {
-  monthly_table?: MCAMonthlyRow[];
-  mca_summary?: MCASummaryItem[];
-  fraud_flags?: string[];
-};
+ 
 
 const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, loading }) => {
   const [details, setDetails] = useState<Record<string, string | boolean>>({
@@ -152,6 +136,19 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/(^-|-$)/g, '');
 
+  // Utility: detect the special category "BUSINESS NAME AND OWNER" (also handle common misspelling "OWDER")
+  const isBusinessNameAndOwner = (name: string): boolean => {
+    const norm = String(name || '')
+      .toLowerCase()
+      .replace(/\s+/g, ' ')
+      .trim();
+    return (
+      norm === 'business name and owner' ||
+      norm === 'business name and owder' ||
+      (norm.includes('business name') && norm.includes('owner'))
+    );
+  };
+
   // Utility: format YYYY-MM-DD into Month DD, YYYY
   const formatDateHuman = (value: any): string => {
     const raw = String(value || '').trim();
@@ -192,9 +189,7 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
             try { parsed = JSON.parse(text); } catch { parsed = undefined; }
           }
           if (parsed) {
-            console.log('[newDealSummary retry] success; applying parsed summary');
-            populateDetailsFromWebhook(parsed, { overwrite: false, markProvidedEvenIfNoChange: true });
-            populatePerDocDetails(dateKey, parsed, { overwrite: true });
+            console.log('[newDealSummary retry] success; parsed summary received');
           }
           // mark as no longer pending, cancel any grace timer and complete UI now
           pendingSummaryRef.current.delete(dateKey);
@@ -216,152 +211,7 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
     console.warn('[newDealSummary retry] exhausted attempts; will rely on grace timeout to complete UI');
   };
 
-  // Populate per-document details (by dateKey) from webhook payload
-  const populatePerDocDetails = (dateKey: string, payload: unknown, opts: { overwrite?: boolean } = {}) => {
-    if (!payload || typeof payload !== 'object') return;
-    // If payload is an array, merge object elements so we can find fields regardless of position
-    const objects: Record<string, unknown>[] = Array.isArray(payload)
-      ? (payload as unknown[]).filter((el): el is Record<string, unknown> => !!el && typeof el === 'object' && !Array.isArray(el))
-      : [payload as Record<string, unknown>];
-    const baseData: Record<string, unknown> = objects.length ? Object.assign({}, ...objects) : {};
-    const flat = flattenObject(baseData);
-    const normalize = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
-    const ciEntries = Object.entries(flat).map(([k, v]) => [k.toLowerCase(), v] as const);
-    const normEntries = Object.entries(flat).map(([k, v]) => [normalize(k), v] as const);
-
-    const aliases: Record<string, string[]> = {
-      dealName: ['dealName', 'business_name', 'company_name', 'legal_business_name', 'merchant_name', 'dba', 'doing_business_as'],
-      industry: ['industry', 'industry_type', 'business_industry', 'naics_industry', 'naics_description'],
-      entityType: ['entityType', 'business_type', 'entity', 'business_entity', 'entity_type'],
-      creditScore: ['creditScore', 'credit_score', 'credit', 'fico'],
-      timeInBiz: ['timeInBiz', 'time_in_biz', 'tib_months', 'time_in_business_months'],
-      avgMonthlyRevenue: ['avgMonthlyRevenue', 'average_monthly_revenue', 'monthly_revenue_avg'],
-      averageMonthlyDeposits: ['averageMonthlyDeposits', 'avgMonthlyDeposits', 'average_monthly_deposits'],
-      existingDebt: ['existingDebt', 'existing_business_debt', 'current_debt'],
-      requestedAmount: ['requestedAmount', 'requested_amount', 'request_amount'],
-      avgDailyBalance: ['avgDailyBalance', 'average_daily_balance'],
-      avgMonthlyDepositCount: ['avgMonthlyDepositCount', 'average_monthly_deposit_count'],
-      nsfCount: ['nsfCount', 'nsf_count'],
-      negativeDays: ['negativeDays', 'negative_days'],
-      currentPositionCount: ['currentPositionCount', 'current_position_count'],
-      holdback: ['holdback', 'hold_back', 'holdback_percent'],
-      grossAnnualRevenue: ['grossAnnualRevenue', 'gross_annual_revenue', 'annual_revenue'],
-      state: ['state', 'State'],
-    };
-
-    const numericTargets = new Set([
-      'creditScore','timeInBiz','avgMonthlyRevenue','averageMonthlyDeposits','existingDebt','requestedAmount','avgDailyBalance','avgMonthlyDepositCount','nsfCount','negativeDays','currentPositionCount','holdback','grossAnnualRevenue',
-    ]);
-
-    const sanitizeNumeric = (val: unknown): string => {
-      const s = String(val ?? '').trim();
-      if (!s) return '';
-      return s.replace(/,/g, '').replace(/[^0-9.-]/g, '');
-    };
-
-    const getFirst = (keys: string[]) => {
-      const direct = keys.map(k => baseData[k]).find(v => v !== undefined && v !== null && String(v).trim() !== '');
-      if (direct !== undefined) return direct;
-      for (const alias of keys) {
-        const needle = alias.toLowerCase();
-        const found = ciEntries.find(([k]) => k.endsWith(needle) || k === needle || k.includes(`.${needle}`));
-        if (found && found[1] !== undefined && found[1] !== null && String(found[1]).trim() !== '') return found[1];
-        const nNeedle = normalize(alias);
-        const nFound = normEntries.find(([k]) => k === nNeedle || k.endsWith(nNeedle) || k.includes(nNeedle));
-        if (nFound && nFound[1] !== undefined && nFound[1] !== null && String(nFound[1]).trim() !== '') return nFound[1];
-      }
-      return undefined;
-    };
-
-    const mapped: Record<string, string | boolean> = {};
-    (Object.keys(aliases) as Array<keyof typeof aliases>).forEach((target) => {
-      const value = getFirst(aliases[target]);
-      if (value !== undefined) {
-        mapped[target] = numericTargets.has(target as string) ? sanitizeNumeric(value) : String(value);
-      }
-    });
-
-    console.log('[populatePerDocDetails] mapped keys for', dateKey, Object.keys(mapped));
-    setPerDocDetails(prev => {
-      const curr = prev[dateKey] || {};
-      const next = { ...curr } as Record<string, string | boolean>;
-      Object.entries(mapped).forEach(([k, v]) => {
-        if (opts.overwrite || !next[k] || String(next[k]).trim() === '') next[k] = v;
-      });
-      return { ...prev, [dateKey]: next };
-    });
-
-    // Also try to populate MCA-like data by deep-searching the original payload as well as merged baseData
-    try {
-      let monthly_table: MCAMonthlyRow[] | undefined = undefined;
-      let mca_summary: MCASummaryItem[] | undefined = undefined;
-      let fraud_flags: string[] | undefined = undefined;
-
-      const monthlyCandidates = [
-        ...deepFindAllByKey(baseData, 'monthly_table'),
-        ...deepFindAllByKey(payload, 'monthly_table'),
-      ];
-      const summaryCandidates = [
-        ...deepFindAllByKey(baseData, 'mca_summary'),
-        ...deepFindAllByKey(payload, 'mca_summary'),
-      ];
-      const flagCandidates = [
-        ...deepFindAllByKey(baseData, 'fraud_flags'),
-        ...deepFindAllByKey(payload, 'fraud_flags'),
-      ];
-
-      const monthlyRaw = monthlyCandidates.find((x) => Array.isArray(x));
-      if (Array.isArray(monthlyRaw)) {
-        monthly_table = (monthlyRaw as unknown[]).map((r) => {
-          const rec = (r && typeof r === 'object') ? (r as Record<string, unknown>) : {};
-          const out: Record<string, string> = {};
-          Object.keys(rec).forEach((k) => { out[k] = String(rec[k] ?? ''); });
-          return out;
-        });
-      }
-
-      const summaryRaw = summaryCandidates.find((x) => Array.isArray(x) || (x && typeof x === 'object'));
-      if (Array.isArray(summaryRaw)) {
-        mca_summary = (summaryRaw as unknown[]).map((row) => {
-          const r = row as Record<string, unknown>;
-          return {
-            FUNDER: String(r.FUNDER ?? ''),
-            AMOUNT: String(r.AMOUNT ?? ''),
-            'DAILY/WEEKLY Debit': String((r as Record<string, unknown>)['DAILY/WEEKLY Debit'] ?? ''),
-            NOTES: String(r.NOTES ?? ''),
-          } as MCASummaryItem;
-        });
-      } else if (summaryRaw && typeof summaryRaw === 'object') {
-        const r = summaryRaw as Record<string, unknown>;
-        mca_summary = [{
-          FUNDER: String(r.FUNDER ?? ''),
-          AMOUNT: String(r.AMOUNT ?? ''),
-          'DAILY/WEEKLY Debit': String((r as Record<string, unknown>)['DAILY/WEEKLY Debit'] ?? ''),
-          NOTES: String(r.NOTES ?? ''),
-        }];
-      }
-
-      const flagsRaw = flagCandidates.find((x) => Array.isArray(x));
-      if (Array.isArray(flagsRaw)) {
-        fraud_flags = (flagsRaw as unknown[]).map((x) => String(x));
-      }
-
-      if (monthly_table || mca_summary || fraud_flags) {
-        const payload: MCAParsed = { monthly_table, mca_summary, fraud_flags };
-        console.log('[populatePerDocDetails] Storing MCA-like data', {
-          dateKey,
-          monthlyRows: monthly_table?.length || 0,
-          summaryRows: mca_summary?.length || 0,
-          fraudFlags: fraud_flags?.length || 0,
-        });
-        setPerDocMcaData((prev: Record<string, MCAParsed>) => ({ ...prev, [dateKey]: payload }));
-      } else {
-        console.log('[populatePerDocDetails] No MCA-like fields present in merged payload for', dateKey);
-      }
-    } catch (e) {
-      console.warn('[populatePerDocDetails] Failed to derive MCA-like fields:', e);
-    }
-  };
+  
 
   useEffect(() => {
     const appId = (details.id as string) || (details.applicationId as string) || (initial?.id as string) || (initial?.applicationId as string) || '';
@@ -487,29 +337,13 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
   // Persisted documents fetched from DB
   const [dbDocs, setDbDocs] = useState<ApplicationDocument[]>([]);
   const [dbDocsLoading, setDbDocsLoading] = useState(false);
-  // Per-document extracted details keyed by dateKey
-  const [perDocDetails, setPerDocDetails] = useState<Record<string, Record<string, string | boolean>>>({});
-  // Per-document MCA payload keyed by dateKey
-  const [perDocMcaData, setPerDocMcaData] = useState<Record<string, MCAParsed>>({});
   // Prevent duplicate document-file webhook calls for same file signature
   const inFlightDocSigsRef = useRef<Set<string>>(new Set());
   // Track which uploads have a background new-deal-summary still running (202/timeout)
   const pendingSummaryRef = useRef<Set<string>>(new Set());
   // Track per-document auto-complete timeouts so we can cancel if summary finishes
   const pendingTimersRef = useRef<Map<string, number>>(new Map());
-  // Diagnostics: observe when MCA data updates
-  useEffect(() => {
-    const keys = Object.keys(perDocMcaData || {});
-    try {
-      if (keys.length) {
-        console.log('[MCA state] perDocMcaData updated. Keys:', keys);
-        const lastKey = keys[keys.length - 1];
-        console.log('[MCA state] latest entry sample', lastKey, perDocMcaData[lastKey]);
-      }
-    } catch (e) {
-      console.warn('[MCA state] Failed to log perDocMcaData update', e, { keys });
-    }
-  }, [perDocMcaData]);
+  
   // Track which item is being replaced (db/local)
   const [replaceTarget, setReplaceTarget] = useState<null | { source: 'db' | 'local'; dateKey: string; docId?: string }>(null);
   // View Details modal state
@@ -523,6 +357,8 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
   const [categorySearch, setCategorySearch] = useState<string>('');
   // Dropdown open state for category filter
   const [categoryDropdownOpen, setCategoryDropdownOpen] = useState<boolean>(false);
+  // Anchor to scroll the modal content to the data tables
+  const tablesStartRef = useRef<HTMLDivElement | null>(null);
   
   // Close dropdown when clicking outside
   useEffect(() => {
@@ -716,20 +552,7 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
 
   
 
-  // Helper to flatten nested objects into dot.notation keys for easy lookup
-  const flattenObject = (obj: unknown, prefix = ''): Record<string, unknown> => {
-    const out: Record<string, unknown> = {};
-    if (!obj || typeof obj !== 'object') return out;
-    Object.entries(obj as Record<string, unknown>).forEach(([k, v]) => {
-      const key = prefix ? `${prefix}.${k}` : k;
-      if (v && typeof v === 'object' && !Array.isArray(v)) {
-        Object.assign(out, flattenObject(v, key));
-      } else {
-        out[key] = v as unknown;
-      }
-    });
-    return out;
-  };
+  
 
   // Simple fetch wrapper without automatic timeout or AbortController
   // Keeps the same signature so callers passing `timeoutMs` won't break; it is ignored.
@@ -743,149 +566,6 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
   };
 
   // (base64 conversion helper removed; no longer needed since we send only file_url)
-
-  // Map extracted webhook fields into local `details` state.
-  // Supports multiple aliases coming from backend.
-  // opts.overwrite: replace current values even if not empty
-  // opts.markProvidedEvenIfNoChange: still flag as auto-populated even when value is identical
-  const populateDetailsFromWebhook = (payload: unknown, opts: { overwrite?: boolean; markProvidedEvenIfNoChange?: boolean } = {}) => {
-    if (!payload || typeof payload !== 'object') return;
-    // Merge array elements so top-level keys like "Entity Type" are discoverable regardless of index
-    let data: Record<string, unknown> = {};
-    if (Array.isArray(payload)) {
-      for (const el of payload as unknown[]) {
-        if (el && typeof el === 'object' && !Array.isArray(el)) {
-          data = { ...data, ...(el as Record<string, unknown>) };
-        }
-      }
-    } else {
-      data = payload as Record<string, unknown>;
-    }
-    console.log('[populateDetailsFromWebhook] raw payload keys:', Object.keys(data));
-    // Flatten and create a case-insensitive index of keys
-    const flat = flattenObject(data);
-    console.log('[populateDetailsFromWebhook] flattened keys:', Object.keys(flat));
-    const normalize = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
-    const ciEntries = Object.entries(flat).map(([k, v]) => [k.toLowerCase(), v] as const);
-    const normEntries = Object.entries(flat).map(([k, v]) => [normalize(k), v] as const);
-    const aliases: Record<string, string[]> = {
-      // Business info
-      dealName: ['dealName', 'business_name', 'company_name', 'legal_business_name', 'merchant_name', 'dba', 'doing_business_as'],
-      industry: ['industry', 'industry_type', 'business_industry', 'naics_industry', 'naics_description'],
-      entityType: ['entityType', 'business_type', 'entity', 'business_entity', 'entity_type'],
-      creditScore: ['creditScore', 'credit_score', 'credit', 'fico'],
-      timeInBiz: ['timeInBiz', 'time_in_biz', 'tib_months', 'time_in_business_months'],
-      avgMonthlyRevenue: ['avgMonthlyRevenue', 'average_monthly_revenue', 'monthly_revenue_avg'],
-      averageMonthlyDeposits: ['averageMonthlyDeposits', 'avgMonthlyDeposits', 'average_monthly_deposits'],
-      existingDebt: ['existingDebt', 'existing_business_debt', 'current_debt'],
-      requestedAmount: ['requestedAmount', 'requested_amount', 'request_amount'],
-      avgDailyBalance: ['avgDailyBalance', 'average_daily_balance'],
-      avgMonthlyDepositCount: ['avgMonthlyDepositCount', 'average_monthly_deposit_count'],
-      nsfCount: ['nsfCount', 'nsf_count'],
-      negativeDays: ['negativeDays', 'negative_days'],
-      currentPositionCount: ['currentPositionCount', 'current_position_count'],
-      holdback: ['holdback', 'hold_back', 'holdback_percent'],
-      grossAnnualRevenue: ['grossAnnualRevenue', 'gross_annual_revenue', 'annual_revenue'],
-      state: ['state', 'State'],
-    };
-
-    const next: Record<string, string | boolean> = {};
-
-    const getFirst = (keys: string[]) => {
-      // try exact keys
-      const direct = keys.map(k => data[k]).find(v => v !== undefined && v !== null && String(v).trim() !== '');
-      if (direct !== undefined) return direct;
-      // try case-insensitive across flattened keys, allowing occurrences like result.financial.credit_score, etc.
-      for (const alias of keys) {
-        const needle = alias.toLowerCase();
-        const found = ciEntries.find(([k]) => k.endsWith(needle) || k === needle || k.includes(`.${needle}`));
-        if (found && found[1] !== undefined && found[1] !== null && String(found[1]).trim() !== '') return found[1];
-        // normalized comparison to match human-readable labels like "Avg Monthly Revenue"
-        const nNeedle = normalize(alias);
-        const nFound = normEntries.find(([k]) => k === nNeedle || k.endsWith(nNeedle) || k.includes(nNeedle));
-        if (nFound && nFound[1] !== undefined && nFound[1] !== null && String(nFound[1]).trim() !== '') return nFound[1];
-      }
-      return undefined;
-    };
-
-    const numericTargets = new Set([
-      'creditScore',
-      'timeInBiz',
-      'avgMonthlyRevenue',
-      'averageMonthlyDeposits',
-      'existingDebt',
-      'requestedAmount',
-      'avgDailyBalance',
-      'avgMonthlyDepositCount',
-      'nsfCount',
-      'negativeDays',
-      'currentPositionCount',
-      'holdback',
-      'grossAnnualRevenue',
-    ]);
-
-    const sanitizeNumeric = (val: unknown): string => {
-      const s = String(val ?? '').trim();
-      if (!s) return '';
-      // remove commas and any non [0-9.-]
-      const cleaned = s.replace(/,/g, '').replace(/[^0-9.-]/g, '');
-      return cleaned;
-    };
-
-    (Object.keys(aliases) as Array<keyof typeof aliases>).forEach((target) => {
-      const value = getFirst(aliases[target]);
-      if (value !== undefined) {
-        next[target] = numericTargets.has(target as string) ? sanitizeNumeric(value) : String(value);
-        console.log(`[populateDetailsFromWebhook] mapped ${target} <-`, value);
-      }
-    });
-
-    // Fill behavior: overwrite or only-empty based on opts
-    // We will track keys provided by webhook to ensure highlighting regardless of whether value changed
-    const providedKeys = new Set<string>();
-    // If caller asks to mark provided even if unchanged, seed with all mapped keys
-    if (opts.markProvidedEvenIfNoChange) {
-      // Add any mapped keys
-      Object.keys(next).forEach(k => providedKeys.add(k));
-      // Also add all financial targets so UI highlights them even if webhook omitted/returned empty
-      const financialTargets = [
-        'creditScore',
-        'timeInBiz',
-        'avgMonthlyRevenue',
-        'averageMonthlyDeposits',
-        'existingDebt',
-        'requestedAmount',
-        'avgDailyBalance',
-        'avgMonthlyDepositCount',
-        'nsfCount',
-        'negativeDays',
-        'currentPositionCount',
-        'holdback',
-        'grossAnnualRevenue',
-      ];
-      financialTargets.forEach(k => providedKeys.add(k));
-      console.log('[populateDetailsFromWebhook] prefilling providedKeys due to markProvidedEvenIfNoChange (financial targets included):', Array.from(providedKeys));
-    }
-    setDetails(prev => {
-      const merged: typeof prev = { ...prev };
-      Object.entries(next).forEach(([k, v]) => {
-        const curr = (merged[k] as string) ?? '';
-        if (opts.overwrite) {
-          merged[k] = v as string;
-          // mark as provided (for highlight)
-          providedKeys.add(k);
-        } else {
-          if (!curr || String(curr).trim() === '') {
-            merged[k] = v as string;
-            providedKeys.add(k);
-          }
-        }
-      });
-      console.log('[populateDetailsFromWebhook] merged details snapshot:', merged);
-      return merged;
-    });
-  };
-
   // removed legacy uploadFilesToWebhook (replaced by month-aware handlers)
 
   // --- Month-aware upload (keeps UI intact) ---------------------------------
@@ -1032,39 +712,6 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
             if (parsed) {
               const isArray = Array.isArray(parsed);
               console.log('[newDeal webhook - daily] Parsed response summary:', { dateKey, isArray, arrayLength: isArray ? (parsed as unknown[]).length : undefined, topLevelKeys: !isArray && typeof parsed === 'object' ? Object.keys(parsed as Record<string, unknown>) : undefined });
-              populateDetailsFromWebhook(parsed, { overwrite: true, markProvidedEvenIfNoChange: true });
-              populatePerDocDetails(dateKey, parsed, { overwrite: true });
-
-              // Deep-search MCA-like data
-              const monthlyCandidates = deepFindAllByKey(parsed, 'monthly_table');
-              const summaryCandidates = deepFindAllByKey(parsed, 'mca_summary');
-              const flagCandidates = deepFindAllByKey(parsed, 'fraud_flags');
-              let monthly_table: MCAMonthlyRow[] | undefined;
-              let mca_summary: MCASummaryItem[] | undefined;
-              let fraud_flags: string[] | undefined;
-              const monthlyRaw = monthlyCandidates.find((x) => Array.isArray(x));
-              if (Array.isArray(monthlyRaw)) {
-                monthly_table = (monthlyRaw as unknown[]).map((r) => {
-                  const rec = (r && typeof r === 'object') ? (r as Record<string, unknown>) : {};
-                  const out: Record<string, string> = {};
-                  Object.keys(rec).forEach((k) => { out[k] = String(rec[k] ?? ''); });
-                  return out;
-                });
-              }
-              const summaryRaw = summaryCandidates.find((x) => Array.isArray(x) || (x && typeof x === 'object'));
-              if (Array.isArray(summaryRaw)) {
-                mca_summary = (summaryRaw as unknown[]).map((row) => {
-                  const r = row as Record<string, unknown>;
-                  return { FUNDER: String(r.FUNDER ?? ''), AMOUNT: String(r.AMOUNT ?? ''), 'DAILY/WEEKLY Debit': String((r as Record<string, unknown>)['DAILY/WEEKLY Debit'] ?? ''), NOTES: String(r.NOTES ?? '') } as MCASummaryItem;
-                });
-              } else if (summaryRaw && typeof summaryRaw === 'object') {
-                const r = summaryRaw as Record<string, unknown>;
-                mca_summary = [{ FUNDER: String(r.FUNDER ?? ''), AMOUNT: String(r.AMOUNT ?? ''), 'DAILY/WEEKLY Debit': String((r as Record<string, unknown>)['DAILY/WEEKLY Debit'] ?? ''), NOTES: String(r.NOTES ?? '') }];
-              }
-              const flagsRaw = flagCandidates.find((x) => Array.isArray(x));
-              if (Array.isArray(flagsRaw)) fraud_flags = (flagsRaw as unknown[]).map((x) => String(x));
-              const payload: MCAParsed = { monthly_table, mca_summary, fraud_flags };
-              if (monthly_table || mca_summary || fraud_flags) setPerDocMcaData((prev: Record<string, MCAParsed>) => ({ ...prev, [dateKey]: payload }));
             }
           } catch (e) {
             console.warn('Unable to read daily webhook response:', e);
@@ -1100,9 +747,7 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
           if (ct.includes('application/json')) parsed = await respS.json();
           else { const text = await respS.text(); try { parsed = JSON.parse(text); } catch { parsed = undefined; } }
           if (parsed) {
-            console.log('[newDealSummary webhook] Parsed response; attempting to populate MCA/fields', { dateKey, keys: (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) ? Object.keys(parsed as Record<string, unknown>) : undefined });
-            populateDetailsFromWebhook(parsed, { overwrite: false, markProvidedEvenIfNoChange: true });
-            populatePerDocDetails(dateKey, parsed, { overwrite: true });
+            console.log('[newDealSummary webhook] Parsed response received', { dateKey, keys: (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) ? Object.keys(parsed as Record<string, unknown>) : undefined });
             pendingSummaryRef.current.delete(dateKey);
             const t = pendingTimersRef.current.get(dateKey);
             if (typeof t === 'number') { window.clearTimeout(t); pendingTimersRef.current.delete(dateKey); }
@@ -1210,27 +855,7 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
     return d.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
   };
 
-  // Deep-search helpers to locate keys anywhere in a nested structure
-  const normalizeKey = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
-  const deepFindAllByKey = (root: unknown, targetKey: string): unknown[] => {
-    const normTarget = normalizeKey(targetKey);
-    const out: unknown[] = [];
-    const stack: unknown[] = [root];
-    while (stack.length) {
-      const cur = stack.pop();
-      if (!cur) continue;
-      if (Array.isArray(cur)) {
-        for (const el of cur) stack.push(el);
-      } else if (typeof cur === 'object') {
-        const obj = cur as Record<string, unknown>;
-        for (const k of Object.keys(obj)) {
-          if (normalizeKey(k) === normTarget) out.push(obj[k]);
-          stack.push(obj[k]);
-        }
-      }
-    }
-    return out;
-  };
+  
 
   type UICardItem = {
     key: string;
@@ -1373,7 +998,7 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
     setDocumentDetails(null);
   };
 
-  const handleContinue = async (item?: UICardItem) => {
+  const handleContinue = async (_item?: UICardItem) => {
     if (submitting) return;
     setSubmitting(true);
     try {
@@ -1392,107 +1017,43 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
           applicationId: baseIds.applicationId,
         });
       }
-
-      let payload: Record<string, unknown> = {};
-      if (item) {
-        const docVals = perDocDetails[item.dateKey] || {};
-        // normalize numeric fields: remove commas and percent
-        const numericNames = new Set([
-          'creditScore',
-          'timeInBiz',
-          'avgMonthlyRevenue',
-          'averageMonthlyDeposits',
-          'existingDebt',
-          'requestedAmount',
-          'avgDailyBalance',
-          'avgMonthlyDepositCount',
-          'nsfCount',
-          'negativeDays',
-          'currentPositionCount',
-          'holdback',
-          'grossAnnualRevenue',
-        ]);
-        // Merge prioritizing docVals only when value is non-empty
-        const merged: Record<string, unknown> = { ...details };
-        for (const key of Object.keys(docVals)) {
-          const val = (docVals as Record<string, unknown>)[key];
-          const isEmpty = val === '' || val === undefined || val === null;
-          if (!isEmpty) merged[key] = val as unknown;
+      // Build a flat application-shaped payload from current details only
+      const flatNumericNames = new Set([
+        'creditScore','timeInBiz','avgMonthlyRevenue','averageMonthlyDeposits','existingDebt','requestedAmount','avgDailyBalance','avgMonthlyDepositCount','nsfCount','negativeDays','currentPositionCount','holdback','grossAnnualRevenue'
+      ]);
+      const sanitized: Record<string, unknown> = { ...details };
+      for (const k of Object.keys(details)) {
+        if (flatNumericNames.has(k)) {
+          const raw = String((details as Record<string, unknown>)[k] ?? '');
+          if (!raw) continue;
+          const withoutCommas = raw.replace(/,/g, '');
+          const cleanedStr = k === 'holdback' ? withoutCommas.replace(/%/g, '') : withoutCommas;
+          sanitized[k] = cleanedStr;
         }
-        // Sanitize numeric fields for webhook (keep as cleaned strings)
-        const sanitized: Record<string, unknown> = { ...merged };
-        for (const k of Object.keys(merged)) {
-          if (numericNames.has(k)) {
-            const raw = String(merged[k] ?? '');
-            if (raw === '') continue; // don't override with empty
-            const withoutCommas = raw.replace(/,/g, '');
-            const cleanedStr = k === 'holdback' ? withoutCommas.replace(/%/g, '') : withoutCommas;
-            sanitized[k] = cleanedStr;
-          }
-        }
-        // Build a flat application-shaped payload (previously working schema)
-        payload = {
-          id: baseIds.id,
-          applicationId: baseIds.applicationId,
-          dealName: sanitized.dealName ?? '',
-          entityType: sanitized.entityType ?? '',
-          industry: sanitized.industry ?? '',
-          state: sanitized.state ?? '',
-          creditScore: sanitized.creditScore ?? '',
-          timeInBiz: sanitized.timeInBiz ?? '',
-          grossAnnualRevenue: sanitized.grossAnnualRevenue ?? '',
-          avgMonthlyRevenue: sanitized.avgMonthlyRevenue ?? '',
-          averageMonthlyDeposits: sanitized.averageMonthlyDeposits ?? '',
-          existingDebt: sanitized.existingDebt ?? '',
-          requestedAmount: sanitized.requestedAmount ?? '',
-          avgDailyBalance: sanitized.avgDailyBalance ?? '',
-          avgMonthlyDepositCount: sanitized.avgMonthlyDepositCount ?? '',
-          nsfCount: sanitized.nsfCount ?? '',
-          negativeDays: sanitized.negativeDays ?? '',
-          currentPositionCount: sanitized.currentPositionCount ?? '',
-          holdback: sanitized.holdback ?? '',
-          hasBankruptcies: Boolean(sanitized.hasBankruptcies ?? details.hasBankruptcies ?? false),
-          hasOpenJudgments: Boolean(sanitized.hasOpenJudgments ?? details.hasOpenJudgments ?? false),
-        };
-      } else {
-        // No specific document clicked: send flat application-shaped payload from current details
-        const flatNumericNames = new Set([
-          'creditScore','timeInBiz','avgMonthlyRevenue','averageMonthlyDeposits','existingDebt','requestedAmount','avgDailyBalance','avgMonthlyDepositCount','nsfCount','negativeDays','currentPositionCount','holdback','grossAnnualRevenue'
-        ]);
-        const sanitized: Record<string, unknown> = { ...details };
-        for (const k of Object.keys(details)) {
-          if (flatNumericNames.has(k)) {
-            const raw = String((details as Record<string, unknown>)[k] ?? '');
-            if (!raw) continue;
-            const withoutCommas = raw.replace(/,/g, '');
-            const cleanedStr = k === 'holdback' ? withoutCommas.replace(/%/g, '') : withoutCommas;
-            sanitized[k] = cleanedStr;
-          }
-        }
-        payload = {
-          id: baseIds.id,
-          applicationId: baseIds.applicationId,
-          dealName: sanitized.dealName ?? '',
-          entityType: sanitized.entityType ?? '',
-          industry: sanitized.industry ?? '',
-          state: sanitized.state ?? '',
-          creditScore: sanitized.creditScore ?? '',
-          timeInBiz: sanitized.timeInBiz ?? '',
-          grossAnnualRevenue: sanitized.grossAnnualRevenue ?? '',
-          avgMonthlyRevenue: sanitized.avgMonthlyRevenue ?? '',
-          averageMonthlyDeposits: sanitized.averageMonthlyDeposits ?? '',
-          existingDebt: sanitized.existingDebt ?? '',
-          requestedAmount: sanitized.requestedAmount ?? '',
-          avgDailyBalance: sanitized.avgDailyBalance ?? '',
-          avgMonthlyDepositCount: sanitized.avgMonthlyDepositCount ?? '',
-          nsfCount: sanitized.nsfCount ?? '',
-          negativeDays: sanitized.negativeDays ?? '',
-          currentPositionCount: sanitized.currentPositionCount ?? '',
-          holdback: sanitized.holdback ?? '',
-          hasBankruptcies: Boolean(sanitized.hasBankruptcies ?? details.hasBankruptcies ?? false),
-          hasOpenJudgments: Boolean(sanitized.hasOpenJudgments ?? details.hasOpenJudgments ?? false),
-        };
       }
+      const payload: Record<string, unknown> = {
+        id: baseIds.id,
+        applicationId: baseIds.applicationId,
+        dealName: sanitized.dealName ?? '',
+        entityType: sanitized.entityType ?? '',
+        industry: sanitized.industry ?? '',
+        state: sanitized.state ?? '',
+        creditScore: sanitized.creditScore ?? '',
+        timeInBiz: sanitized.timeInBiz ?? '',
+        grossAnnualRevenue: sanitized.grossAnnualRevenue ?? '',
+        avgMonthlyRevenue: sanitized.avgMonthlyRevenue ?? '',
+        averageMonthlyDeposits: sanitized.averageMonthlyDeposits ?? '',
+        existingDebt: sanitized.existingDebt ?? '',
+        requestedAmount: sanitized.requestedAmount ?? '',
+        avgDailyBalance: sanitized.avgDailyBalance ?? '',
+        avgMonthlyDepositCount: sanitized.avgMonthlyDepositCount ?? '',
+        nsfCount: sanitized.nsfCount ?? '',
+        negativeDays: sanitized.negativeDays ?? '',
+        currentPositionCount: sanitized.currentPositionCount ?? '',
+        holdback: sanitized.holdback ?? '',
+        hasBankruptcies: Boolean(sanitized.hasBankruptcies ?? details.hasBankruptcies ?? false),
+        hasOpenJudgments: Boolean(sanitized.hasOpenJudgments ?? details.hasOpenJudgments ?? false),
+      };
       // Only attempt the webhook if enabled and we have a valid applicationId
       if (!DISABLE_UPDATING_APPLICATIONS && baseIds.applicationId && isValidUUID(baseIds.applicationId)) {
         try { console.log('[updatingApplications] payload preview (flat)', payload); } catch {}
@@ -1523,46 +1084,7 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
       console.error('[updatingApplications] Error sending webhook:', e);
     } finally {
       // Trigger parent flow so parent can flip loading immediately
-      if (item) {
-        const docVals = perDocDetails[item.dateKey] || {};
-        const numericNames = new Set([
-          'creditScore',
-          'timeInBiz',
-          'avgMonthlyRevenue',
-          'averageMonthlyDeposits',
-          'existingDebt',
-          'requestedAmount',
-          'avgDailyBalance',
-          'avgMonthlyDepositCount',
-          'nsfCount',
-          'negativeDays',
-          'currentPositionCount',
-          'holdback',
-          'grossAnnualRevenue',
-        ]);
-        // Merge prioritizing docVals only when non-empty
-        const merged: Record<string, unknown> = { ...details };
-        for (const key of Object.keys(docVals)) {
-          const val = (docVals as Record<string, unknown>)[key];
-          const isEmpty = val === '' || val === undefined || val === null;
-          if (!isEmpty) merged[key] = val as unknown;
-        }
-        // Sanitize and coerce numeric fields to numbers for downstream components
-        for (const k of Object.keys(merged)) {
-          if (numericNames.has(k)) {
-            const raw = String(merged[k] ?? '');
-            if (raw === '') continue;
-            const withoutCommas = raw.replace(/,/g, '');
-            const cleanedStr = k === 'holdback' ? withoutCommas.replace(/%/g, '') : withoutCommas;
-            const asNum = cleanedStr === '' ? undefined : Number(cleanedStr);
-            merged[k] = Number.isFinite(asNum as number) ? (asNum as number) : cleanedStr;
-          }
-        }
-        // Do NOT attach selectedDocument here. Pass only application-shaped data
-        onContinue(merged as typeof details);
-      } else {
-        onContinue(details);
-      }
+      onContinue(details);
       // Keep local loading true until after handing off control
       setSubmitting(false);
     }
@@ -1659,7 +1181,7 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                         </div>
                         <div>
                           <p className="text-sm font-semibold text-slate-800">Smart Extraction</p>
-                          <p className="text-xs text-slate-600">Auto-fill financial data</p>
+                          <p className="text-xs text-slate-600">Financial data analysis</p>
                         </div>
                       </div>
                     </div>
@@ -1692,7 +1214,7 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                     <div className="mb-6 p-4 rounded-xl border border-blue-200 bg-blue-50 text-blue-800 text-sm flex items-center gap-3">
                       <div className="w-4 h-4 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
                       <div>
-                        Processing uploaded documents… Please wait while we finish extracting details. The form will populate once processing completes.
+                        Processing uploaded documents… Please wait while we finish extracting details. Your analysis will be available once processing completes.
                       </div>
                     </div>
                   )}
@@ -1885,15 +1407,28 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                                       </div>
                                     )}
 
+                                    {/* If details haven't loaded yet (and not loading), show notice */}
+                                    {(!documentDetails && !documentDetailsLoading) && (
+                                      <div className="mt-3 p-4 rounded-lg border border-amber-200 bg-amber-50 text-amber-800 text-sm flex items-start gap-3">
+                                        <FileText className="w-4 h-4 mt-0.5 text-amber-700" />
+                                        <div>
+                                          <div className="font-semibold">Preparing Bank Statement Analysis</div>
+                                          <p className="mt-0.5">Your document is being processed. The <span className="font-semibold">Transaction Categories & Details</span> will appear here shortly. Please wait for the analysis to complete.</p>
+                                        </div>
+                                      </div>
+                                    )}
+
                                     {/* Monthly Categories Data */}
-                                    {documentDetails && documentDetails.categories && (
+                                    {documentDetails && (
                                       <div>
                                         {(() => {
                                           try {
-                                            // Parse categories if it's a string
-                                            const categoriesData = typeof documentDetails.categories === 'string' 
-                                              ? JSON.parse(documentDetails.categories) 
-                                              : documentDetails.categories;
+                                            // Parse categories if available; otherwise leave undefined
+                                            const categoriesData = documentDetails.categories
+                                              ? (typeof documentDetails.categories === 'string' 
+                                                  ? JSON.parse(documentDetails.categories) 
+                                                  : documentDetails.categories)
+                                              : undefined;
                                             
                                             // Group data by month
                                             const monthlyData: Record<string, Record<string, any[]>> = {};
@@ -1927,47 +1462,95 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                                               });
                                             }
                                             
-                                            // Build category list for filter dropdown
-                                            const allCategoriesSet = new Set<string>();
-                                            Object.entries(monthlyData).forEach(([m, cats]) => {
-                                              if (Array.isArray(cats)) {
-                                                allCategoriesSet.add(m);
-                                              } else if (cats && typeof cats === 'object') {
-                                                Object.keys(cats as Record<string, any>).forEach((k) => allCategoriesSet.add(k));
+                                            // Build filter list using ONLY MAIN CATEGORIES (top-level groups)
+                                            const allCategories = Object.keys(monthlyData).sort();
+                                            const monthlyEmpty = allCategories.length === 0;
+                                            // Build a summary of which subcategories (per main category) actually have data rows
+                                            const mainCategorySummaries: Record<string, { subWithData: string[] }> = {};
+                                            const normalizeTx = (tx: any): any[] => {
+                                              if (!tx) return [];
+                                              if (Array.isArray(tx)) return tx.flat().filter(Boolean);
+                                              if (typeof tx === 'object') {
+                                                const vals = Object.values(tx);
+                                                return vals.reduce<any[]>((acc, v) => {
+                                                  if (Array.isArray(v)) acc.push(...v);
+                                                  else if (v && typeof v === 'object' && Array.isArray((v as any).transactions)) acc.push(...(v as any).transactions);
+                                                  return acc;
+                                                }, []).filter(Boolean);
                                               }
-                                            });
-                                            const allCategories = Array.from(allCategoriesSet).sort();
+                                              return [];
+                                            };
+                                            for (const [main, cats] of Object.entries(monthlyData)) {
+                                              const list: string[] = [];
+                                              if (Array.isArray(cats)) {
+                                                if (cats.length > 0) list.push(main);
+                                              } else if (cats && typeof cats === 'object') {
+                                                Object.entries(cats as Record<string, any>).forEach(([sub, data]) => {
+                                                  const rows = normalizeTx(data);
+                                                  if (rows.length > 0) list.push(sub);
+                                                });
+                                              }
+                                              mainCategorySummaries[main] = { subWithData: list };
+                                            }
 
                                             // Apply filter to monthlyData
                                             const filteredMonthlyData: Record<string, any> = {};
+                                            const qGlobal = categorySearch.trim().toLowerCase();
                                             Object.entries(monthlyData).forEach(([m, cats]) => {
+                                              // Helper: check if a category's name matches the search
+                                              const nameMatches = (name: string) => String(name || '').toLowerCase().includes(qGlobal);
+                                              // Helper: check if a category's transactions have a match
+                                              const txMatches = (txs: any): boolean => {
+                                                try {
+                                                  const arr = Array.isArray(txs)
+                                                    ? txs.flat().filter(Boolean)
+                                                    : Object.values(txs || {}).flatMap((v: any) => {
+                                                        if (Array.isArray(v)) return v;
+                                                        if (v && typeof v === 'object' && Array.isArray((v as any).transactions)) return (v as any).transactions;
+                                                        return [];
+                                                      }).filter(Boolean);
+                                                  return arr.some((t: any) => {
+                                                    const date = String(t?.date || t?.Date || t?.transaction_date || '');
+                                                    const desc = String(t?.description || t?.Description || t?.desc || t?.memo || '');
+                                                    const amt = String(t?.amount || t?.Amount || t?.value || t?.amt || '');
+                                                    return (date + ' ' + desc + ' ' + amt).toLowerCase().includes(qGlobal);
+                                                  });
+                                                } catch { return false; }
+                                              };
+
                                               if (selectedCategories.size === 0) {
-                                                // Show all categories when none selected
-                                                filteredMonthlyData[m] = cats;
-                                              } else if (Array.isArray(cats)) {
-                                                // Direct category array shape
-                                                if (selectedCategories.has(m)) filteredMonthlyData[m] = cats;
-                                              } else if (cats && typeof cats === 'object') {
-                                                // Filter to only selected categories
-                                                const filtered: Record<string, any> = {};
-                                                Object.entries(cats as Record<string, any>).forEach(([catName, catData]) => {
-                                                  if (selectedCategories.has(catName)) {
-                                                    filtered[catName] = catData;
-                                                  }
-                                                });
-                                                if (Object.keys(filtered).length > 0) {
-                                                  filteredMonthlyData[m] = filtered;
+                                                // No explicit selection: if there's a query, restrict to matching categories by NAME or TRANSACTIONS
+                                                if (!qGlobal) {
+                                                  filteredMonthlyData[m] = cats;
+                                                } else if (Array.isArray(cats)) {
+                                                  // For array shape, 'm' is the category name
+                                                  if (nameMatches(m) || txMatches(cats)) filteredMonthlyData[m] = cats;
+                                                } else if (cats && typeof cats === 'object') {
+                                                  const filtered: Record<string, any> = {};
+                                                  Object.entries(cats as Record<string, any>).forEach(([catName, catData]) => {
+                                                    if (nameMatches(catName) || txMatches(catData)) {
+                                                      filtered[catName] = catData;
+                                                    }
+                                                  });
+                                                  if (Object.keys(filtered).length > 0) filteredMonthlyData[m] = filtered;
+                                                }
+                                              } else {
+                                                // With explicit selection, show ONLY the selected MAIN categories (by their top-level key)
+                                                if (selectedCategories.has(m)) {
+                                                  filteredMonthlyData[m] = cats;
                                                 }
                                               }
                                             });
 
-                                            // Compute if any row matches current search across all (filtered) categories
-                                            const qGlobal = categorySearch.trim().toLowerCase();
+                                            // Compute if any row OR CATEGORY NAME matches current search across all (now filtered) categories
                                             const hasAnyResults = (() => {
                                               if (!qGlobal) return true; // when no query, we always show tables
                                               let found = false;
-                                              for (const [, cats] of Object.entries(filteredMonthlyData)) {
+                                              for (const [key, cats] of Object.entries(filteredMonthlyData)) {
                                                 if (Array.isArray(cats)) {
+                                                  // key is the category name in this shape
+                                                  const catNameLC = String(key).toLowerCase();
+                                                  if (catNameLC.includes(qGlobal)) { found = true; break; }
                                                   for (const t of cats as any[]) {
                                                     const date = String(t?.date || t?.Date || t?.transaction_date || '');
                                                     const desc = String(t?.description || t?.Description || t?.desc || t?.memo || '');
@@ -1976,8 +1559,10 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                                                   }
                                                   if (found) break;
                                                 } else if (cats && typeof cats === 'object') {
-                                                  for (const [, txs] of Object.entries(cats as Record<string, any>)) {
-                                                    const arr = Array.isArray(txs) ? txs : Object.values(txs || {}).flat() as any[];
+                                                  for (const [catName, txs] of Object.entries(cats as Record<string, any>)) {
+                                                    // If category name matches, we have results regardless of row text
+                                                    if (String(catName).toLowerCase().includes(qGlobal)) { found = true; break; }
+                                                    const arr = Array.isArray(txs) ? txs : (Object.values(txs || {}) as any[]).flat();
                                                     for (const t of arr) {
                                                       const date = String(t?.date || t?.Date || t?.transaction_date || '');
                                                       const desc = String(t?.description || t?.Description || t?.desc || t?.memo || '');
@@ -1992,6 +1577,19 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                                               return found;
                                             })();
 
+                                            // If there are no categories parsed yet, show a preparing/processing notice
+                                            if (monthlyEmpty) {
+                                              return (
+                                                <div className="mt-3 p-4 rounded-lg border border-amber-200 bg-amber-50 text-amber-800 text-sm flex items-start gap-3">
+                                                  <FileText className="w-4 h-4 mt-0.5 text-amber-700" />
+                                                  <div>
+                                                    <div className="font-semibold">Preparing Bank Statement Analysis</div>
+                                                    <p className="mt-0.5">Your document is being processed. The <span className="font-semibold">Transaction Categories & Details</span> will appear here shortly. Please wait for the analysis to complete.</p>
+                                                  </div>
+                                                </div>
+                                              );
+                                            }
+
                                             return (
                                               <>
                                                 {/* Controls Bar */}
@@ -2003,7 +1601,10 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                                                         <div className="relative category-dropdown">
                                                           <button
                                                             type="button"
-                                                            onClick={() => setCategoryDropdownOpen(!categoryDropdownOpen)}
+                                                            onClick={() => {
+                                                              // Only toggle dropdown; scrolling now happens when a category is CHECKED
+                                                              setCategoryDropdownOpen(!categoryDropdownOpen);
+                                                            }}
                                                             className="text-sm border border-slate-300 rounded-lg px-4 py-2.5 bg-white hover:border-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all duration-200 min-w-[200px] flex items-center justify-between"
                                                           >
                                                             <span>
@@ -2019,7 +1620,7 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                                                             </svg>
                                                           </button>
                                                           {categoryDropdownOpen && (
-                                                            <div className="absolute z-10 mt-1 w-full bg-white border border-slate-300 rounded-lg shadow-lg max-h-60 overflow-y-auto">
+                                                            <div className="absolute z-10 mt-1 w-[360px] min-w-[320px] max-w-[420px] bg-white border border-slate-300 rounded-lg shadow-lg max-h-60 overflow-y-auto">
                                                               <div className="p-2">
                                                                 <button
                                                                   type="button"
@@ -2043,7 +1644,7 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                                                                 </button>
                                                                 <hr className="my-2" />
                                                                 {allCategories.map((category) => (
-                                                                  <label key={category} className="flex items-center px-3 py-2 text-sm hover:bg-slate-100 rounded cursor-pointer">
+                                                                  <label key={category} className="flex items-center justify-between gap-2 px-3 py-2 text-sm hover:bg-slate-100 rounded cursor-pointer w-full">
                                                                     <input
                                                                       type="checkbox"
                                                                       checked={selectedCategories.has(category)}
@@ -2055,10 +1656,36 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                                                                           newSelected.delete(category);
                                                                         }
                                                                         setSelectedCategories(newSelected);
+                                                                        // Smooth scroll only when a category is CHECKED
+                                                                        if (e.target.checked) {
+                                                                          setTimeout(() => {
+                                                                            tablesStartRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                                                                          }, 50);
+                                                                        }
                                                                       }}
                                                                       className="mr-3 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
                                                                     />
-                                                                    <span className="text-slate-700">{category}</span>
+                                                                    <span className="text-slate-700 font-medium flex-1 truncate">{category}</span>
+                                                                    <div className="ml-2 flex items-center gap-2 whitespace-nowrap">
+                                                                      {(() => {
+                                                                        const info = mainCategorySummaries[category];
+                                                                        const names = (info?.subWithData || []);
+                                                                        const count = names.length;
+                                                                        const preview = names.slice(0, 3).join(', ');
+                                                                        return (
+                                                                          <>
+                                                                            <span className="px-2 py-0.5 text-[10px] rounded-full bg-slate-100 text-slate-700 border border-slate-200 whitespace-nowrap">
+                                                                              {count} with data
+                                                                            </span>
+                                                                            {count > 0 && (
+                                                                              <span className="text-[10px] text-slate-500 truncate max-w-[220px]" title={names.join(', ')}>
+                                                                                {preview}{count > 3 ? `, +${count - 3} more` : ''}
+                                                                              </span>
+                                                                            )}
+                                                                          </>
+                                                                        );
+                                                                      })()}
+                                                                    </div>
                                                                   </label>
                                                                 ))}
                                                               </div>
@@ -2077,13 +1704,10 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                                                           if (e.key === 'Enter') {
                                                             const q = categorySearch.trim().toLowerCase();
                                                             if (!q) return;
-                                                            // Try to select category that matches the search
-                                                            const match = allCategories.find((c) => c.toLowerCase().includes(q));
-                                                            if (match) {
-                                                              const newSelected = new Set(selectedCategories);
-                                                              newSelected.add(match);
-                                                              setSelectedCategories(newSelected);
-                                                            }
+                                                            // Scroll to results when pressing Enter
+                                                            setTimeout(() => {
+                                                              tablesStartRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                                                            }, 50);
                                                           }
                                                         }}
                                                         placeholder="Search by date, description, or amount..."
@@ -2093,26 +1717,38 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                                                   </div>
                                                 </div>
 
-                                                {/* Monthly Total Deposits Summary - moved below controls */}
+                                                {/* Monthly Total Deposits Summary - independent of category filter/search */}
                                                 {documentDetails && (documentDetails.total_deposits !== undefined && documentDetails.total_deposits !== null) && (
                                                   (() => {
-                                                    // Calculate total from all categories with breakdown
+                                                    // Calculate totals for main categories and subcategories
                                                     let totalFromCategories = 0;
-                                                    const categoryTotals: Record<string, number> = {};
+                                                    const subTotals: Record<string, number> = {};
+                                                    const mainTotals: Record<string, number> = {};
+                                                    const mainToSubs: Record<string, Array<{ name: string; amount: number }>> = {};
                                                     
                                                     try {
-                                                      Object.entries(filteredMonthlyData).forEach(([month, categories]) => {
+                                                      // Use the complete monthlyData for calculations so filters/search do not affect the summary
+                                                      Object.entries(monthlyData).forEach(([mainName, categories]) => {
                                                         if (Array.isArray(categories)) {
-                                                          // Direct category array (month is the category name)
-                                                          if (!categoryTotals[month]) categoryTotals[month] = 0;
+                                                          // Direct category array (mainName is the category name)
+                                                          if (!subTotals[mainName]) subTotals[mainName] = 0;
+                                                          if (!mainTotals[mainName]) mainTotals[mainName] = 0;
+                                                          if (!mainToSubs[mainName]) mainToSubs[mainName] = [];
+                                                          let subSum = 0;
                                                           categories.forEach((transaction: any) => {
                                                             const amount = parseFloat(String(transaction?.amount || transaction?.Amount || transaction?.value || transaction?.amt || 0).replace(/[^0-9.-]/g, '')) || 0;
-                                                            totalFromCategories += amount;
-                                                            categoryTotals[month] += amount;
+                                                            subTotals[mainName] += amount;
+                                                            subSum += amount;
+                                                            if (!isBusinessNameAndOwner(mainName)) totalFromCategories += amount;
                                                           });
+                                                          // For array-shaped data, treat the main as both main and sub
+                                                          mainTotals[mainName] += isBusinessNameAndOwner(mainName) ? 0 : subSum;
+                                                          mainToSubs[mainName].push({ name: mainName, amount: subSum });
                                                         } else if (categories && typeof categories === 'object') {
-                                                          Object.entries(categories as Record<string, any>).forEach(([categoryName, transactions]) => {
-                                                            if (!categoryTotals[categoryName]) categoryTotals[categoryName] = 0;
+                                                          let mainSum = 0;
+                                                          if (!mainToSubs[mainName]) mainToSubs[mainName] = [];
+                                                          Object.entries(categories as Record<string, any>).forEach(([subName, transactions]) => {
+                                                            if (!subTotals[subName]) subTotals[subName] = 0;
                                                             
                                                             const normalizeTransactions = (tx: any): any[] => {
                                                               if (!tx) return [];
@@ -2133,12 +1769,18 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                                                             };
                                                             
                                                             const rows = normalizeTransactions(transactions);
+                                                            let subSum = 0;
                                                             rows.forEach((transaction: any) => {
                                                               const amount = parseFloat(String(transaction?.amount || transaction?.Amount || transaction?.value || transaction?.amt || 0).replace(/[^0-9.-]/g, '')) || 0;
-                                                              totalFromCategories += amount;
-                                                              categoryTotals[categoryName] += amount;
+                                                              subTotals[subName] += amount;
+                                                              subSum += amount;
+                                                              if (!isBusinessNameAndOwner(subName)) totalFromCategories += amount;
                                                             });
+                                                            mainSum += isBusinessNameAndOwner(subName) ? 0 : subSum;
+                                                            mainToSubs[mainName].push({ name: subName, amount: subSum });
                                                           });
+                                                          if (!mainTotals[mainName]) mainTotals[mainName] = 0;
+                                                          mainTotals[mainName] += mainSum;
                                                         }
                                                       });
                                                     } catch (error) {
@@ -2215,8 +1857,8 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                                                               </div>
                                                             </div>
                                                             
-                                                            {/* Category Breakdown */}
-                                                            {Object.keys(categoryTotals).length > 0 && (
+                                                            {/* Category Breakdown - grouped by main category */}
+                                                            {Object.keys(mainToSubs).length > 0 && (
                                                               <div className="bg-slate-50 rounded-xl border border-slate-200 p-6">
                                                                 <div className="flex items-center space-x-2 mb-4">
                                                                   <div className="w-6 h-6 bg-slate-600 rounded-md flex items-center justify-center">
@@ -2226,26 +1868,41 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                                                                   </div>
                                                                   <h4 className="text-lg font-bold text-slate-800">Categories Included in Calculation</h4>
                                                                 </div>
-                                                                <div className="grid grid-cols-1 md:grid-cols-2 gap-3 max-h-48 overflow-y-auto">
-                                                                  {Object.entries(categoryTotals)
-                                                                    .filter(([, amount]) => amount > 0)
+                                                                <div className="space-y-3 max-h-56 overflow-y-auto pr-1">
+                                                                  {Object.entries(mainTotals)
+                                                                    .filter(([, amt]) => amt > 0)
                                                                     .sort(([, a], [, b]) => b - a)
-                                                                    .map(([categoryName, amount]) => (
-                                                                      <div key={categoryName} className="bg-white rounded-lg p-4 border border-slate-200 shadow-sm">
-                                                                        <div className="flex justify-between items-center">
-                                                                          <span className="font-semibold text-slate-700 text-sm">{categoryName}</span>
-                                                                          <span className="font-bold text-slate-900 text-lg">
-                                                                            ${amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                                                                          </span>
+                                                                    .map(([mainName, mainAmt]) => (
+                                                                      <div key={mainName} className="bg-white rounded-lg p-4 border border-slate-200 shadow-sm">
+                                                                        <div className="flex items-start justify-between gap-3">
+                                                                          <div className="min-w-0">
+                                                                            <div className="font-semibold text-slate-700 text-sm truncate">{mainName}</div>
+                                                                            {/* Subcategory chips */}
+                                                                            <div className="mt-2 flex flex-wrap gap-2">
+                                                                              {mainToSubs[mainName]
+                                                                                .filter(s => s.amount > 0)
+                                                                                .sort((a,b)=> b.amount - a.amount)
+                                                                                .slice(0, 6)
+                                                                                .map(s => (
+                                                                                  <span key={`${mainName}-${s.name}`} className={`inline-flex items-center gap-2 px-2.5 py-1 rounded-full text-xs border ${isBusinessNameAndOwner(s.name) ? 'bg-amber-50 text-amber-700 border-amber-200' : 'bg-slate-50 text-slate-700 border-slate-200'}`}>
+                                                                                    <span className="font-medium truncate max-w-[160px]" title={s.name}>{s.name}</span>
+                                                                                    <span className="font-bold">{fmtCurrency2(s.amount)}</span>
+                                                                                  </span>
+                                                                                ))}
+                                                                              {mainToSubs[mainName].filter(s=>s.amount>0).length > 6 && (
+                                                                                <span className="text-xs text-slate-500">+{mainToSubs[mainName].filter(s=>s.amount>0).length - 6} more</span>
+                                                                              )}
+                                                                            </div>
+                                                                          </div>
+                                                                          <div className="text-right">
+                                                                            <div className="text-[11px] text-slate-500 font-semibold uppercase tracking-wide">Main Total</div>
+                                                                            <div className="text-lg font-extrabold text-slate-900">{fmtCurrency2(mainAmt)}</div>
+                                                                          </div>
                                                                         </div>
                                                                       </div>
                                                                     ))}
                                                                 </div>
-                                                                {Object.keys(categoryTotals).length > 4 && (
-                                                                  <div className="text-sm text-slate-600 mt-3 text-center bg-white rounded-lg py-2">
-                                                                    {Object.keys(categoryTotals).length} categories total
-                                                                  </div>
-                                                                )}
+                                                                {/* Footer count pill removed per request */}
                                                               </div>
                                                             )}
                                                             
@@ -2307,15 +1964,60 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                                                   </div>
                                                 )}
 
+                                                {/* Anchor for smooth scroll on Filter interaction */}
+                                                <div ref={tablesStartRef} />
                                                 {/* Transaction Categories */}
                                                 {hasAnyResults && Object.entries(filteredMonthlyData).map(([month, categories]) => (
                                                   <div key={month || 'CATEGORIES'} className="mb-8">
-                                                    {/* Month Header */}
-                                                    {!Array.isArray(categories) && (
-                                                      <div className="bg-gradient-to-r from-slate-700 to-slate-600 text-white rounded-t-xl px-6 py-4 mb-0">
-                                                        <h3 className="text-lg font-bold tracking-wide">{month || 'Transaction Categories'}</h3>
-                                                      </div>
-                                                    )}
+                                                    {/* Main Category Header (improved UI) */}
+                                                    {!Array.isArray(categories) && (() => {
+                                                      // Aggregate total for this main category group
+                                                      const computeGroupTotal = (cats: any): number => {
+                                                        try {
+                                                          let sum = 0;
+                                                          Object.entries(cats as Record<string, any>).forEach(([, catData]) => {
+                                                            const normalize = (tx: any): any[] => {
+                                                              if (!tx) return [];
+                                                              if (Array.isArray(tx)) return tx.flat().filter(Boolean);
+                                                              if (typeof tx === 'object') {
+                                                                const vals = Object.values(tx);
+                                                                return vals.reduce<any[]>((acc, v) => {
+                                                                  if (Array.isArray(v)) acc.push(...v);
+                                                                  else if (v && typeof v === 'object' && Array.isArray((v as any).transactions)) acc.push(...(v as any).transactions);
+                                                                  return acc;
+                                                                }, []).filter(Boolean);
+                                                              }
+                                                              return [];
+                                                            };
+                                                            const rows = normalize(catData);
+                                                            rows.forEach((t) => { sum += parseAmount(t?.amount ?? t?.Amount ?? t?.value ?? t?.amt); });
+                                                          });
+                                                          return sum;
+                                                        } catch { return 0; }
+                                                      };
+                                                      const groupTotal = computeGroupTotal(categories);
+                                                      const subcategoryCount = Object.keys(categories || {}).length || 0;
+
+                                                      return (
+                                                        <div className="flex items-center justify-between px-6 py-4 mb-4 rounded-xl shadow-md border border-slate-200 bg-gradient-to-r from-slate-800 via-slate-700 to-slate-800 text-white">
+                                                          <div className="flex items-center gap-3">
+                                                            <div className="w-2 h-2 rounded-full bg-emerald-400 shadow" />
+                                                            <h3 className="text-sm sm:text-base md:text-lg font-extrabold tracking-wider uppercase">{month || 'Transaction Categories'}</h3>
+                                                            {subcategoryCount > 0 && (
+                                                              <span className="ml-2 px-2 py-0.5 text-[10px] sm:text-xs font-semibold rounded-full bg-white/10 border border-white/20">
+                                                                {subcategoryCount} subcategories
+                                                              </span>
+                                                            )}
+                                                          </div>
+                                                          <div className="flex items-center gap-2">
+                                                            <span className="text-[10px] sm:text-xs text-white/80 font-semibold uppercase tracking-wider">Total</span>
+                                                            <span className="text-sm sm:text-base md:text-lg font-black">
+                                                              {fmtCurrency2(groupTotal)}
+                                                            </span>
+                                                          </div>
+                                                        </div>
+                                                      );
+                                                    })()}
 
                                                     {/* Category Tables */}
                                                     <div className="space-y-6">
@@ -2324,13 +2026,17 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                                                         (() => {
                                                           const q = categorySearch.trim().toLowerCase();
                                                           const arr = (categories as any[]);
-                                                          const filtered = !q ? arr : arr.filter((transaction: any) => {
+                                                          const catName = String(month || '').toLowerCase();
+                                                          // If search matches the category name, show all rows for that category
+                                                          const filtered = !q || catName.includes(q) ? arr : arr.filter((transaction: any) => {
                                                             const date = String(transaction?.date || transaction?.Date || transaction?.transaction_date || '');
                                                             const desc = String(transaction?.description || transaction?.Description || transaction?.desc || transaction?.memo || '');
                                                             const amt = String(transaction?.amount || transaction?.Amount || transaction?.value || transaction?.amt || '');
                                                             return (date + ' ' + desc + ' ' + amt).toLowerCase().includes(q);
                                                           });
-                                                          if (q && filtered.length === 0) return null; // hide entire category section during search if no matches
+                                                          // Hide only if there are no matches in both name and rows
+                                                          if (q && filtered.length === 0 && !catName.includes(q)) return null;
+
                                                           return (
                                                             <div key={month} className="bg-white rounded-xl shadow-lg border border-slate-200/60 overflow-hidden mb-8">
                                                               <div className="bg-gradient-to-r from-blue-500 to-blue-600 text-white px-8 py-5 relative">
@@ -2430,13 +2136,16 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
 
                                                             const rows = normalizeTransactions(transactions);
                                                             const q = categorySearch.trim().toLowerCase();
-                                                            const filtered = !q ? rows : rows.filter((transaction: any) => {
+                                                            const catName = String(categoryName || '').toLowerCase();
+                                                            // If search matches the category name, show all rows for that category
+                                                            const filtered = !q || catName.includes(q) ? rows : rows.filter((transaction: any) => {
                                                               const date = String(transaction?.date || transaction?.Date || transaction?.transaction_date || '');
                                                               const desc = String(transaction?.description || transaction?.Description || transaction?.desc || transaction?.memo || '');
                                                               const amt = String(transaction?.amount || transaction?.Amount || transaction?.value || transaction?.amt || '');
                                                               return (date + ' ' + desc + ' ' + amt).toLowerCase().includes(q);
                                                             });
-                                                            if (q && !filtered.length) return null; // hide this category entirely during search if no matches
+                                                            // Hide only if there are no matches in both name and rows
+                                                            if (q && !filtered.length && !catName.includes(q)) return null;
 
                                                             return (
                                                               <div key={categoryName} className="bg-white rounded-xl shadow-lg border border-slate-200/60 overflow-hidden mb-8">
