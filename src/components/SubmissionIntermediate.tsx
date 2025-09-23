@@ -1931,76 +1931,138 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
 
                   {/* Financial Overview (from application_documents). Render only when we have docs or data */}
                   {(Array.isArray(dbDocs) && dbDocs.length > 0) || (Array.isArray(financialOverviewFromDocs) && financialOverviewFromDocs.length > 0) ? (
-                  <div className="mb-8">
-                    <div className="px-5 py-4 mb-3 flex items-center justify-between bg-white rounded-xl border border-slate-200">
-                      <div className="flex items-center gap-3">
-                        <div className="p-2 rounded-lg bg-slate-100 border border-slate-200">
-                          <TrendingUp className="w-4 h-4 text-slate-700" />
-                        </div>
-                        <div>
-                          <h4 className="text-lg font-bold text-slate-800">Financial Overview</h4>
-                          <p className="text-xs text-slate-600">Summary of monthly total deposits</p>
+                  <div className="mb-6">
+                    <div className="bg-white border border-slate-200/60 rounded-xl shadow-lg overflow-hidden backdrop-blur-sm">
+                      {/* Compact Header */}
+                      <div className="px-6 py-4 bg-gradient-to-r from-slate-900 to-slate-800 border-b border-slate-700">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-3">
+                            <div className="p-2 rounded-lg bg-blue-500/20 border border-blue-400/30">
+                              <TrendingUp className="w-5 h-5 text-blue-300" />
+                            </div>
+                            <div>
+                              <h4 className="text-lg font-bold text-white">Financial Overview</h4>
+                              <p className="text-xs text-slate-300">Monthly analysis • Deposits & Risk</p>
+                            </div>
+                          </div>
+                          {(dbDocsLoading) && (
+                            <div className="flex items-center gap-2 text-blue-300 bg-blue-500/10 border border-blue-400/20 px-3 py-1.5 rounded-lg">
+                              <div className="w-3 h-3 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
+                              <span className="text-xs font-medium">Updating</span>
+                            </div>
+                          )}
                         </div>
                       </div>
-                      {(dbDocsLoading) && (
-                        <div className="flex items-center gap-2 text-blue-700 bg-blue-50 border border-blue-200 px-3 py-1.5 rounded-lg">
-                          <div className="w-3 h-3 border-2 border-blue-600 border-t-transparent rounded-full animate-spin" />
-                          <span className="text-xs font-semibold">Updating…</span>
+                      
+                      {Array.isArray(financialOverviewFromDocs) && financialOverviewFromDocs.length > 0 ? (
+                        <div className="overflow-x-auto">
+                          <table className="min-w-full text-sm">
+                            <thead>
+                              <tr className="bg-gradient-to-r from-slate-50 to-slate-100/50 border-b border-slate-200">
+                                <th className="px-6 py-3 text-left font-semibold text-slate-700 uppercase tracking-wider text-xs">
+                                  <div className="flex items-center gap-2">
+                                    <div className="w-2 h-2 rounded-full bg-slate-400"></div>
+                                    Period
+                                  </div>
+                                </th>
+                                <th className="px-6 py-3 text-right font-semibold text-slate-700 uppercase tracking-wider text-xs">
+                                  <div className="flex items-center justify-end gap-2">
+                                    <div className="w-2 h-2 rounded-full bg-green-500"></div>
+                                    Deposits
+                                  </div>
+                                </th>
+                                <th className="px-6 py-3 text-right font-semibold text-slate-700 uppercase tracking-wider text-xs">
+                                  <div className="flex items-center justify-end gap-2">
+                                    <div className="w-2 h-2 rounded-full bg-orange-500"></div>
+                                    Negative Days
+                                  </div>
+                                </th>
+                              </tr>
+                            </thead>
+                            <tbody className="bg-white divide-y divide-slate-100">
+                              {[...financialOverviewFromDocs]
+                                .sort((a: any, b: any) => {
+                                  const am = typeof a.month === 'string' && /\d{4}-\d{2}/.test(a.month) ? Date.parse(a.month + '-01') : Number.POSITIVE_INFINITY;
+                                  const bm = typeof b.month === 'string' && /\d{4}-\d{2}/.test(b.month) ? Date.parse(b.month + '-01') : Number.POSITIVE_INFINITY;
+                                  return am - bm;
+                                })
+                                .map((row: any, idx: number) => {
+                                  const label = typeof row.month === 'string' && /\d{4}-\d{2}/.test(row.month)
+                                    ? new Date(row.month + '-01').toLocaleDateString('en-US', { month: 'short', year: 'numeric' })
+                                    : (row.month || `Period ${idx + 1}`);
+                                  const negativeDays = Number(row.negative_days) || 0;
+                                  const deposits = Number(row.total_deposits) || 0;
+                                  return (
+                                    <tr key={row.id || idx} className="hover:bg-slate-50/50 transition-colors duration-150 group">
+                                      <td className="px-6 py-3">
+                                        <div className="flex items-center gap-3">
+                                          <div className="w-1.5 h-1.5 rounded-full bg-blue-500 group-hover:bg-blue-600 transition-colors"></div>
+                                          <span className="font-medium text-slate-900">{label}</span>
+                                        </div>
+                                      </td>
+                                      <td className="px-6 py-3 text-right">
+                                        <div className="inline-flex items-center">
+                                          <span className="font-bold text-slate-900 tabular-nums">
+                                            {fmtCurrency2(deposits)}
+                                          </span>
+                                          {deposits > 0 && (
+                                            <div className="ml-2 w-1.5 h-1.5 rounded-full bg-green-500"></div>
+                                          )}
+                                        </div>
+                                      </td>
+                                      <td className="px-6 py-3 text-right">
+                                        <div className="inline-flex items-center gap-2">
+                                          <span className={`font-bold tabular-nums ${
+                                            negativeDays === 0 ? 'text-emerald-600' :
+                                            negativeDays <= 2 ? 'text-amber-600' : 'text-red-600'
+                                          }`}>
+                                            {negativeDays}
+                                          </span>
+                                          <div className={`w-2 h-2 rounded-full ${
+                                            negativeDays === 0 ? 'bg-emerald-500' :
+                                            negativeDays <= 2 ? 'bg-amber-500' : 'bg-red-500'
+                                          }`}></div>
+                                        </div>
+                                      </td>
+                                    </tr>
+                                  );
+                                })}
+                            </tbody>
+                            <tfoot>
+                              <tr className="bg-gradient-to-r from-slate-800 to-slate-900 border-t-2 border-slate-300">
+                                <td className="px-6 py-4">
+                                  <div className="flex items-center gap-2">
+                                    <div className="w-2 h-2 rounded-full bg-white/60"></div>
+                                    <span className="font-bold text-white uppercase tracking-wide text-sm">Total</span>
+                                  </div>
+                                </td>
+                                <td className="px-6 py-4 text-right">
+                                  <span className="font-black text-white text-lg tabular-nums">
+                                    {fmtCurrency2(financialOverviewFromDocs.reduce((sum: number, r: any) => sum + (Number(r.total_deposits) || 0), 0))}
+                                  </span>
+                                </td>
+                                <td className="px-6 py-4 text-right">
+                                  <div className="inline-flex items-center gap-2">
+                                    <span className="font-black text-white text-lg tabular-nums">
+                                      {financialOverviewFromDocs.reduce((sum: number, r: any) => sum + (Number(r.negative_days) || 0), 0)}
+                                    </span>
+                                    <div className="w-2 h-2 rounded-full bg-orange-400"></div>
+                                  </div>
+                                </td>
+                              </tr>
+                            </tfoot>
+                          </table>
+                        </div>
+                      ) : (
+                        <div className="p-4 rounded-lg border border-amber-200 bg-amber-50 text-amber-800 text-sm flex items-start gap-3">
+                          <FileText className="w-4 h-4 mt-0.5 text-amber-700" />
+                          <div>
+                            <div className="font-semibold">Preparing Financial Overview</div>
+                            <p className="mt-0.5">Your document is being processed. The <span className="font-semibold">Financial Overview</span> (Monthly Total Deposits) will appear here shortly. Please wait for the analysis to complete.</p>
+                          </div>
                         </div>
                       )}
                     </div>
-                    {Array.isArray(financialOverviewFromDocs) && financialOverviewFromDocs.length > 0 ? (
-                      <div className="overflow-x-auto bg-white border border-slate-200 rounded-xl">
-                        <table className="min-w-full text-sm">
-                          <thead>
-                            <tr className="bg-slate-50 text-slate-700">
-                              <th className="px-4 py-2 text-left font-semibold border-b border-slate-200">Month</th>
-                              <th className="px-4 py-2 text-right font-semibold border-b border-slate-200">Total Deposits</th>
-                              <th className="px-4 py-2 text-right font-semibold border-b border-slate-200">Negative Days</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {[...financialOverviewFromDocs]
-                              .sort((a: any, b: any) => {
-                                const am = typeof a.month === 'string' && /\d{4}-\d{2}/.test(a.month) ? Date.parse(a.month + '-01') : Number.POSITIVE_INFINITY;
-                                const bm = typeof b.month === 'string' && /\d{4}-\d{2}/.test(b.month) ? Date.parse(b.month + '-01') : Number.POSITIVE_INFINITY;
-                                return am - bm;
-                              })
-                              .map((row: any, idx: number) => {
-                                const label = typeof row.month === 'string' && /\d{4}-\d{2}/.test(row.month)
-                                  ? new Date(row.month + '-01').toLocaleDateString('en-US', { month: 'short', year: 'numeric' })
-                                  : (row.month || `Period ${idx + 1}`);
-                                return (
-                                  <tr key={row.id || idx} className={idx % 2 === 0 ? 'bg-white' : 'bg-slate-50/50'}>
-                                    <td className="px-4 py-2 text-slate-800">{label}</td>
-                                    <td className="px-4 py-2 text-right font-bold text-slate-900">{fmtCurrency2(Number(row.total_deposits) || 0)}</td>
-                                    <td className="px-4 py-2 text-right font-bold text-slate-900">{Number(row.negative_days) || 0}</td>
-                                  </tr>
-                                );
-                              })}
-                          </tbody>
-                          <tfoot>
-                            <tr className="bg-slate-50">
-                              <td className="px-4 py-2 text-right font-semibold border-t border-slate-200">Total</td>
-                              <td className="px-4 py-2 text-right font-extrabold text-slate-900 border-t border-slate-200">
-                                {fmtCurrency2(financialOverviewFromDocs.reduce((sum: number, r: any) => sum + (Number(r.total_deposits) || 0), 0))}
-                              </td>
-                              <td className="px-4 py-2 text-right font-extrabold text-slate-900 border-t border-slate-200">
-                                {financialOverviewFromDocs.reduce((sum: number, r: any) => sum + (Number(r.negative_days) || 0), 0)}
-                              </td>
-                            </tr>
-                          </tfoot>
-                        </table>
-                      </div>
-                    ) : (
-                      <div className="p-4 rounded-lg border border-amber-200 bg-amber-50 text-amber-800 text-sm flex items-start gap-3">
-                        <FileText className="w-4 h-4 mt-0.5 text-amber-700" />
-                        <div>
-                          <div className="font-semibold">Preparing Financial Overview</div>
-                          <p className="mt-0.5">Your document is being processed. The <span className="font-semibold">Financial Overview</span> (Monthly Total Deposits) will appear here shortly. Please wait for the analysis to complete.</p>
-                        </div>
-                      </div>
-                    )}
                   </div>
                   ) : null}
                   {/* Bank Statement Summary (from application_summary by application_id) - Show only when analysis in progress or has data */}
