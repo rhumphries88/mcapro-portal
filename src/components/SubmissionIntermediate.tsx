@@ -1,6 +1,9 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Building2, Upload, FileText, CheckCircle, RefreshCw, Trash2, RotateCcw, DollarSign, TrendingUp, Calendar } from 'lucide-react';
-import { getApplicationDocuments, deleteApplicationDocument, deleteApplicationDocumentByAppAndDate, getApplicationFinancialsByApplicationId, getApplicationSummaryByApplicationId, type ApplicationDocument, supabase } from '../lib/supabase';
+  import { Upload, FileText, CheckCircle, RefreshCw, Trash2, RotateCcw, TrendingUp, Calendar } from 'lucide-react';
+import { getApplicationDocuments, deleteApplicationDocument, deleteApplicationDocumentByAppAndDate, getApplicationSummaryByApplicationId, type ApplicationDocument, supabase } from '../lib/supabase';
+
+import { parseAmount, fmtCurrency2, slugify, formatDateHuman, fmtCurrency, getUniqueDateKey, fetchWithTimeout } from './SubmissionIntermediate.helpers';
+import { UploadDropzone, FilesBucketList, LegalComplianceSection, AnalysisSummarySection, FundingDetailsSection, DocumentDetailsControls, TransactionSummarySection } from './SubmissionIntermediate.Views';
 
 
 const NEW_DEAL_WEBHOOK_URL = '/.netlify/functions/new-deal';
@@ -113,54 +116,6 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
       setDbDocs(docs || []);
     } finally {
       setDbDocsLoading(false);
-    }
-  };
-
-  // Utility: parse various amount representations into a number
-  const parseAmount = (v: any): number => {
-    if (typeof v === 'number') return Number.isFinite(v) ? v : 0;
-    const s = String(v ?? '')
-      .replace(/[,\s]/g, '')
-      .replace(/[^0-9.+-]/g, '');
-    const n = parseFloat(s);
-    return Number.isFinite(n) ? n : 0;
-  };
-
-  // Utility: strict currency formatter with 2 decimals
-  const fmtCurrency2 = (n: number): string =>
-    n.toLocaleString('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2 });
-
-  // Utility: turn a category name into a safe DOM id
-  const slugify = (s: string) => String(s || '')
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/(^-|-$)/g, '');
-
-  // Utility: detect the special category "BUSINESS NAME AND OWNER" (also handle common misspelling "OWDER")
-  const isBusinessNameAndOwner = (name: string): boolean => {
-    const norm = String(name || '')
-      .toLowerCase()
-      .replace(/\s+/g, ' ')
-      .trim();
-    return (
-      norm === 'business name and owner' ||
-      norm === 'business name and owder' ||
-      (norm.includes('business name') && norm.includes('owner'))
-    );
-  };
-
-  // Utility: format YYYY-MM-DD into Month DD, YYYY
-  const formatDateHuman = (value: any): string => {
-    const raw = String(value || '').trim();
-    // If already human text, return as-is
-    const m = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
-    if (!m) return raw || '—';
-    const [_, y, mo, d] = m;
-    const date = new Date(Number(y), Number(mo) - 1, Number(d));
-    try {
-      return date.toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: '2-digit' });
-    } catch {
-      return raw;
     }
   };
 
@@ -390,11 +345,9 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
   // Create a ref for the replace file input
   const replaceFileInputRef = useRef<HTMLInputElement>(null);
 
-  // Financial data state
-  const [financialData, setFinancialData] = useState<any>(null);
-  const [financialDataLoading, setFinancialDataLoading] = useState(false);
+  // Removed: application_financials state and loading
 
-  // Bank Statement Summary data state
+  // Bank Statement Summary data state (used for new Financial Overview)
   const [summaryData, setSummaryData] = useState<any[]>([]);
   const [summaryDataLoading, setSummaryDataLoading] = useState(false);
   const [expandedCards, setExpandedCards] = useState<Set<string>>(new Set());
@@ -405,29 +358,11 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
     (Array.from(dailyStatements.values()).some(v => v.status === 'uploading')) ||
     ((pendingSummaryRef.current?.size || 0) > 0)
   );
-  // Detect if user has uploaded or has documents present
-  const hasAnyDocs = ((dbDocs?.length || 0) > 0) || (dailyStatements.size > 0);
-  // Show notice when user has docs but the Financial Overview row hasn't loaded yet
-  const showFinancialOverviewNotice = !financialData && hasAnyDocs;
+  // Detect if user has uploaded or has documents present (kept for other UI) - removed unused variable
 
-  // Fetch financial data when application ID is available
-  const fetchFinancialData = async (appId: string) => {
-    if (!appId) return;
-    
-    try {
-      setFinancialDataLoading(true);
-      console.log('[Financials] fetching application_financials for application_id:', appId);
-      const data = await getApplicationFinancialsByApplicationId(appId);
-      console.log('[Financials] fetched row:', data);
-      setFinancialData(data);
-    } catch (error) {
-      console.error('Failed to fetch financial data:', error);
-    } finally {
-      setFinancialDataLoading(false);
-    }
-  };
+  // Removed: fetchFinancialData (application_financials)
 
-  // Fetch summary data when application ID is available
+  // Fetch summary data when application ID is available (drives new Financial Overview)
   const fetchSummaryData = async (appId: string) => {
     if (!appId) return;
     
@@ -448,37 +383,90 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
     }
   };
 
-  // Fetch financial data when application ID changes
+  // Fetch summary data when application ID changes
   useEffect(() => {
     const appId = (details.applicationId as string) || (initial?.applicationId as string) || (details.id as string) || (initial?.id as string) || '';
     if (appId) {
-      fetchFinancialData(appId);
       fetchSummaryData(appId);
     }
   }, [details.applicationId, details.id, initial?.applicationId, initial?.id]);
 
-  // Realtime: listen for inserts/updates on application_financials for this application
+  // Realtime: listen for changes on application_documents to keep Financial Overview in sync
   useEffect(() => {
     const appId = (details.applicationId as string) || (initial?.applicationId as string) || (details.id as string) || (initial?.id as string) || '';
     if (!appId) return;
     try {
       const channel = supabase
-        .channel(`application_financials-${appId}`)
+        .channel(`application_documents-${appId}`)
         .on('postgres_changes', {
           event: '*',
           schema: 'public',
-          table: 'application_financials',
+          table: 'application_documents',
           filter: `application_id=eq.${appId}`,
         }, () => {
-          fetchFinancialData(appId);
+          void refetchDbDocs(appId);
         })
         .subscribe();
       return () => { try { supabase.removeChannel(channel); } catch { /* ignore */ } };
     } catch {
-      // ignore realtime subscription errors
       return;
     }
   }, [details.applicationId, details.id, initial?.applicationId, initial?.id]);
+
+  // Derive Financial Overview rows from application_documents (columns first, then fallback)
+  const financialOverviewFromDocs = React.useMemo(() => {
+    type Row = { month: string; total_deposits: number };
+    const map = new Map<string, number>();
+    const get = (obj: any, path: string): any => {
+      try { return path.split('.').reduce((a: any, k: string) => (a && a[k] !== undefined ? a[k] : undefined), obj); } catch { return undefined; }
+    };
+    const tryPaths = (root: any, paths: string[]): number | null => {
+      for (const p of paths) {
+        const v = get(root, p);
+        if (v !== undefined && v !== null && v !== '') {
+          const n = typeof v === 'number' ? v : parseAmount(String(v));
+          if (!Number.isNaN(n) && Number.isFinite(n)) return n;
+        }
+      }
+      return null;
+    };
+    (dbDocs || []).forEach((d) => {
+      // 1) Prefer explicit month column if present
+      let month: string = String((d as any)?.month || '').trim();
+      // 2) Fallback to statement_date YYYY-MM
+      if (!month) {
+        const monthRaw = (d as any)?.statement_date ? String((d as any).statement_date).slice(0, 7) : '';
+        if (/\d{4}-\d{2}/.test(monthRaw)) month = monthRaw;
+      }
+      // 3) Fallback to extracted_json paths
+      if (!month) {
+        const ej = (d as any)?.extracted_json as any | undefined;
+        if (ej) {
+          const m2 = tryPaths(ej, ['month', 'summary.month', 'mca_summary.month']);
+          if (typeof m2 === 'string' && /\d{4}-\d{2}/.test(m2)) month = m2;
+        }
+      }
+      if (!month) return; // cannot place without month
+
+      // Total deposits: prefer explicit column first
+      let totalVal = (d as any)?.total_deposits;
+      let total: number | null = (typeof totalVal === 'number') ? totalVal : (
+        totalVal != null ? parseAmount(String(totalVal)) : null
+      );
+      // Fallback to extracted_json if column missing
+      if (total === null) {
+        const ej = (d as any)?.extracted_json as any | undefined;
+        if (ej) total = tryPaths(ej, ['total_deposits', 'summary.total_deposits', 'mca_summary.total_deposits', 'totals.total_deposits']);
+      }
+      if (total === null || !Number.isFinite(total)) total = 0;
+      map.set(month, (map.get(month) || 0) + (total || 0));
+    });
+    const rows: Row[] = Array.from(map.entries()).map(([month, total]) => ({ month, total_deposits: total }));
+    rows.sort((a, b) => Date.parse(a.month + '-01') - Date.parse(b.month + '-01'));
+    return rows;
+  }, [dbDocs]);
+
+  // Removed: realtime subscription to application_financials
 
   // Realtime: listen for inserts/updates on application_summary for this application
   useEffect(() => {
@@ -504,38 +492,9 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
     }
   }, [details.applicationId, details.id, initial?.applicationId, initial?.id]);
 
-  // Simple format helpers for the financials
-  const toNumber = (v: unknown): number | undefined => {
-    const n = Number(v);
-    return Number.isFinite(n) ? n : undefined;
-  };
-  const fmtCurrency = (v: unknown): string => {
-    const n = toNumber(v);
-    return typeof n === 'number' ? n.toLocaleString(undefined, { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }) : '—';
-  };
-  const fmtNumber = (v: unknown): string => {
-    const n = toNumber(v);
-    return typeof n === 'number' ? n.toLocaleString() : '—';
-  };
-  const fmtMonths = (v: unknown): string => {
-    const n = toNumber(v);
-    return typeof n === 'number' ? `${n} mo${n === 1 ? '' : 's'}` : '—';
-  };
-  const fmtPercent = (v: unknown): string => {
-    const n = toNumber(v);
-    if (typeof n !== 'number') return '—';
-    return `${n.toLocaleString(undefined, { maximumFractionDigits: 2 })}%`;
-  };
+  // helpers moved to SubmissionIntermediate.helpers.ts
 
-  // Safely access a value from the fetched financial row by trying multiple aliases
-  const valueFromFinancial = (...keys: string[]): unknown => {
-    const row = financialData as Record<string, unknown> | null;
-    if (!row) return undefined;
-    for (const k of keys) {
-      if (k in row && row[k] !== null && row[k] !== undefined) return row[k];
-    }
-    return undefined;
-  };
+  // Removed: valueFromFinancial (no longer needed)
 
   // Toggle card expansion
   const toggleCardExpansion = (cardId: string) => {
@@ -554,16 +513,7 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
 
   
 
-  // Simple fetch wrapper without automatic timeout or AbortController
-  // Keeps the same signature so callers passing `timeoutMs` won't break; it is ignored.
-  type WithTimeout = RequestInit & { timeoutMs?: number };
-  const fetchWithTimeout = async (input: RequestInfo | URL, init: WithTimeout = {}) => {
-    const restInit: RequestInit = { ...init };
-    if ('timeoutMs' in restInit) {
-      delete (restInit as WithTimeout).timeoutMs;
-    }
-    return fetch(input, restInit);
-  };
+  // helpers moved to SubmissionIntermediate.helpers.ts
 
   // (base64 conversion helper removed; no longer needed since we send only file_url)
   // removed legacy uploadFilesToWebhook (replaced by month-aware handlers)
@@ -573,22 +523,9 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
 
   // removed unused helpers for monthly logic (detectMonthFromFilename no longer needed)
 
-  // Generate a date key based on today's date (YYYY-MM-DD) without pre-filling future months
-  const getCurrentDateKey = () => {
-    const d = new Date();
-    const yyyy = d.getFullYear();
-    const mm = String(d.getMonth() + 1).padStart(2, '0');
-    const dd = String(d.getDate()).padStart(2, '0');
-    return `${yyyy}-${mm}-${dd}`;
-  };
+  // helpers moved to SubmissionIntermediate.helpers.ts
 
-  // Generate a unique key so multiple files uploaded on the same day do not overwrite each other
-  const getUniqueDateKey = () => {
-    const base = getCurrentDateKey();
-    const ts = Date.now();
-    const rnd = Math.random().toString(36).slice(2, 6);
-    return `${base}-${ts}-${rnd}`;
-  };
+  // helpers moved to SubmissionIntermediate.helpers.ts
 
   // Handle upload (auto-assigns to the next available month)
   const handleDailyUpload = async (file: File | undefined) => {
@@ -1593,362 +1530,32 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                                             return (
                                               <>
                                                 {/* Controls Bar */}
-                                                <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6 mb-6">
-                                                  <div className="flex flex-col lg:flex-row items-stretch lg:items-center justify-between gap-4">
-                                                    <div className="flex flex-col gap-3">
-                                                      <div className="flex items-center gap-3">
-                                                        <label className="text-sm font-semibold text-slate-700 min-w-fit">Filter by Category:</label>
-                                                        <div className="relative category-dropdown">
-                                                          <button
-                                                            type="button"
-                                                            onClick={() => {
-                                                              // Only toggle dropdown; scrolling now happens when a category is CHECKED
-                                                              setCategoryDropdownOpen(!categoryDropdownOpen);
-                                                            }}
-                                                            className="text-sm border border-slate-300 rounded-lg px-4 py-2.5 bg-white hover:border-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all duration-200 min-w-[200px] flex items-center justify-between"
-                                                          >
-                                                            <span>
-                                                              {selectedCategories.size === 0 
-                                                                ? 'All Categories' 
-                                                                : selectedCategories.size === 1 
-                                                                ? Array.from(selectedCategories)[0]
-                                                                : `${selectedCategories.size} selected`
-                                                              }
-                                                            </span>
-                                                            <svg className="w-4 h-4 ml-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-                                                            </svg>
-                                                          </button>
-                                                          {categoryDropdownOpen && (
-                                                            <div className="absolute z-10 mt-1 w-[360px] min-w-[320px] max-w-[420px] bg-white border border-slate-300 rounded-lg shadow-lg max-h-60 overflow-y-auto">
-                                                              <div className="p-2">
-                                                                <button
-                                                                  type="button"
-                                                                  onClick={() => {
-                                                                    setSelectedCategories(new Set());
-                                                                    setCategoryDropdownOpen(false);
-                                                                  }}
-                                                                  className="w-full text-left px-3 py-2 text-sm hover:bg-slate-100 rounded font-semibold text-slate-700"
-                                                                >
-                                                                  Clear All
-                                                                </button>
-                                                                <button
-                                                                  type="button"
-                                                                  onClick={() => {
-                                                                    setSelectedCategories(new Set(allCategories));
-                                                                    setCategoryDropdownOpen(false);
-                                                                  }}
-                                                                  className="w-full text-left px-3 py-2 text-sm hover:bg-slate-100 rounded font-semibold text-slate-700"
-                                                                >
-                                                                  Select All
-                                                                </button>
-                                                                <hr className="my-2" />
-                                                                {allCategories.map((category) => (
-                                                                  <label key={category} className="flex items-center justify-between gap-2 px-3 py-2 text-sm hover:bg-slate-100 rounded cursor-pointer w-full">
-                                                                    <input
-                                                                      type="checkbox"
-                                                                      checked={selectedCategories.has(category)}
-                                                                      onChange={(e) => {
-                                                                        const newSelected = new Set(selectedCategories);
-                                                                        if (e.target.checked) {
-                                                                          newSelected.add(category);
-                                                                        } else {
-                                                                          newSelected.delete(category);
-                                                                        }
-                                                                        setSelectedCategories(newSelected);
-                                                                        // Smooth scroll only when a category is CHECKED
-                                                                        if (e.target.checked) {
-                                                                          setTimeout(() => {
-                                                                            tablesStartRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-                                                                          }, 50);
-                                                                        }
-                                                                      }}
-                                                                      className="mr-3 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
-                                                                    />
-                                                                    <span className="text-slate-700 font-medium flex-1 truncate">{category}</span>
-                                                                    <div className="ml-2 flex items-center gap-2 whitespace-nowrap">
-                                                                      {(() => {
-                                                                        const info = mainCategorySummaries[category];
-                                                                        const names = (info?.subWithData || []);
-                                                                        const count = names.length;
-                                                                        const preview = names.slice(0, 3).join(', ');
-                                                                        return (
-                                                                          <>
-                                                                            <span className="px-2 py-0.5 text-[10px] rounded-full bg-slate-100 text-slate-700 border border-slate-200 whitespace-nowrap">
-                                                                              {count} with data
-                                                                            </span>
-                                                                            {count > 0 && (
-                                                                              <span className="text-[10px] text-slate-500 truncate max-w-[220px]" title={names.join(', ')}>
-                                                                                {preview}{count > 3 ? `, +${count - 3} more` : ''}
-                                                                              </span>
-                                                                            )}
-                                                                          </>
-                                                                        );
-                                                                      })()}
-                                                                    </div>
-                                                                  </label>
-                                                                ))}
-                                                              </div>
-                                                            </div>
-                                                          )}
-                                                        </div>
-                                                      </div>
-                                                    </div>
-                                                    <div className="flex items-center gap-3">
-                                                      <label className="text-sm font-semibold text-slate-700 min-w-fit">Search Transactions:</label>
-                                                      <input
-                                                        type="text"
-                                                        value={categorySearch}
-                                                        onChange={(e) => setCategorySearch(e.target.value)}
-                                                        onKeyDown={(e) => {
-                                                          if (e.key === 'Enter') {
-                                                            const q = categorySearch.trim().toLowerCase();
-                                                            if (!q) return;
-                                                            // Scroll to results when pressing Enter
-                                                            setTimeout(() => {
-                                                              tablesStartRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-                                                            }, 50);
-                                                          }
-                                                        }}
-                                                        placeholder="Search by date, description, or amount..."
-                                                        className="w-full lg:w-80 text-sm border border-slate-300 rounded-lg px-4 py-2.5 bg-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all duration-200"
-                                                      />
-                                                    </div>
-                                                  </div>
-                                                </div>
+                                                <DocumentDetailsControls
+                                                  categoryDropdownOpen={categoryDropdownOpen}
+                                                  onToggleDropdown={() => setCategoryDropdownOpen(!categoryDropdownOpen)}
+                                                  selectedCategories={selectedCategories}
+                                                  allCategories={allCategories}
+                                                  mainCategorySummaries={mainCategorySummaries}
+                                                  onClearAll={() => { setSelectedCategories(new Set()); setCategoryDropdownOpen(false); }}
+                                                  onSelectAll={() => { setSelectedCategories(new Set(allCategories)); setCategoryDropdownOpen(false); }}
+                                                  onToggleCategory={(category, checked) => {
+                                                    const newSelected = new Set(selectedCategories);
+                                                    if (checked) newSelected.add(category); else newSelected.delete(category);
+                                                    setSelectedCategories(newSelected);
+                                                    if (checked) setTimeout(() => { tablesStartRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }, 50);
+                                                  }}
+                                                  categorySearch={categorySearch}
+                                                  onCategorySearchChange={setCategorySearch}
+                                                  onCategorySearchEnter={() => {
+                                                    const q = categorySearch.trim().toLowerCase();
+                                                    if (!q) return;
+                                                    setTimeout(() => { tablesStartRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }, 50);
+                                                  }}
+                                                />
 
                                                 {/* Monthly Total Deposits Summary - independent of category filter/search */}
                                                 {documentDetails && (documentDetails.total_deposits !== undefined && documentDetails.total_deposits !== null) && (
-                                                  (() => {
-                                                    // Calculate totals for main categories and subcategories
-                                                    let totalFromCategories = 0;
-                                                    const subTotals: Record<string, number> = {};
-                                                    const mainTotals: Record<string, number> = {};
-                                                    const mainToSubs: Record<string, Array<{ name: string; amount: number }>> = {};
-                                                    
-                                                    try {
-                                                      // Use the complete monthlyData for calculations so filters/search do not affect the summary
-                                                      Object.entries(monthlyData).forEach(([mainName, categories]) => {
-                                                        if (Array.isArray(categories)) {
-                                                          // Direct category array (mainName is the category name)
-                                                          if (!subTotals[mainName]) subTotals[mainName] = 0;
-                                                          if (!mainTotals[mainName]) mainTotals[mainName] = 0;
-                                                          if (!mainToSubs[mainName]) mainToSubs[mainName] = [];
-                                                          let subSum = 0;
-                                                          categories.forEach((transaction: any) => {
-                                                            const amount = parseFloat(String(transaction?.amount || transaction?.Amount || transaction?.value || transaction?.amt || 0).replace(/[^0-9.-]/g, '')) || 0;
-                                                            subTotals[mainName] += amount;
-                                                            subSum += amount;
-                                                            if (!isBusinessNameAndOwner(mainName)) totalFromCategories += amount;
-                                                          });
-                                                          // For array-shaped data, treat the main as both main and sub
-                                                          mainTotals[mainName] += isBusinessNameAndOwner(mainName) ? 0 : subSum;
-                                                          mainToSubs[mainName].push({ name: mainName, amount: subSum });
-                                                        } else if (categories && typeof categories === 'object') {
-                                                          let mainSum = 0;
-                                                          if (!mainToSubs[mainName]) mainToSubs[mainName] = [];
-                                                          Object.entries(categories as Record<string, any>).forEach(([subName, transactions]) => {
-                                                            if (!subTotals[subName]) subTotals[subName] = 0;
-                                                            
-                                                            const normalizeTransactions = (tx: any): any[] => {
-                                                              if (!tx) return [];
-                                                              if (Array.isArray(tx)) return tx.flat().filter(Boolean);
-                                                              if (typeof tx === 'object') {
-                                                                const vals = Object.values(tx);
-                                                                const merged = vals.reduce<any[]>((acc, v) => {
-                                                                  if (Array.isArray(v)) acc.push(...v);
-                                                                  else if (v && typeof v === 'object') {
-                                                                    const maybe = (v as any).transactions;
-                                                                    if (Array.isArray(maybe)) acc.push(...maybe);
-                                                                  }
-                                                                  return acc;
-                                                                }, []);
-                                                                return merged.filter(Boolean);
-                                                              }
-                                                              return [];
-                                                            };
-                                                            
-                                                            const rows = normalizeTransactions(transactions);
-                                                            let subSum = 0;
-                                                            rows.forEach((transaction: any) => {
-                                                              const amount = parseFloat(String(transaction?.amount || transaction?.Amount || transaction?.value || transaction?.amt || 0).replace(/[^0-9.-]/g, '')) || 0;
-                                                              subTotals[subName] += amount;
-                                                              subSum += amount;
-                                                              if (!isBusinessNameAndOwner(subName)) totalFromCategories += amount;
-                                                            });
-                                                            mainSum += isBusinessNameAndOwner(subName) ? 0 : subSum;
-                                                            mainToSubs[mainName].push({ name: subName, amount: subSum });
-                                                          });
-                                                          if (!mainTotals[mainName]) mainTotals[mainName] = 0;
-                                                          mainTotals[mainName] += mainSum;
-                                                        }
-                                                      });
-                                                    } catch (error) {
-                                                      console.error('Error calculating category totals:', error);
-                                                    }
-                                                    
-                                                    const totalDeposits = parseFloat(String(documentDetails.total_deposits).replace(/[^0-9.-]/g, '')) || 0;
-                                                    const difference = totalDeposits - totalFromCategories;
-                                                    
-                                                    return (
-                                                      <div className="space-y-4 mb-6">
-                                                        {/* Summary Card */}
-                                                        <div className="bg-gradient-to-r from-slate-800 to-slate-900 rounded-xl shadow-lg p-6">
-                                                          <div className="flex items-center justify-between">
-                                                            <div>
-                                                              <div className="text-slate-300 text-sm font-medium uppercase tracking-wider">Month</div>
-                                                              <div className="text-xl font-bold text-white">{String(documentDetails.month || (documentDetails.statement_date || '').slice(0,7) || '—')}</div>
-                                                            </div>
-                                                            <div className="text-right">
-                                                              <div className="text-slate-300 text-sm font-medium uppercase tracking-wider">Total Deposits</div>
-                                                              <div className="text-3xl font-black text-white">
-                                                                ${totalDeposits.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                                                              </div>
-                                                            </div>
-                                                          </div>
-                                                        </div>
-                                                        
-                                                        {/* Receipt/Calculation Summary */}
-                                                        <div className="bg-white rounded-xl shadow-xl border border-slate-200 p-8">
-                                                          <div className="text-center mb-6">
-                                                            <h3 className="text-2xl font-bold text-slate-900 mb-2">Transaction Summary</h3>
-                                                            <div className="w-16 h-1 bg-gradient-to-r from-blue-500 to-indigo-500 mx-auto rounded-full"></div>
-                                                          </div>
-                                                          
-                                                          <div className="space-y-6">
-                                                            {/* Financial Summary Cards */}
-                                                            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                                                              {/* Total Deposits Card */}
-                                                              <div className="bg-gradient-to-br from-emerald-50 to-green-50 border-2 border-emerald-200 rounded-xl p-6">
-                                                                <div className="flex items-center justify-between">
-                                                                  <div className="flex items-center space-x-3">
-                                                                    <div className="w-10 h-10 bg-emerald-500 rounded-lg flex items-center justify-center">
-                                                                      <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1" />
-                                                                      </svg>
-                                                                    </div>
-                                                                    <div>
-                                                                      <div className="text-emerald-700 text-sm font-semibold">Total Deposits</div>
-                                                                      <div className="text-2xl font-bold text-emerald-900">
-                                                                        ${totalDeposits.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                                                                      </div>
-                                                                    </div>
-                                                                  </div>
-                                                                </div>
-                                                              </div>
-
-                                                              {/* Total from Categories Card */}
-                                                              <div className="bg-gradient-to-br from-blue-50 to-indigo-50 border-2 border-blue-200 rounded-xl p-6">
-                                                                <div className="flex items-center justify-between">
-                                                                  <div className="flex items-center space-x-3">
-                                                                    <div className="w-10 h-10 bg-blue-500 rounded-lg flex items-center justify-center">
-                                                                      <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
-                                                                      </svg>
-                                                                    </div>
-                                                                    <div>
-                                                                      <div className="text-blue-700 text-sm font-semibold">Total from Categories</div>
-                                                                      <div className="text-2xl font-bold text-blue-900">
-                                                                        ${totalFromCategories.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                                                                      </div>
-                                                                    </div>
-                                                                  </div>
-                                                                </div>
-                                                              </div>
-                                                            </div>
-                                                            
-                                                            {/* Category Breakdown - grouped by main category */}
-                                                            {Object.keys(mainToSubs).length > 0 && (
-                                                              <div className="bg-slate-50 rounded-xl border border-slate-200 p-6">
-                                                                <div className="flex items-center space-x-2 mb-4">
-                                                                  <div className="w-6 h-6 bg-slate-600 rounded-md flex items-center justify-center">
-                                                                    <svg className="w-3 h-3 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 10h16M4 14h16M4 18h16" />
-                                                                    </svg>
-                                                                  </div>
-                                                                  <h4 className="text-lg font-bold text-slate-800">Categories Included in Calculation</h4>
-                                                                </div>
-                                                                <div className="space-y-3 max-h-56 overflow-y-auto pr-1">
-                                                                  {Object.entries(mainTotals)
-                                                                    .filter(([, amt]) => amt > 0)
-                                                                    .sort(([, a], [, b]) => b - a)
-                                                                    .map(([mainName, mainAmt]) => (
-                                                                      <div key={mainName} className="bg-white rounded-lg p-4 border border-slate-200 shadow-sm">
-                                                                        <div className="flex items-start justify-between gap-3">
-                                                                          <div className="min-w-0">
-                                                                            <div className="font-semibold text-slate-700 text-sm truncate">{mainName}</div>
-                                                                            {/* Subcategory chips */}
-                                                                            <div className="mt-2 flex flex-wrap gap-2">
-                                                                              {mainToSubs[mainName]
-                                                                                .filter(s => s.amount > 0)
-                                                                                .sort((a,b)=> b.amount - a.amount)
-                                                                                .slice(0, 6)
-                                                                                .map(s => (
-                                                                                  <span key={`${mainName}-${s.name}`} className={`inline-flex items-center gap-2 px-2.5 py-1 rounded-full text-xs border ${isBusinessNameAndOwner(s.name) ? 'bg-amber-50 text-amber-700 border-amber-200' : 'bg-slate-50 text-slate-700 border-slate-200'}`}>
-                                                                                    <span className="font-medium truncate max-w-[160px]" title={s.name}>{s.name}</span>
-                                                                                    <span className="font-bold">{fmtCurrency2(s.amount)}</span>
-                                                                                  </span>
-                                                                                ))}
-                                                                              {mainToSubs[mainName].filter(s=>s.amount>0).length > 6 && (
-                                                                                <span className="text-xs text-slate-500">+{mainToSubs[mainName].filter(s=>s.amount>0).length - 6} more</span>
-                                                                              )}
-                                                                            </div>
-                                                                          </div>
-                                                                          <div className="text-right">
-                                                                            <div className="text-[11px] text-slate-500 font-semibold uppercase tracking-wide">Main Total</div>
-                                                                            <div className="text-lg font-extrabold text-slate-900">{fmtCurrency2(mainAmt)}</div>
-                                                                          </div>
-                                                                        </div>
-                                                                      </div>
-                                                                    ))}
-                                                                </div>
-                                                                {/* Footer count pill removed per request */}
-                                                              </div>
-                                                            )}
-                                                            
-                                                            {/* Difference Card */}
-                                                            <div className={`rounded-xl border-2 p-6 ${
-                                                              difference >= 0 
-                                                                ? 'bg-gradient-to-br from-green-50 to-emerald-50 border-green-200' 
-                                                                : 'bg-gradient-to-br from-red-50 to-rose-50 border-red-200'
-                                                            }`}>
-                                                              <div className="flex items-center justify-between">
-                                                                <div className="flex items-center space-x-3">
-                                                                  <div className={`w-12 h-12 rounded-xl flex items-center justify-center ${
-                                                                    difference >= 0 ? 'bg-green-500' : 'bg-red-500'
-                                                                  }`}>
-                                                                    <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d={
-                                                                        difference >= 0 
-                                                                          ? "M13 7h8m0 0v8m0-8l-8 8-4-4-6 6"
-                                                                          : "M13 17h8m0 0V9m0 8l-8-8-4 4-6-6"
-                                                                      } />
-                                                                    </svg>
-                                                                  </div>
-                                                                  <div>
-                                                                    <div className={`text-sm font-semibold ${difference >= 0 ? 'text-green-700' : 'text-red-700'}`}>
-                                                                      Net Difference
-                                                                    </div>
-                                                                    <div className={`text-3xl font-black ${difference >= 0 ? 'text-green-900' : 'text-red-900'}`}>
-                                                                      {difference >= 0 ? '+' : ''}${Math.abs(difference).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                                                                    </div>
-                                                                  </div>
-                                                                </div>
-                                                                <div className={`text-right ${difference >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-                                                                  <div className="text-sm font-medium">
-                                                                    {difference >= 0 ? 'Surplus' : 'Deficit'}
-                                                                  </div>
-                                                                  <div className="text-xs opacity-75">
-                                                                    {((Math.abs(difference) / totalDeposits) * 100).toFixed(1)}% of total
-                                                                  </div>
-                                                                </div>
-                                                              </div>
-                                                            </div>
-                                                          </div>
-                                                        </div>
-                                                      </div>
-                                                    );
-                                                  })()
+                                                  <TransactionSummarySection documentDetails={documentDetails} monthlyData={monthlyData} />
                                                 )}
 
                                                 {/* No Results State */}
@@ -2309,128 +1916,75 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                     </div>
                   )}
 
-                  {/* Financial Overview (from application_financials by application_id) */}
-                  {Boolean(financialData) && (
-                    <div className="mb-8">
-                      <div className="px-5 py-4 mb-3 flex items-center justify-between bg-white rounded-xl border border-slate-200 shadow-sm">
-                        <div className="flex items-center gap-3">
-                          <div className="p-2 rounded-lg bg-emerald-50 border border-emerald-200">
-                            <DollarSign className="w-4 h-4 text-emerald-700" />
-                          </div>
-                          <div>
-                            <h4 className="text-lg font-bold text-slate-800">Financial Overview</h4>
-                            <p className="text-xs text-slate-600">Data loaded from your application</p>
-                          </div>
+                  {/* Financial Overview (from application_documents). Render only when we have docs or data */}
+                  {(Array.isArray(dbDocs) && dbDocs.length > 0) || (Array.isArray(financialOverviewFromDocs) && financialOverviewFromDocs.length > 0) ? (
+                  <div className="mb-8">
+                    <div className="px-5 py-4 mb-3 flex items-center justify-between bg-white rounded-xl border border-slate-200">
+                      <div className="flex items-center gap-3">
+                        <div className="p-2 rounded-lg bg-slate-100 border border-slate-200">
+                          <TrendingUp className="w-4 h-4 text-slate-700" />
                         </div>
-                        {financialDataLoading && (
-                          <div className="flex items-center gap-2 text-blue-700 bg-blue-50 border border-blue-200 px-3 py-1.5 rounded-lg">
-                            <div className="w-3 h-3 border-2 border-blue-600 border-t-transparent rounded-full animate-spin" />
-                            <span className="text-xs font-semibold">Refreshing…</span>
-                          </div>
-                        )}
-                      </div>
-                      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                        <div className="p-4 bg-white rounded-xl border border-slate-200 shadow-sm">
-                          <div className="text-sm text-slate-600">Deal Name</div>
-                          <div className="mt-1 text-base font-semibold text-slate-900">{(valueFromFinancial('deal_name','dealName','business_name') as string) || '—'}</div>
-                        </div>
-                        <div className="p-4 bg-white rounded-xl border border-slate-200 shadow-sm">
-                          <div className="text-sm text-slate-600">Industry</div>
-                          <div className="mt-1 text-base font-semibold text-slate-900">{(valueFromFinancial('industry','naics_description','industry_type') as string) || '—'}</div>
-                        </div>
-                        <div className="p-4 bg-white rounded-xl border border-slate-200 shadow-sm">
-                          <div className="text-sm text-slate-600">Entity Type</div>
-                          <div className="mt-1 text-base font-semibold text-slate-900">{(valueFromFinancial('entity_type','entity','business_type') as string) || '—'}</div>
-                        </div>
-                        <div className="p-4 bg-white rounded-xl border border-slate-200 shadow-sm">
-                          <div className="text-sm text-slate-600">State</div>
-                          <div className="mt-1 text-base font-semibold text-slate-900">{(valueFromFinancial('state','State') as string) || '—'}</div>
-                        </div>
-
-                        <div className="p-4 bg-white rounded-xl border border-slate-200 shadow-sm">
-                          <div className="flex items-center justify-between">
-                            <span className="text-sm text-slate-600">Time in Biz (months)</span>
-                            <Calendar className="w-4 h-4 text-slate-400" />
-                          </div>
-                          <div className="mt-1 text-xl font-extrabold text-slate-900">{fmtMonths(valueFromFinancial('time_in_biz_months','tib_months','time_in_business_months'))}</div>
-                        </div>
-
-                        <div className="p-4 bg-white rounded-xl border border-slate-200 shadow-sm">
-                          <div className="flex items-center justify-between">
-                            <span className="text-sm text-slate-600">Avg Monthly Revenue</span>
-                            <TrendingUp className="w-4 h-4 text-slate-400" />
-                          </div>
-                          <div className="mt-1 text-xl font-extrabold text-slate-900">{fmtCurrency(valueFromFinancial('avg_monthly_revenue','monthly_revenue','average_monthly_revenue'))}</div>
-                        </div>
-                        <div className="p-4 bg-white rounded-xl border border-slate-200 shadow-sm">
-                          <div className="flex items-center justify-between">
-                            <span className="text-sm text-slate-600">Avg Monthly Deposits</span>
-                            <DollarSign className="w-4 h-4 text-slate-400" />
-                          </div>
-                          <div className="mt-1 text-xl font-extrabold text-slate-900">{fmtCurrency(valueFromFinancial('avg_monthly_deposits','monthly_deposits','average_monthly_deposits'))}</div>
-                        </div>
-                        <div className="p-4 bg-white rounded-xl border border-slate-200 shadow-sm">
-                          <div className="flex items-center justify-between">
-                            <span className="text-sm text-slate-600">Existing Business Debt</span>
-                            <DollarSign className="w-4 h-4 text-slate-400" />
-                          </div>
-                          <div className="mt-1 text-xl font-extrabold text-slate-900">{fmtCurrency(valueFromFinancial('existing_business_debt','existing_debt','current_debt'))}</div>
-                        </div>
-                        <div className="p-4 bg-white rounded-xl border border-slate-200 shadow-sm">
-                          <div className="flex items-center justify-between">
-                            <span className="text-sm text-slate-600">Gross Annual Revenue</span>
-                            <TrendingUp className="w-4 h-4 text-slate-400" />
-                          </div>
-                          <div className="mt-1 text-xl font-extrabold text-slate-900">{fmtCurrency(valueFromFinancial('gross_annual_revenue','annual_revenue','annualRevenue'))}</div>
-                        </div>
-                        <div className="p-4 bg-white rounded-xl border border-slate-200 shadow-sm">
-                          <div className="flex items-center justify-between">
-                            <span className="text-sm text-slate-600">Avg Daily Balance</span>
-                            <DollarSign className="w-4 h-4 text-slate-400" />
-                          </div>
-                          <div className="mt-1 text-xl font-extrabold text-slate-900">{fmtCurrency(valueFromFinancial('avg_daily_balance'))}</div>
-                        </div>
-                        <div className="p-4 bg-white rounded-xl border border-slate-200 shadow-sm">
-                          <div className="text-sm text-slate-600">Avg Monthly Deposit Count</div>
-                          <div className="mt-1 text-xl font-extrabold text-slate-900">{fmtNumber(valueFromFinancial('avg_monthly_deposit_count'))}</div>
-                        </div>
-                        <div className="p-4 bg-white rounded-xl border border-slate-200 shadow-sm">
-                          <div className="text-sm text-slate-600">NSF Count</div>
-                          <div className="mt-1 text-xl font-extrabold text-slate-900">{fmtNumber(valueFromFinancial('nsf_count'))}</div>
-                        </div>
-                        <div className="p-4 bg-white rounded-xl border border-slate-200 shadow-sm">
-                          <div className="text-sm text-slate-600">Negative Days</div>
-                          <div className="mt-1 text-xl font-extrabold text-slate-900">{fmtNumber(valueFromFinancial('negative_days'))}</div>
-                        </div>
-                        <div className="p-4 bg-white rounded-xl border border-slate-200 shadow-sm">
-                          <div className="text-sm text-slate-600">Current Position Count</div>
-                          <div className="mt-1 text-xl font-extrabold text-slate-900">{fmtNumber(valueFromFinancial('current_position_count'))}</div>
-                        </div>
-                        <div className="p-4 bg-white rounded-xl border border-slate-200 shadow-sm">
-                          <div className="text-sm text-slate-600">Holdback</div>
-                          <div className="mt-1 text-xl font-extrabold text-slate-900">{fmtPercent(valueFromFinancial('holdback','holdback_percent'))}</div>
+                        <div>
+                          <h4 className="text-lg font-bold text-slate-800">Financial Overview</h4>
+                          <p className="text-xs text-slate-600">Summary of monthly total deposits</p>
                         </div>
                       </div>
-                      {(!Array.isArray(summaryData) || summaryData.length === 0) && (
-                        <div className="mt-3 p-4 rounded-lg border border-amber-200 bg-amber-50 text-amber-800 text-sm flex items-start gap-3">
-                          <FileText className="w-4 h-4 mt-0.5 text-amber-700" />
-                          <div>
-                            <div className="font-semibold">Bank Statement Analysis is processing</div>
-                            <p className="mt-0.5">Please wait here and do not proceed to <span className="font-semibold">Lender Matches</span> yet. The <span className="font-semibold">Financial Performance Review & Assessment</span> will automatically appear below once ready.</p>
-                          </div>
+                      {(dbDocsLoading) && (
+                        <div className="flex items-center gap-2 text-blue-700 bg-blue-50 border border-blue-200 px-3 py-1.5 rounded-lg">
+                          <div className="w-3 h-3 border-2 border-blue-600 border-t-transparent rounded-full animate-spin" />
+                          <span className="text-xs font-semibold">Updating…</span>
                         </div>
                       )}
                     </div>
-                  )}
-                  {showFinancialOverviewNotice && (
-                    <div className="mb-6 p-4 rounded-lg border border-amber-200 bg-amber-50 text-amber-800 text-sm flex items-start gap-3">
-                      <FileText className="w-4 h-4 mt-0.5 text-amber-700" />
-                      <div>
-                        <div className="font-semibold">Preparing Financial Overview</div>
-                        <p className="mt-0.5">Your documents have been uploaded and are being processed. The <span className="font-semibold">Financial Overview</span> will appear here shortly. Please wait before proceeding to <span className="font-semibold">Lender Matches</span>.</p>
+                    {Array.isArray(financialOverviewFromDocs) && financialOverviewFromDocs.length > 0 ? (
+                      <div className="overflow-x-auto bg-white border border-slate-200 rounded-xl">
+                        <table className="min-w-full text-sm">
+                          <thead>
+                            <tr className="bg-slate-50 text-slate-700">
+                              <th className="px-4 py-2 text-left font-semibold border-b border-slate-200">Month</th>
+                              <th className="px-4 py-2 text-right font-semibold border-b border-slate-200">Total Deposits</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {[...financialOverviewFromDocs]
+                              .sort((a: any, b: any) => {
+                                const am = typeof a.month === 'string' && /\d{4}-\d{2}/.test(a.month) ? Date.parse(a.month + '-01') : Number.POSITIVE_INFINITY;
+                                const bm = typeof b.month === 'string' && /\d{4}-\d{2}/.test(b.month) ? Date.parse(b.month + '-01') : Number.POSITIVE_INFINITY;
+                                return am - bm;
+                              })
+                              .map((row: any, idx: number) => {
+                                const label = typeof row.month === 'string' && /\d{4}-\d{2}/.test(row.month)
+                                  ? new Date(row.month + '-01').toLocaleDateString('en-US', { month: 'short', year: 'numeric' })
+                                  : (row.month || `Period ${idx + 1}`);
+                                return (
+                                  <tr key={row.id || idx} className={idx % 2 === 0 ? 'bg-white' : 'bg-slate-50/50'}>
+                                    <td className="px-4 py-2 text-slate-800">{label}</td>
+                                    <td className="px-4 py-2 text-right font-bold text-slate-900">{fmtCurrency(row.total_deposits)}</td>
+                                  </tr>
+                                );
+                              })}
+                          </tbody>
+                          <tfoot>
+                            <tr className="bg-slate-50">
+                              <td className="px-4 py-2 text-right font-semibold border-t border-slate-200">Total</td>
+                              <td className="px-4 py-2 text-right font-extrabold text-slate-900 border-t border-slate-200">
+                                {fmtCurrency(financialOverviewFromDocs.reduce((sum: number, r: any) => sum + (Number(r.total_deposits) || 0), 0))}
+                              </td>
+                            </tr>
+                          </tfoot>
+                        </table>
                       </div>
-                    </div>
-                  )}
+                    ) : (
+                      <div className="p-4 rounded-lg border border-amber-200 bg-amber-50 text-amber-800 text-sm flex items-start gap-3">
+                        <FileText className="w-4 h-4 mt-0.5 text-amber-700" />
+                        <div>
+                          <div className="font-semibold">Preparing Financial Overview</div>
+                          <p className="mt-0.5">Your document is being processed. The <span className="font-semibold">Financial Overview</span> (Monthly Total Deposits) will appear here shortly. Please wait for the analysis to complete.</p>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                  ) : null}
                   {/* Bank Statement Summary (from application_summary by application_id) - Show only when analysis in progress or has data */}
                   {(isAnalysisInProgress || (summaryData && summaryData.length > 0)) && (
                     <div className="mb-8">
@@ -2498,87 +2052,8 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                               </div>
                               {isExpanded && (
                                 <div className="px-8 pb-8 bg-gradient-to-b from-white to-slate-50">
-                                  {/* Bank Statement Analysis Section */}
-                                  <div className="mb-8">
-                                    <div className="flex items-center gap-3 mb-6">
-                                      <div className="w-1 h-6 bg-gradient-to-b from-blue-500 to-indigo-500 rounded-full"></div>
-                                      <h6 className="text-lg font-bold text-slate-800">Financial Analysis Summary</h6>
-                                    </div>
-                                    <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
-                                      <div className="overflow-x-auto">
-                                        <table className="w-full">
-                                          <thead>
-                                            <tr className="bg-gradient-to-r from-slate-50 to-blue-50 border-b border-slate-200">
-                                              <th className="text-left py-4 px-6 font-semibold text-slate-700">Metric</th>
-                                              <th className="text-right py-4 px-6 font-semibold text-slate-700">Value</th>
-                                            </tr>
-                                          </thead>
-                                          <tbody>
-                                            <tr className="border-b border-slate-100 hover:bg-blue-50/30 transition-colors duration-200">
-                                              <td className="py-4 px-6 font-medium text-slate-600">Monthly Revenue</td>
-                                              <td className="py-4 px-6 text-right font-mono text-lg font-bold text-slate-900">{row.monthly_revenue ? fmtCurrency(row.monthly_revenue) : 'N/A'}</td>
-                                            </tr>
-                                            <tr className="border-b border-slate-100 hover:bg-blue-50/30 transition-colors duration-200">
-                                              <td className="py-4 px-6 font-medium text-slate-600">Average Daily Balance</td>
-                                              <td className="py-4 px-6 text-right font-mono text-lg font-bold text-slate-900">{row.average_daily_balances ? fmtCurrency(row.average_daily_balances) : 'N/A'}</td>
-                                            </tr>
-                                            <tr className="border-b border-slate-100 hover:bg-blue-50/30 transition-colors duration-200">
-                                              <td className="py-4 px-6 font-medium text-slate-600">Ending Balance</td>
-                                              <td className="py-4 px-6 text-right font-mono text-lg font-bold text-slate-900">{row.ending_balances ? fmtCurrency(row.ending_balances) : 'N/A'}</td>
-                                            </tr>
-                                            <tr className="border-b border-slate-100 hover:bg-blue-50/30 transition-colors duration-200">
-                                              <td className="py-4 px-6 font-medium text-slate-600">Net Deposit Count</td>
-                                              <td className="py-4 px-6 text-right font-mono text-lg font-bold text-slate-900">{row.net_deposit_count ? fmtNumber(row.net_deposit_count) : 'N/A'}</td>
-                                            </tr>
-                                            <tr className="hover:bg-blue-50/30 transition-colors duration-200">
-                                              <td className="py-4 px-6 font-medium text-slate-600">Negative Days</td>
-                                              <td className="py-4 px-6 text-right font-mono text-lg font-bold text-slate-900">{row.negative_days ? fmtNumber(row.negative_days) : 'N/A'}</td>
-                                            </tr>
-                                          </tbody>
-                                        </table>
-                                      </div>
-                                    </div>
-                                  </div>
-
-                                  {/* Funding Information Section */}
-                                  {(row.funder || row.amount || row.debit_frequency || row.notes) && (
-                                    <div className="mb-6">
-                                      <div className="flex items-center gap-3 mb-6">
-                                        <div className="w-1 h-6 bg-gradient-to-b from-emerald-500 to-teal-500 rounded-full"></div>
-                                        <h6 className="text-lg font-bold text-slate-800">Funding Details</h6>
-                                      </div>
-                                      <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
-                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-0">
-                                          <div className="p-6 border-b md:border-b-0 md:border-r border-slate-200">
-                                            <div className="space-y-4">
-                                              <div>
-                                                <label className="text-sm font-semibold text-slate-600 uppercase tracking-wide">Funder</label>
-                                                <p className="text-lg font-bold text-slate-900 mt-1">{row.funder || 'Not Specified'}</p>
-                                              </div>
-                                              <div>
-                                                <label className="text-sm font-semibold text-slate-600 uppercase tracking-wide">Funding Amount</label>
-                                                <p className="text-xl font-bold text-emerald-600 mt-1 font-mono">{row.amount ? fmtCurrency(row.amount) : 'Not Specified'}</p>
-                                              </div>
-                                            </div>
-                                          </div>
-                                          <div className="p-6">
-                                            <div className="space-y-4">
-                                              <div>
-                                                <label className="text-sm font-semibold text-slate-600 uppercase tracking-wide">Debit Frequency</label>
-                                                <p className="text-lg font-bold text-slate-900 mt-1">{row.debit_frequency || 'Not Specified'}</p>
-                                              </div>
-                                              <div>
-                                                <label className="text-sm font-semibold text-slate-600 uppercase tracking-wide">Notes</label>
-                                                <p className="text-slate-700 mt-1 leading-relaxed">{row.notes || 'No additional notes'}</p>
-                                              </div>
-                                            </div>
-                                          </div>
-                                        </div>
-                                      </div>
-                                    </div>
-                                  )}
-
-                                  {/* Statement Footer */}
+                                  <AnalysisSummarySection row={row} />
+                                  <FundingDetailsSection row={row} />
                                   <div className="mt-8 pt-6 border-t border-slate-200">
                                     <div className="flex justify-between items-center text-sm text-slate-500">
                                       <div className="flex items-center gap-2">
@@ -2632,129 +2107,33 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                   {/* Next month reminder removed per request */}
 
                   {/* Upload Dropzone (enhanced) */}
-                  <div 
-                    className={`relative p-10 border-2 border-dashed rounded-3xl text-center transition-all duration-300 ${
-                      isDragOver 
-                        ? 'border-blue-400 bg-gradient-to-br from-blue-50 to-indigo-50 shadow-xl scale-[1.02]' 
-                        : 'border-gray-300 bg-gradient-to-br from-gray-50/50 via-white to-blue-50/30 hover:border-blue-400 hover:bg-gradient-to-br hover:from-blue-50/50 hover:to-indigo-50/50 hover:shadow-lg hover:scale-[1.01]'
-                    }`}
+                  <UploadDropzone
+                    isDragOver={isDragOver}
+                    batchProcessing={batchProcessing}
                     onDragOver={handleDragOver}
                     onDragLeave={handleDragLeave}
                     onDrop={handleDrop}
-                  >
-                    <div className="relative">
-                      <div className="p-4 bg-gradient-to-br from-blue-100 to-indigo-100 rounded-2xl w-fit mx-auto mb-6 shadow-sm">
-                        <Upload className="w-8 h-8 text-blue-600" />
-                      </div>
-                      <h3 className="text-xl font-bold text-gray-900 mb-3">
-                        Upload Bank Statements
-                      </h3>
-                      <p className="text-sm text-gray-600 mb-8 max-w-md mx-auto leading-relaxed">
-                        Drag & drop PDF files here or click to browse.
-                      </p>
-                      <label className={`cursor-pointer inline-flex items-center gap-3 px-8 py-4 rounded-2xl font-bold focus:outline-none focus:ring-4 focus:ring-blue-500/40 transition-all duration-200 shadow-lg ${batchProcessing ? 'pointer-events-none opacity-60 bg-gray-400 text-white' : 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white hover:from-blue-700 hover:to-indigo-700 hover:shadow-xl hover:scale-105'}`}>
-                        <Upload className="w-5 h-5" />
-                        Choose Files
-                        <input
-                          type="file"
-                          className="sr-only"
-                          accept=".pdf"
-                          multiple
-                          onChange={(e) => !batchProcessing && addFilesToBucket(e.target.files)}
-                        />
-                      </label>
-                      <p className="text-xs text-gray-500 mt-4 font-medium">PDF files only, max 10MB each</p>
-                    </div>
-                  </div>
+                    onChooseFiles={addFilesToBucket}
+                  />
                   {/* Local Bucket Preview and Submit All */}
-                  {fileBucket.length > 0 && (
-                    <div className="mt-6 bg-white rounded-2xl border border-slate-200 shadow-lg overflow-hidden">
-                      <div className="px-6 py-4 bg-gradient-to-r from-slate-50 to-blue-50/30 border-b border-slate-200 flex items-center justify-between">
-                        <div className="text-slate-800 font-bold">Files Staged ({fileBucket.length})</div>
-                        <button
-                          type="button"
-                          onClick={submitAllBucketFiles}
-                          disabled={bucketSubmitting || batchProcessing}
-                          className={`inline-flex items-center gap-2 px-4 py-2 rounded-lg font-semibold text-white ${(bucketSubmitting || batchProcessing) ? 'bg-gray-400' : 'bg-blue-600 hover:bg-blue-700'} transition-colors`}
-                        >
-                          {(bucketSubmitting || batchProcessing) ? 'Submitting…' : 'Submit All'}
-                        </button>
-                      </div>
-                      <div className="divide-y divide-slate-100">
-                        {fileBucket.map((f, idx) => (
-                          <div key={`${f.name}-${idx}`} className="flex items-center justify-between px-6 py-4">
-                            <div className="flex items-center gap-3 min-w-0">
-                              <div className="w-10 h-10 rounded-xl bg-slate-100 flex items-center justify-center">
-                                <FileText className="w-5 h-5 text-slate-600" />
-                              </div>
-                              <div className="min-w-0">
-                                <div className="text-sm font-semibold text-slate-900 truncate" title={f.name}>{f.name}</div>
-                                <div className="text-xs text-slate-600">{(f.size/1024/1024).toFixed(1)} MB • {f.type || 'application/pdf'}</div>
-                              </div>
-                            </div>
-                            <button
-                              type="button"
-                              onClick={() => removeFromBucket(idx)}
-                              className="px-3 py-1.5 text-sm rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50"
-                              title="Remove"
-                            >
-                              Remove
-                            </button>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
+                  <FilesBucketList
+                    files={fileBucket}
+                    bucketSubmitting={bucketSubmitting}
+                    batchProcessing={batchProcessing}
+                    onSubmitAll={submitAllBucketFiles}
+                    onRemoveAt={removeFromBucket}
+                  />
               </div>
 
               {/* Global Financial Details section removed; details now expand inline under a clicked completed document */}
 
               {/* Legal & Compliance Section */}
-              <div className="mb-8">
-                <div className="mb-6">
-                  <div className="flex items-center gap-3 mb-2">
-                    <div className="p-2 bg-gradient-to-br from-amber-100 to-orange-100 rounded-xl shadow-sm border border-amber-200">
-                      <Building2 className="w-5 h-5 text-amber-700" />
-                    </div>
-                    <h3 className="text-xl font-bold text-gray-900">Legal & Compliance</h3>
-                  </div>
-                  <p className="text-sm text-gray-600 ml-12">Legal status and financial history</p>
-                </div>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-                  <div className="group">
-                    <label className="flex items-start gap-4 p-5 rounded-2xl border-2 border-gray-200 bg-white hover:border-gray-300 hover:shadow-md transition-all duration-200 cursor-pointer">
-                      <div className="flex items-center justify-center w-6 h-6 mt-0.5">
-                        <input
-                          type="checkbox"
-                          checked={Boolean(details.hasBankruptcies)}
-                          onChange={(e) => set('hasBankruptcies', e.target.checked)}
-                          className="w-5 h-5 rounded-lg border-2 border-gray-300 text-blue-600 focus:ring-2 focus:ring-blue-500/30 focus:border-blue-500 transition-colors duration-200"
-                        />
-                      </div>
-                      <div className="flex-1">
-                        <span className="text-base font-semibold text-gray-900 block mb-1">Has Bankruptcies</span>
-                        <span className="text-sm text-gray-600">Any bankruptcy filings in business history</span>
-                      </div>
-                    </label>
-                  </div>
-                  <div className="group">
-                    <label className="flex items-start gap-4 p-5 rounded-2xl border-2 border-gray-200 bg-white hover:border-gray-300 hover:shadow-md transition-all duration-200 cursor-pointer">
-                      <div className="flex items-center justify-center w-6 h-6 mt-0.5">
-                        <input
-                          type="checkbox"
-                          checked={Boolean(details.hasOpenJudgments)}
-                          onChange={(e) => set('hasOpenJudgments', e.target.checked)}
-                          className="w-5 h-5 rounded-lg border-2 border-gray-300 text-blue-600 focus:ring-2 focus:ring-blue-500/30 focus:border-blue-500 transition-colors duration-200"
-                        />
-                      </div>
-                      <div className="flex-1">
-                        <span className="text-base font-semibold text-gray-900 block mb-1">Has Open Judgments</span>
-                        <span className="text-sm text-gray-600">Any outstanding legal judgments</span>
-                      </div>
-                    </label>
-                  </div>
-                </div>
-              </div>
+              <LegalComplianceSection
+                hasBankruptcies={Boolean(details.hasBankruptcies)}
+                hasOpenJudgments={Boolean(details.hasOpenJudgments)}
+                onToggleBankruptcies={(checked) => set('hasBankruptcies', checked)}
+                onToggleOpenJudgments={(checked) => set('hasOpenJudgments', checked)}
+              />
 
               {/* Footer Actions */}
               <div className="flex items-center justify-between pt-8 mt-8 border-t border-gray-100">
