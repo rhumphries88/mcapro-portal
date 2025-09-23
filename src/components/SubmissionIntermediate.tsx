@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
   import { Upload, FileText, CheckCircle, RefreshCw, Trash2, RotateCcw, TrendingUp, Calendar } from 'lucide-react';
 import { getApplicationDocuments, deleteApplicationDocument, deleteApplicationDocumentByAppAndDate, getApplicationSummaryByApplicationId, type ApplicationDocument, supabase } from '../lib/supabase';
 
-import { parseAmount, fmtCurrency2, slugify, formatDateHuman, fmtCurrency, getUniqueDateKey, fetchWithTimeout } from './SubmissionIntermediate.helpers';
+import { parseAmount, fmtCurrency2, slugify, formatDateHuman, getUniqueDateKey, fetchWithTimeout } from './SubmissionIntermediate.helpers';
 import { UploadDropzone, FilesBucketList, LegalComplianceSection, AnalysisSummarySection, FundingDetailsSection, DocumentDetailsControls, TransactionSummarySection } from './SubmissionIntermediate.Views';
 
 
@@ -415,8 +415,8 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
 
   // Derive Financial Overview rows from application_documents (columns first, then fallback)
   const financialOverviewFromDocs = React.useMemo(() => {
-    type Row = { month: string; total_deposits: number };
-    const map = new Map<string, number>();
+    type Row = { month: string; total_deposits: number; negative_days: number };
+    const map = new Map<string, { total_deposits: number; negative_days: number }>();
     const get = (obj: any, path: string): any => {
       try { return path.split('.').reduce((a: any, k: string) => (a && a[k] !== undefined ? a[k] : undefined), obj); } catch { return undefined; }
     };
@@ -459,9 +459,22 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
         if (ej) total = tryPaths(ej, ['total_deposits', 'summary.total_deposits', 'mca_summary.total_deposits', 'totals.total_deposits']);
       }
       if (total === null || !Number.isFinite(total)) total = 0;
-      map.set(month, (map.get(month) || 0) + (total || 0));
+
+      // Negative days: prefer explicit column, then fall back to extracted_json
+      let negVal = (d as any)?.negative_days;
+      let negativeDays: number | null = (typeof negVal === 'number') ? negVal : (
+        negVal != null ? parseAmount(String(negVal)) : null
+      );
+      if (negativeDays === null) {
+        const ej = (d as any)?.extracted_json as any | undefined;
+        if (ej) negativeDays = tryPaths(ej, ['negative_days', 'summary.negative_days', 'mca_summary.negative_days', 'totals.negative_days']);
+      }
+      if (negativeDays === null || !Number.isFinite(negativeDays)) negativeDays = 0;
+
+      const prev = map.get(month) || { total_deposits: 0, negative_days: 0 };
+      map.set(month, { total_deposits: prev.total_deposits + (total || 0), negative_days: prev.negative_days + (negativeDays || 0) });
     });
-    const rows: Row[] = Array.from(map.entries()).map(([month, total]) => ({ month, total_deposits: total }));
+    const rows: Row[] = Array.from(map.entries()).map(([month, agg]) => ({ month, total_deposits: agg.total_deposits, negative_days: agg.negative_days }));
     rows.sort((a, b) => Date.parse(a.month + '-01') - Date.parse(b.month + '-01'));
     return rows;
   }, [dbDocs]);
@@ -1943,6 +1956,7 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                             <tr className="bg-slate-50 text-slate-700">
                               <th className="px-4 py-2 text-left font-semibold border-b border-slate-200">Month</th>
                               <th className="px-4 py-2 text-right font-semibold border-b border-slate-200">Total Deposits</th>
+                              <th className="px-4 py-2 text-right font-semibold border-b border-slate-200">Negative Days</th>
                             </tr>
                           </thead>
                           <tbody>
@@ -1959,7 +1973,8 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                                 return (
                                   <tr key={row.id || idx} className={idx % 2 === 0 ? 'bg-white' : 'bg-slate-50/50'}>
                                     <td className="px-4 py-2 text-slate-800">{label}</td>
-                                    <td className="px-4 py-2 text-right font-bold text-slate-900">{fmtCurrency(row.total_deposits)}</td>
+                                    <td className="px-4 py-2 text-right font-bold text-slate-900">{fmtCurrency2(Number(row.total_deposits) || 0)}</td>
+                                    <td className="px-4 py-2 text-right font-bold text-slate-900">{Number(row.negative_days) || 0}</td>
                                   </tr>
                                 );
                               })}
@@ -1968,7 +1983,10 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                             <tr className="bg-slate-50">
                               <td className="px-4 py-2 text-right font-semibold border-t border-slate-200">Total</td>
                               <td className="px-4 py-2 text-right font-extrabold text-slate-900 border-t border-slate-200">
-                                {fmtCurrency(financialOverviewFromDocs.reduce((sum: number, r: any) => sum + (Number(r.total_deposits) || 0), 0))}
+                                {fmtCurrency2(financialOverviewFromDocs.reduce((sum: number, r: any) => sum + (Number(r.total_deposits) || 0), 0))}
+                              </td>
+                              <td className="px-4 py-2 text-right font-extrabold text-slate-900 border-t border-slate-200">
+                                {financialOverviewFromDocs.reduce((sum: number, r: any) => sum + (Number(r.negative_days) || 0), 0)}
                               </td>
                             </tr>
                           </tfoot>
