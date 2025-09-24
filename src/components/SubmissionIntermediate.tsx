@@ -236,21 +236,32 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
   const inFlightDocSigsRef = useRef<Set<string>>(new Set());
   // Removed: pending summary tracking
 
+  // Track names of files whose upload started but whose DB row hasn't been observed yet
+  const dbSyncPendingRef = useRef<Set<string>>(new Set());
+
+  // Helper to normalize filenames consistently across component
+  const normalizeFileName = (name?: string) => String(name || '').toLowerCase().trim().replace(/\s*\(\d+\)(?=\.[a-z0-9]+$)/i, '');
+
   // After DB docs refresh, remove any completed local items that no longer exist in DB
   useEffect(() => {
-    const normalize = (name?: string) => String(name || '').toLowerCase().trim().replace(/\s*\(\d+\)(?=\.[a-z0-9]+$)/i, '');
-    const dbNames = new Set((dbDocs || []).map(d => normalize(d?.file_name)));
+    const dbNames = new Set((dbDocs || []).map(d => normalizeFileName(d?.file_name)));
     setDailyStatements(prev => {
       if (!prev || prev.size === 0) return prev;
       const next = new Map(prev);
       for (const [k, v] of Array.from(next.entries())) {
         if (v?.status === 'completed') {
-          const n = normalize(v?.file?.name);
+          const n = normalizeFileName(v?.file?.name);
           if (!dbNames.has(n)) next.delete(k);
         }
       }
       return next;
     });
+    // Clear any pending sync markers that have appeared in DB
+    if (dbSyncPendingRef.current.size > 0) {
+      for (const n of Array.from(dbSyncPendingRef.current)) {
+        if (dbNames.has(n)) dbSyncPendingRef.current.delete(n);
+      }
+    }
   }, [dbDocs]);
   
   // Track which item is being replaced (db/local)
@@ -268,6 +279,18 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
   const [categoryDropdownOpen, setCategoryDropdownOpen] = useState<boolean>(false);
   // Anchor to scroll the modal content to the data tables
   const tablesStartRef = useRef<HTMLDivElement | null>(null);
+
+  // Track dismissal of the blue "New upload" badge per filename
+  const [newUploadBadgeDismissed, setNewUploadBadgeDismissed] = useState<Set<string>>(new Set());
+  const dismissNewBadgeForName = (name?: string) => {
+    const n = normalizeFileName(String(name || ''));
+    if (!n) return;
+    setNewUploadBadgeDismissed(prev => {
+      const next = new Set(prev);
+      next.add(n);
+      return next;
+    });
+  };
   
   // Notification modal state
   const [notification, setNotification] = useState<{
@@ -324,6 +347,118 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
     summaryDataLoading ||
     batchProcessing ||
     (Array.from(dailyStatements.values()).some(v => v.status === 'uploading'))
+  );
+  // Detect if any completed local uploads are not yet reflected in DB
+  const hasCompletedLocalNotInDb = React.useMemo(() => {
+    const dbNames = new Set((dbDocs || []).map(d => normalizeFileName(d?.file_name)));
+    for (const v of Array.from(dailyStatements.values())) {
+      if (v?.status === 'completed') {
+        const n = normalizeFileName(v?.file?.name);
+        if (n && !dbNames.has(n)) return true;
+      }
+    }
+    return false;
+  }, [dailyStatements, dbDocs]);
+
+  // Also show updating state while DB is loading or while we are waiting for DB to reflect newly uploaded docs
+  // Detect docs that were newly uploaded in this session and exist in DB but do not yet have monthly_revenue populated
+  const hasRecentDocsMissingFinancialData = React.useMemo(() => {
+    try {
+      const get = (obj: any, path: string): any => {
+        try { return path.split('.').reduce((a: any, k: string) => (a && a[k] !== undefined ? a[k] : undefined), obj); } catch { return undefined; }
+      };
+      const tryPaths = (root: any, paths: string[]): any => {
+        for (const p of paths) {
+          const v = get(root, p);
+          if (v !== undefined && v !== null && v !== '') return v;
+        }
+        return undefined;
+      };
+      // Build a set of recently uploaded filenames (normalized) from local session state
+      const recentNames = new Set<string>();
+      for (const v of Array.from(dailyStatements.values())) {
+        if (!v || !v.file) continue;
+        if (v.status === 'uploading' || v.status === 'completed') {
+          const n = normalizeFileName(v.file.name);
+          if (n) recentNames.add(n);
+        }
+      }
+      if (recentNames.size === 0) return false;
+      return (dbDocs || []).some((d) => {
+        // Resolve month so we only consider statement-like docs
+        let month: string = String((d as any)?.month || '').trim();
+        if (!month) {
+          const monthRaw = (d as any)?.statement_date ? String((d as any).statement_date).slice(0, 7) : '';
+          if (/\d{4}-\d{2}/.test(monthRaw)) month = monthRaw;
+        }
+        if (!month) return false;
+        // Only consider DB rows matching recently uploaded filenames
+        const fname = normalizeFileName((d as any)?.file_name);
+        if (!fname || !recentNames.has(fname)) return false;
+        // Fetch values from columns first, then from extracted_json
+        const ej = (d as any)?.extracted_json as any | undefined;
+        const totalVal = (d as any)?.total_deposits ?? (ej ? tryPaths(ej, ['total_deposits','summary.total_deposits','mca_summary.total_deposits','totals.total_deposits']) : undefined);
+        const negVal = (d as any)?.negative_days ?? (ej ? tryPaths(ej, ['negative_days','summary.negative_days','mca_summary.negative_days','totals.negative_days']) : undefined);
+        const revVal = (d as any)?.monthly_revenue ?? (ej ? tryPaths(ej, ['monthly_revenue','summary.monthly_revenue','mca_summary.monthly_revenue','totals.monthly_revenue']) : undefined);
+        // Parse for validation (not used beyond ensuring numeric); keep minimal to avoid lints
+        /* const total = */ totalVal != null ? (typeof totalVal === 'number' ? totalVal : parseAmount(String(totalVal))) : 0;
+        /* const negDays = */ negVal != null ? (typeof negVal === 'number' ? negVal : parseAmount(String(negVal))) : 0;
+        const revenue = revVal != null ? (typeof revVal === 'number' ? revVal : parseAmount(String(revVal))) : 0;
+        // Consider "missing" if monthly revenue is not populated yet (zero or non-finite),
+        // even if other fields like deposits/negative_days already have values.
+        const sane = (n: any) => Number.isFinite(Number(n)) ? Number(n) : 0;
+        return sane(revenue) === 0;
+      });
+    } catch {
+      return false;
+    }
+  }, [dbDocs, dailyStatements]);
+
+  // When any document is currently uploading/processing, suppress the bottom banners
+  const isAnyDocumentUploading = React.useMemo(() => {
+    try { return Array.from(dailyStatements.values()).some(v => v?.status === 'uploading'); } catch { return false; }
+  }, [dailyStatements]);
+
+  // Detect recently uploaded docs that are already in Financial Overview but have empty (zero) deposits
+  const hasRecentDocsWithEmptyDeposits = React.useMemo(() => {
+    try {
+      const recentNames = new Set<string>(
+        Array.from(dailyStatements.values())
+          .filter(v => !!v && !!v.file)
+          .map(v => normalizeFileName(v.file.name))
+      );
+      if (recentNames.size === 0) return false;
+      const get = (obj: any, path: string): any => {
+        try { return path.split('.').reduce((a: any, k: string) => (a && a[k] !== undefined ? a[k] : undefined), obj); } catch { return undefined; }
+      };
+      const tryPaths = (root: any, paths: string[]): any => {
+        for (const p of paths) {
+          const v = get(root, p);
+          if (v !== undefined && v !== null && v !== '') return v;
+        }
+        return undefined;
+      };
+      return (dbDocs || []).some(d => {
+        const fname = normalizeFileName((d as any)?.file_name);
+        if (!fname || !recentNames.has(fname)) return false;
+        // Consider as "overview present" if row exists (we are in dbDocs) and has at least a month value
+        let month: string = String((d as any)?.month || '').trim();
+        if (!month) {
+          const monthRaw = (d as any)?.statement_date ? String((d as any).statement_date).slice(0, 7) : '';
+          if (/\d{4}-\d{2}/.test(monthRaw)) month = monthRaw;
+        }
+        if (!month) return false;
+        const ej = (d as any)?.extracted_json as any | undefined;
+        const totalVal = (d as any)?.total_deposits ?? (ej ? tryPaths(ej, ['total_deposits','summary.total_deposits','mca_summary.total_deposits','totals.total_deposits']) : undefined);
+        const deposits = totalVal != null ? (typeof totalVal === 'number' ? totalVal : parseAmount(String(totalVal))) : 0;
+        const sane = (n: any) => Number.isFinite(Number(n)) ? Number(n) : 0;
+        return sane(deposits) === 0;
+      });
+    } catch { return false; }
+  }, [dbDocs, dailyStatements]);
+
+  const isFinancialOverviewUpdating = (
+    isAnalysisInProgress || dbDocsLoading || (dbSyncPendingRef.current.size > 0) || hasCompletedLocalNotInDb || hasRecentDocsMissingFinancialData
   );
   // Detect if user has uploaded or has documents present (kept for other UI) - removed unused variable
 
@@ -552,6 +687,8 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
 
   // Actual upload logic separated for reuse
   const performUpload = async (file: File, dateKey: string) => {
+    // Mark this filename as pending DB sync and set uploading state
+    try { dbSyncPendingRef.current.add(normalizeFileName(file.name)); } catch {}
     // Set uploading state
     setDailyStatements(prev => new Map(prev.set(dateKey, { file, status: 'uploading' })));
     setUploadProgress(prev => new Map(prev.set(dateKey, 0)));
@@ -687,6 +824,7 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
       clearInterval(progressInterval);
       setDailyStatements(prev => new Map(prev.set(dateKey, { file, status: 'error' })));
       setUploadProgress(prev => { const next = new Map(prev); next.delete(dateKey); return next; });
+      try { dbSyncPendingRef.current.delete(normalizeFileName(file.name)); } catch {}
     }
   };
 
@@ -884,6 +1022,8 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
 
   // View Details handlers
   const handleViewDetailsClick = async (item: UICardItem) => {
+    // Dismiss the blue "New upload" badge for this file when user clicks the document
+    try { dismissNewBadgeForName(item?.file?.name); } catch {}
     setDetailsModal({ item });
     setDocumentDetails(null);
     setSelectedCategories(new Set());
@@ -1181,14 +1321,6 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                             </div>
                           )}
 
-                  {batchProcessing && (
-                    <div className="mb-6 p-4 rounded-xl border border-blue-200 bg-blue-50 text-blue-800 text-sm flex items-center gap-3">
-                      <div className="w-4 h-4 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
-                      <div>
-                        Processing uploaded documents… Please wait while we finish extracting details. Your analysis will be available once processing completes.
-                      </div>
-                    </div>
-                  )}
                           <div className="px-3 py-2 bg-emerald-50 rounded-lg border border-emerald-200">
                             <span className="text-sm font-semibold text-emerald-700">All Systems Active</span>
                           </div>
@@ -1212,6 +1344,12 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                                 const isUploading = item.status === 'uploading';
                                 const isCompleted = item.status === 'completed';
                                 const hasError = item.status === 'error';
+                                // Determine if this row represents a newly uploaded file in this session
+                                const recentNames = new Set<string>(Array.from(dailyStatements.values()).map(v => normalizeFileName(v?.file?.name)));
+                                const normalizedItemName = normalizeFileName(item?.file?.name);
+                                const showNewUploadBadge = normalizedItemName 
+                                  && recentNames.has(normalizedItemName) 
+                                  && !newUploadBadgeDismissed.has(normalizedItemName);
 
                                 return (
                                   <tr 
@@ -1236,13 +1374,19 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                                             {item.file.name}
                                           </h5>
                                           <p className="text-sm text-slate-500">PDF Document</p>
+                                          {showNewUploadBadge && (
+                                            <span className="mt-1 inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-blue-50 text-blue-700 border border-blue-200">
+                                              <span className="w-1.5 h-1.5 rounded-full bg-blue-500"></span>
+                                              New upload
+                                            </span>
+                                          )}
                                           {isCompleted && item.fileUrl && (
                                             <a
                                               href={item.fileUrl}
                                               target="_blank"
                                               rel="noreferrer"
                                               className="inline-flex items-center gap-1 text-xs text-blue-600 hover:text-blue-700 font-medium mt-1"
-                                              onClick={(e) => e.stopPropagation()}
+                                              onClick={(e) => { e.stopPropagation(); try { dismissNewBadgeForName(item?.file?.name); } catch {} }}
                                             >
                                               <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
@@ -1980,6 +2124,7 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                       </div>
                       
                       {Array.isArray(financialOverviewFromDocs) && financialOverviewFromDocs.length > 0 ? (
+                        <>
                         <div className="overflow-x-auto">
                           <table className="min-w-full text-sm">
                             <thead>
@@ -2105,6 +2250,28 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                             </tfoot>
                           </table>
                         </div>
+                        {(!isAnyDocumentUploading && !batchProcessing) && (
+                          hasRecentDocsWithEmptyDeposits ? (
+                            <div className="mt-3 px-4 py-3 bg-amber-50 border border-amber-200 rounded-lg text-amber-800 text-sm flex items-center gap-3">
+                              <div className="w-4 h-4 rounded-full bg-amber-500/90" />
+                              <div>
+                                <span className="font-semibold">Updating Financial Overview</span>
+                                <span className="ml-1">A newly uploaded document is being processed. Totals will refresh shortly.</span>
+                              </div>
+                            </div>
+                          ) : (
+                            isFinancialOverviewUpdating && (
+                              <div className="mt-3 px-4 py-3 bg-blue-50 border border-blue-200 rounded-lg text-blue-800 text-sm flex items-center gap-3">
+                                <div className="w-4 h-4 border-2 border-blue-300 border-t-blue-600 rounded-full" />
+                                <div>
+                                  <span className="font-semibold">Action Needed</span>
+                                  <span className="ml-1">Deposits are not available yet for a newly uploaded document. Please manage the revenue you want to use for each new document.</span>
+                                </div>
+                              </div>
+                            )
+                          )
+                        )}
+                        </>
                       ) : (
                         <div className="p-4 rounded-lg border border-amber-200 bg-amber-50 text-amber-800 text-sm flex items-start gap-3">
                           <FileText className="w-4 h-4 mt-0.5 text-amber-700" />
@@ -2206,35 +2373,7 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                   )}
                   {/* Financial Summary removed per request */}
 
-                  {/* Global Continue button (outside each document) */}
-                  <div className="flex items-center justify-end mt-6 mb-10">
-                    <button
-                      type="button"
-                      onClick={() => handleContinue()}
-                      disabled={submitting || batchProcessing}
-                      className={`inline-flex items-center gap-3 px-6 py-3 rounded-xl font-bold text-base shadow-md transition-all duration-200 focus:outline-none focus:ring-4 ${
-                        submitting || batchProcessing
-                          ? 'bg-gradient-to-r from-gray-400 to-gray-500 text-white cursor-not-allowed'
-                          : 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white hover:from-blue-700 hover:to-indigo-700 hover:shadow-lg hover:scale-[1.02] focus:ring-blue-500/40'
-                      }`}
-                      aria-label="Continue to Lender Matches"
-                      aria-busy={submitting || batchProcessing}
-                    >
-                      {submitting || batchProcessing ? (
-                        <>
-                          <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                          Processing…
-                        </>
-                      ) : (
-                        <>
-                          Continue to Lender Matches
-                          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7l5 5m0 0l-5 5m5-5H6" />
-                          </svg>
-                        </>
-                      )}
-                    </button>
-                  </div>
+                  
 
                   {/* Next month reminder removed per request */}
 
@@ -2280,7 +2419,39 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                     </button>
                   )}
                 </div>
-                {/* Global continue button removed; use per-document buttons at the bottom of each expanded Financial Details */}
+                <div className="flex items-center">
+                  <button
+                    type="button"
+                    onClick={() => handleContinue()}
+                    disabled={
+                      submitting ||
+                      batchProcessing ||
+                      isFinancialOverviewUpdating ||
+                      ((financialOverviewFromDocs?.length || 0) === 0)
+                    }
+                    className={`inline-flex items-center gap-3 px-6 py-3 rounded-xl font-bold text-base shadow-md transition-all duration-200 focus:outline-none focus:ring-4 ${
+                      (submitting || batchProcessing || isFinancialOverviewUpdating || ((financialOverviewFromDocs?.length || 0) === 0))
+                        ? 'bg-gradient-to-r from-gray-300 to-gray-400 text-white cursor-not-allowed'
+                        : 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white hover:from-blue-700 hover:to-indigo-700 hover:shadow-lg hover:scale-[1.02] focus:ring-blue-500/40'
+                    }`}
+                    aria-label="Continue to Lender Matches"
+                    aria-busy={submitting || batchProcessing || isFinancialOverviewUpdating}
+                  >
+                    {submitting || batchProcessing ? (
+                      <>
+                        <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                        Processing…
+                      </>
+                    ) : (
+                      <>
+                        Continue to Lender Matches
+                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7l5 5m0 0l-5 5m5-5H6" />
+                        </svg>
+                      </>
+                    )}
+                  </button>
+                </div>
               </div>
 
               {/* Confirmation Modal removed: uploads auto-assign to the next available month */}
