@@ -1,6 +1,6 @@
 import React from 'react';
 import { Upload, FileText, Building2 } from 'lucide-react';
-import { fmtCurrency, fmtNumber, fmtCurrency2, isBusinessNameAndOwner, formatDateHuman } from './SubmissionIntermediate.helpers';
+import { fmtCurrency, fmtCurrency2, isBusinessNameAndOwner, formatDateHuman } from './SubmissionIntermediate.helpers';
 
 // Upload Dropzone
 export type UploadDropzoneProps = {
@@ -829,48 +829,11 @@ export const LegalComplianceSection: React.FC<LegalComplianceSectionProps> = ({ 
 export default {};
 
 // Analysis Summary Section (presentational)
-export const AnalysisSummarySection: React.FC<{ row: any }> = ({ row }) => (
-  <div className="mb-8">
-    <div className="flex items-center gap-3 mb-6">
-      <div className="w-1 h-6 bg-gradient-to-b from-blue-500 to-indigo-500 rounded-full"></div>
-      <h6 className="text-lg font-bold text-slate-800">Financial Analysis Summary</h6>
-    </div>
-    <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
-      <div className="overflow-x-auto">
-        <table className="w-full">
-          <thead>
-            <tr className="bg-gradient-to-r from-slate-50 to-blue-50 border-b border-slate-200">
-              <th className="text-left py-4 px-6 font-semibold text-slate-700">Metric</th>
-              <th className="text-right py-4 px-6 font-semibold text-slate-700">Value</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr className="border-b border-slate-100 hover:bg-blue-50/30 transition-colors duration-200">
-              <td className="py-4 px-6 font-medium text-slate-600">Monthly Revenue</td>
-              <td className="py-4 px-6 text-right font-mono text-lg font-bold text-slate-900">{row?.monthly_revenue ? fmtCurrency(row.monthly_revenue) : 'N/A'}</td>
-            </tr>
-            <tr className="border-b border-slate-100 hover:bg-blue-50/30 transition-colors duration-200">
-              <td className="py-4 px-6 font-medium text-slate-600">Average Daily Balance</td>
-              <td className="py-4 px-6 text-right font-mono text-lg font-bold text-slate-900">{row?.average_daily_balances ? fmtCurrency(row.average_daily_balances) : 'N/A'}</td>
-            </tr>
-            <tr className="border-b border-slate-100 hover:bg-blue-50/30 transition-colors duration-200">
-              <td className="py-4 px-6 font-medium text-slate-600">Ending Balance</td>
-              <td className="py-4 px-6 text-right font-mono text-lg font-bold text-slate-900">{row?.ending_balances ? fmtCurrency(row.ending_balances) : 'N/A'}</td>
-            </tr>
-            <tr className="border-b border-slate-100 hover:bg-blue-50/30 transition-colors duration-200">
-              <td className="py-4 px-6 font-medium text-slate-600">Net Deposit Count</td>
-              <td className="py-4 px-6 text-right font-mono text-lg font-bold text-slate-900">{row?.net_deposit_count ? fmtNumber(row.net_deposit_count) : 'N/A'}</td>
-            </tr>
-            <tr className="hover:bg-blue-50/30 transition-colors duration-200">
-              <td className="py-4 px-6 font-medium text-slate-600">Negative Days</td>
-              <td className="py-4 px-6 text-right font-mono text-lg font-bold text-slate-900">{row?.negative_days ? fmtNumber(row.negative_days) : 'N/A'}</td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-    </div>
-  </div>
-);
+export const AnalysisSummarySection: React.FC<{ row: any }> = ({ row: _row }) => {
+  // UI request: remove Metric/Value table (Monthly Revenue, Avg Daily Balance, Ending Balance, Net Deposit Count, Negative Days)
+  // Keep component exported but render nothing to preserve layout and callers.
+  return null;
+};
 
 // Funding Details Section (presentational)
 export const FundingDetailsSection: React.FC<{ row: any }> = ({ row }) => (
