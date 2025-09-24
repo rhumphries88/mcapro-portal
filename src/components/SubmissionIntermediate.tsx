@@ -382,8 +382,9 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
 
   // Derive Financial Overview rows from application_documents (columns first, then fallback)
   const financialOverviewFromDocs = React.useMemo(() => {
-    type Row = { month: string; total_deposits: number; negative_days: number; monthly_revenue: number };
-    const map = new Map<string, { total_deposits: number; negative_days: number; monthly_revenue: number }>();
+    // One row per document (no aggregation). Also carry file_name for display.
+    type Row = { month: string; total_deposits: number; negative_days: number; monthly_revenue: number; file_name?: string };
+    const rows: Row[] = [];
     const get = (obj: any, path: string): any => {
       try { return path.split('.').reduce((a: any, k: string) => (a && a[k] !== undefined ? a[k] : undefined), obj); } catch { return undefined; }
     };
@@ -449,15 +450,16 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
       }
       if (monthlyRevenue === null || !Number.isFinite(monthlyRevenue)) monthlyRevenue = 0;
 
-      const prev = map.get(month) || { total_deposits: 0, negative_days: 0, monthly_revenue: 0 };
-      map.set(month, { 
-        total_deposits: prev.total_deposits + (total || 0), 
-        negative_days: prev.negative_days + (negativeDays || 0),
-        monthly_revenue: prev.monthly_revenue + (monthlyRevenue || 0)
+      // Push a per-document row (no aggregation)
+      rows.push({
+        month,
+        total_deposits: total || 0,
+        negative_days: negativeDays || 0,
+        monthly_revenue: monthlyRevenue || 0,
+        file_name: (d as any)?.file_name || undefined,
       });
     });
-    const rows: Row[] = Array.from(map.entries()).map(([month, agg]) => ({ month, total_deposits: agg.total_deposits, negative_days: agg.negative_days, monthly_revenue: agg.monthly_revenue }));
-    // Remove months that have no meaningful data (all zeros or non-finite)
+    // Remove rows that have no meaningful data (all zeros or non-finite)
     const filtered = rows.filter(r => {
       const td = Number(r.total_deposits) || 0;
       const nd = Number(r.negative_days) || 0;
@@ -2027,7 +2029,12 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                                       <td className="px-6 py-3">
                                         <div className="flex items-center gap-3">
                                           <div className="w-1.5 h-1.5 rounded-full bg-blue-500 group-hover:bg-blue-600 transition-colors"></div>
-                                          <span className="font-medium text-slate-900">{label}</span>
+                                          <div className="min-w-0">
+                                            <div className="font-medium text-slate-900">{label}</div>
+                                            {row.file_name && (
+                                              <div className="text-xs text-slate-500 truncate max-w-[260px]">{row.file_name}</div>
+                                            )}
+                                          </div>
                                         </div>
                                       </td>
                                       <td className="px-6 py-3 text-right">
