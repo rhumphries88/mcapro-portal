@@ -7,7 +7,6 @@ import { UploadDropzone, FilesBucketList, LegalComplianceSection, AnalysisSummar
 
 
 const NEW_DEAL_WEBHOOK_URL = '/.netlify/functions/new-deal';
-const NEW_DEAL_SUMMARY_WEBHOOK_URL = '/.netlify/functions/new-deal-summary';
 const UPDATING_APPLICATIONS_WEBHOOK_URL = '/.netlify/functions/updating-applications';
 const DOCUMENT_FILE_WEBHOOK_URL = '/.netlify/functions/document-file';
 // Feature flag: temporarily disable updating applications webhook
@@ -119,52 +118,7 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
     }
   };
 
-  // Retry helper: attempt to fetch summary until it returns 200 or max attempts reached
-  const retrySummaryUntilReady = async (file: File, dateKey: string) => {
-    const maxAttempts = 6; // ~1 min total if 10s interval
-    const intervalMs = 10000;
-    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      // If no longer pending (e.g., user navigated or server responded), stop
-      if (!pendingSummaryRef.current.has(dateKey)) return;
-      try {
-        const form = new FormData();
-        form.append('file', file, file.name);
-        form.append('statementDate', dateKey);
-        // Ensure backend ties summary to the correct application
-        const appId = (details.applicationId as string) || (initial?.applicationId as string) || (details.id as string) || (initial?.id as string) || '';
-        if (appId) form.append('application_id', appId);
-        console.log(`[newDealSummary retry] attempt ${attempt}/${maxAttempts} for`, { dateKey, file: file.name });
-        const resp = await fetchWithTimeout(NEW_DEAL_SUMMARY_WEBHOOK_URL, { method: 'POST', body: form, timeoutMs: 25000 });
-        if (resp.ok && resp.status !== 202) {
-          const ct = resp.headers.get('content-type') || '';
-          let parsed: unknown = undefined;
-          if (ct.includes('application/json')) parsed = await resp.json();
-          else {
-            const text = await resp.text();
-            try { parsed = JSON.parse(text); } catch { parsed = undefined; }
-          }
-          if (parsed) {
-            console.log('[newDealSummary retry] success; parsed summary received');
-          }
-          // mark as no longer pending, cancel any grace timer and complete UI now
-          pendingSummaryRef.current.delete(dateKey);
-          const t = pendingTimersRef.current.get(dateKey);
-          if (typeof t === 'number') { window.clearTimeout(t); pendingTimersRef.current.delete(dateKey); }
-          setDailyStatements(prev => new Map(prev.set(dateKey, { file, status: 'completed', fileUrl: prev.get(dateKey)?.fileUrl })));
-          setUploadProgress(prev => {
-            const next = new Map(prev);
-            next.delete(dateKey);
-            return next;
-          });
-          return;
-        }
-      } catch (e) {
-        console.warn('[newDealSummary retry] attempt failed:', e);
-      }
-      await new Promise(res => setTimeout(res, intervalMs));
-    }
-    console.warn('[newDealSummary retry] exhausted attempts; will rely on grace timeout to complete UI');
-  };
+  // Summary retry helper removed by request
 
   
 
@@ -186,6 +140,8 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
     run();
     return () => { cancelled = true; };
   }, [details.id, details.applicationId, initial?.id, initial?.applicationId]);
+
+  
 
   // Financial summary loading/aggregation removed per request
 
@@ -215,17 +171,6 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
     setFileBucket((prev) => prev.filter((_, i) => i !== index));
   };
 
-  const fileToBase64 = async (file: File): Promise<string> => {
-    const buf = await file.arrayBuffer();
-    let binary = '';
-    const bytes = new Uint8Array(buf);
-    const chunk = 0x8000;
-    for (let i = 0; i < bytes.length; i += chunk) {
-      binary += String.fromCharCode.apply(null, Array.from(bytes.subarray(i, i + chunk)) as any);
-    }
-    return btoa(binary);
-  };
-
   const submitAllBucketFiles = async () => {
     if (!fileBucket.length || bucketSubmitting) return;
     const appId = (details.applicationId as string) || (initial?.applicationId as string) || (details.id as string) || (initial?.id as string) || '';
@@ -236,27 +181,22 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
     setBucketSubmitting(true);
     setBatchProcessing(true);
     try {
-      const filesPayload = await Promise.all(
-        fileBucket.map(async (f) => ({
-          file_name: f.name,
-          file_type: f.type || 'application/pdf',
-          file_bytes_base64: await fileToBase64(f),
-        }))
+      // Process each file using the same robust flow as single uploads
+      const results = await Promise.allSettled(
+        fileBucket.map(async (f) => {
+          const dateKey = getUniqueDateKey();
+          await performUpload(f, dateKey);
+          return f.name;
+        })
       );
-      const resp = await fetchWithTimeout(NEW_DEAL_WEBHOOK_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ application_id: appId, files: filesPayload }),
-        timeoutMs: 45000,
-      });
-      const data = await resp.json().catch(() => ({ uploaded: [], upstream: null }));
-      const uploaded: Array<{ file_name: string; status: string; file_url?: string }> = (data && data.uploaded) || [];
-
-      const successNames = new Set(uploaded.filter((u) => u.status === 'uploaded').map((u) => u.file_name));
-      // Clear only successes after upstream completed
+      const successNames = new Set(
+        results
+          .filter((r): r is PromiseFulfilledResult<string> => r.status === 'fulfilled')
+          .map((r) => r.value)
+      );
+      // Clear only the files that were successfully processed through the pipeline
       setFileBucket((prev) => prev.filter((f) => !successNames.has(f.name)));
-      // Financial summary polling/aggregation removed per request
-      // Refresh DB docs after processing is complete so rows appear with populated fields
+      // Refresh DB docs so rows appear with populated fields
       try { if (appId) await refetchDbDocs(appId); } catch {}
     } catch (e) {
       console.warn('[bucket submit] failed:', e);
@@ -294,10 +234,24 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
   const [dbDocsLoading, setDbDocsLoading] = useState(false);
   // Prevent duplicate document-file webhook calls for same file signature
   const inFlightDocSigsRef = useRef<Set<string>>(new Set());
-  // Track which uploads have a background new-deal-summary still running (202/timeout)
-  const pendingSummaryRef = useRef<Set<string>>(new Set());
-  // Track per-document auto-complete timeouts so we can cancel if summary finishes
-  const pendingTimersRef = useRef<Map<string, number>>(new Map());
+  // Removed: pending summary tracking
+
+  // After DB docs refresh, remove any completed local items that no longer exist in DB
+  useEffect(() => {
+    const normalize = (name?: string) => String(name || '').toLowerCase().trim().replace(/\s*\(\d+\)(?=\.[a-z0-9]+$)/i, '');
+    const dbNames = new Set((dbDocs || []).map(d => normalize(d?.file_name)));
+    setDailyStatements(prev => {
+      if (!prev || prev.size === 0) return prev;
+      const next = new Map(prev);
+      for (const [k, v] of Array.from(next.entries())) {
+        if (v?.status === 'completed') {
+          const n = normalize(v?.file?.name);
+          if (!dbNames.has(n)) next.delete(k);
+        }
+      }
+      return next;
+    });
+  }, [dbDocs]);
   
   // Track which item is being replaced (db/local)
   const [replaceTarget, setReplaceTarget] = useState<null | { source: 'db' | 'local'; dateKey: string; docId?: string }>(null);
@@ -369,8 +323,7 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
   const isAnalysisInProgress = (
     summaryDataLoading ||
     batchProcessing ||
-    (Array.from(dailyStatements.values()).some(v => v.status === 'uploading')) ||
-    ((pendingSummaryRef.current?.size || 0) > 0)
+    (Array.from(dailyStatements.values()).some(v => v.status === 'uploading'))
   );
   // Detect if user has uploaded or has documents present (kept for other UI) - removed unused variable
 
@@ -504,8 +457,15 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
       });
     });
     const rows: Row[] = Array.from(map.entries()).map(([month, agg]) => ({ month, total_deposits: agg.total_deposits, negative_days: agg.negative_days, monthly_revenue: agg.monthly_revenue }));
-    rows.sort((a, b) => Date.parse(a.month + '-01') - Date.parse(b.month + '-01'));
-    return rows;
+    // Remove months that have no meaningful data (all zeros or non-finite)
+    const filtered = rows.filter(r => {
+      const td = Number(r.total_deposits) || 0;
+      const nd = Number(r.negative_days) || 0;
+      const mr = Number(r.monthly_revenue) || 0;
+      return (td !== 0) || (nd !== 0) || (mr !== 0);
+    });
+    filtered.sort((a, b) => Date.parse(a.month + '-01') - Date.parse(b.month + '-01'));
+    return filtered;
   }, [dbDocs]);
 
   // Removed: realtime subscription to application_financials
@@ -706,67 +666,20 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
         }
       }
 
-      // 3) Call NEW_DEAL_SUMMARY_WEBHOOK_URL to derive MCA summary, including document_id if available
-      try {
-        const form2 = new FormData();
-        form2.append('file', file, file.name);
-        form2.append('statementDate', dateKey);
-        const appIdForSummary = (details.applicationId as string) || (initial?.applicationId as string) || (details.id as string) || (initial?.id as string) || '';
-        if (appIdForSummary) form2.append('application_id', appIdForSummary);
-        if (documentId) form2.append('document_id', documentId);
-        console.log('[newDealSummary webhook] Starting request', { url: NEW_DEAL_SUMMARY_WEBHOOK_URL, fileName: file.name, dateKey, documentId });
-        const respS = await fetchWithTimeout(NEW_DEAL_SUMMARY_WEBHOOK_URL, { method: 'POST', body: form2, timeoutMs: 45000 });
-        if (respS.status === 202) {
-          console.log('[newDealSummary webhook] 202 Accepted: processing in background.');
-          pendingSummaryRef.current.add(dateKey);
-          void retrySummaryUntilReady(file, dateKey);
-        } else if (respS.ok) {
-          const ct = respS.headers.get('content-type') || '';
-          let parsed: unknown = undefined;
-          if (ct.includes('application/json')) parsed = await respS.json();
-          else { const text = await respS.text(); try { parsed = JSON.parse(text); } catch { parsed = undefined; } }
-          if (parsed) {
-            console.log('[newDealSummary webhook] Parsed response received', { dateKey, keys: (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) ? Object.keys(parsed as Record<string, unknown>) : undefined });
-            pendingSummaryRef.current.delete(dateKey);
-            const t = pendingTimersRef.current.get(dateKey);
-            if (typeof t === 'number') { window.clearTimeout(t); pendingTimersRef.current.delete(dateKey); }
-          }
-        } else {
-          console.warn(`newDealSummary webhook responded ${respS.status} ${respS.statusText}`);
-        }
-      } catch (e) {
-        console.warn('[newDealSummary webhook] failed; continuing flow:', e);
-        try {
-          const name = (e as any)?.name || '';
-          if (name === 'AbortError') {
-            pendingSummaryRef.current.add(dateKey);
-            void retrySummaryUntilReady(file, dateKey);
-          }
-        } catch {}
-      }
+      // 3) Summary webhooks removed by request: skipping calls to NEW_DEAL_SUMMARY_WEBHOOK_URL
+      //    Any background analysis previously handled there will no longer run.
 
       // 4) Complete UI state using any persistedFileUrl
       clearInterval(progressInterval);
-      const isPending = pendingSummaryRef.current.has(dateKey);
       setUploadProgress(prev => {
         const next = new Map(prev);
-        next.set(dateKey, isPending ? 95 : 100);
+        next.set(dateKey, 100);
         return next;
       });
-      if (isPending) {
-        setDailyStatements(prev => new Map(prev.set(dateKey, { file, status: 'uploading', fileUrl: persistedFileUrl })));
-        const timerId = window.setTimeout(() => {
-          pendingSummaryRef.current.delete(dateKey);
-          setDailyStatements(prev => new Map(prev.set(dateKey, { file, status: 'completed', fileUrl: persistedFileUrl })));
-          setUploadProgress(prev => { const next = new Map(prev); next.delete(dateKey); return next; });
-        }, 60000);
-        pendingTimersRef.current.set(dateKey, timerId);
-      } else {
-        setTimeout(() => {
-          setDailyStatements(prev => new Map(prev.set(dateKey, { file, status: 'completed', fileUrl: persistedFileUrl })));
-          setUploadProgress(prev => { const next = new Map(prev); next.delete(dateKey); return next; });
-        }, 500);
-      }
+      setTimeout(() => {
+        setDailyStatements(prev => new Map(prev.set(dateKey, { file, status: 'completed', fileUrl: persistedFileUrl })));
+        setUploadProgress(prev => { const next = new Map(prev); next.delete(dateKey); return next; });
+      }, 500);
     } catch (error) {
       console.error('Daily upload failed:', error);
       clearInterval(progressInterval);
@@ -892,7 +805,32 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
       };
     });
 
-    return [...dbItems, ...localItems].sort((a, b) => b.sortDate.getTime() - a.sortDate.getTime());
+    // Normalize filename for deduplication: lowercase, trim, strip trailing " (n)" before extension
+    const normalizeFileName = (name: string | undefined): string => {
+      const n = String(name || '').toLowerCase().trim();
+      // Remove copy suffix like " (1)" that appears before extension
+      return n.replace(/\s*\(\d+\)(?=\.[a-z0-9]+$)/i, '');
+    };
+
+    // Deduplicate: prefer DB over local; for DB duplicates keep the most recent by sortDate
+    const byName = new Map<string, UICardItem>();
+    // First pass: DB items (keep newest per normalized filename)
+    dbItems.forEach((item) => {
+      const key = normalizeFileName(item.file?.name);
+      const existing = byName.get(key);
+      if (!existing || item.sortDate > existing.sortDate) {
+        byName.set(key, item);
+      }
+    });
+    // Second pass: Local items only if not already present in DB map
+    localItems.forEach((item) => {
+      const key = normalizeFileName(item.file?.name);
+      if (!byName.has(key)) {
+        byName.set(key, item);
+      }
+    });
+
+    return Array.from(byName.values()).sort((a, b) => b.sortDate.getTime() - a.sortDate.getTime());
   };
 
   // removed global hasCompletedDoc; we now expand per-document when clicked
