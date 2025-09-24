@@ -322,6 +322,22 @@ export const deleteApplicationDocumentByAppAndDate = async (
   if (error) throw error
 }
 
+// Update monthly_revenue for a specific application document
+export const updateApplicationDocumentMonthlyRevenue = async (
+  documentId: string,
+  monthlyRevenue: number
+) => {
+  const { data, error } = await supabase
+    .from('application_documents')
+    .update({ monthly_revenue: monthlyRevenue })
+    .eq('id', documentId)
+    .select()
+    .single()
+
+  if (error) throw error
+  return data
+}
+
 // Qualification logic
 export const qualifyLenders = (lenders: Lender[], application: Application): (Lender & { qualified: boolean; matchScore: number })[] => {
   return lenders.map(lender => {

@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
   import { Upload, FileText, CheckCircle, RefreshCw, Trash2, RotateCcw, TrendingUp, Calendar } from 'lucide-react';
-import { getApplicationDocuments, deleteApplicationDocument, deleteApplicationDocumentByAppAndDate, getApplicationSummaryByApplicationId, type ApplicationDocument, supabase } from '../lib/supabase';
+import { getApplicationDocuments, deleteApplicationDocument, deleteApplicationDocumentByAppAndDate, getApplicationSummaryByApplicationId, updateApplicationDocumentMonthlyRevenue, type ApplicationDocument, supabase } from '../lib/supabase';
 
 import { parseAmount, fmtCurrency2, slugify, formatDateHuman, getUniqueDateKey, fetchWithTimeout } from './SubmissionIntermediate.helpers';
 import { UploadDropzone, FilesBucketList, LegalComplianceSection, AnalysisSummarySection, FundingDetailsSection, DocumentDetailsControls, TransactionSummarySection } from './SubmissionIntermediate.Views';
@@ -315,6 +315,20 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
   // Anchor to scroll the modal content to the data tables
   const tablesStartRef = useRef<HTMLDivElement | null>(null);
   
+  // Notification modal state
+  const [notification, setNotification] = useState<{
+    show: boolean;
+    type: 'success' | 'error';
+    title: string;
+    message: string;
+    amount?: string;
+  }>({
+    show: false,
+    type: 'success',
+    title: '',
+    message: '',
+  });
+  
   // Close dropdown when clicking outside
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -415,8 +429,8 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
 
   // Derive Financial Overview rows from application_documents (columns first, then fallback)
   const financialOverviewFromDocs = React.useMemo(() => {
-    type Row = { month: string; total_deposits: number; negative_days: number };
-    const map = new Map<string, { total_deposits: number; negative_days: number }>();
+    type Row = { month: string; total_deposits: number; negative_days: number; monthly_revenue: number };
+    const map = new Map<string, { total_deposits: number; negative_days: number; monthly_revenue: number }>();
     const get = (obj: any, path: string): any => {
       try { return path.split('.').reduce((a: any, k: string) => (a && a[k] !== undefined ? a[k] : undefined), obj); } catch { return undefined; }
     };
@@ -471,10 +485,25 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
       }
       if (negativeDays === null || !Number.isFinite(negativeDays)) negativeDays = 0;
 
-      const prev = map.get(month) || { total_deposits: 0, negative_days: 0 };
-      map.set(month, { total_deposits: prev.total_deposits + (total || 0), negative_days: prev.negative_days + (negativeDays || 0) });
+      // Monthly revenue: prefer explicit column, then fall back to extracted_json
+      let revVal = (d as any)?.monthly_revenue;
+      let monthlyRevenue: number | null = (typeof revVal === 'number') ? revVal : (
+        revVal != null ? parseAmount(String(revVal)) : null
+      );
+      if (monthlyRevenue === null) {
+        const ej = (d as any)?.extracted_json as any | undefined;
+        if (ej) monthlyRevenue = tryPaths(ej, ['monthly_revenue', 'summary.monthly_revenue', 'mca_summary.monthly_revenue', 'totals.monthly_revenue']);
+      }
+      if (monthlyRevenue === null || !Number.isFinite(monthlyRevenue)) monthlyRevenue = 0;
+
+      const prev = map.get(month) || { total_deposits: 0, negative_days: 0, monthly_revenue: 0 };
+      map.set(month, { 
+        total_deposits: prev.total_deposits + (total || 0), 
+        negative_days: prev.negative_days + (negativeDays || 0),
+        monthly_revenue: prev.monthly_revenue + (monthlyRevenue || 0)
+      });
     });
-    const rows: Row[] = Array.from(map.entries()).map(([month, agg]) => ({ month, total_deposits: agg.total_deposits, negative_days: agg.negative_days }));
+    const rows: Row[] = Array.from(map.entries()).map(([month, agg]) => ({ month, total_deposits: agg.total_deposits, negative_days: agg.negative_days, monthly_revenue: agg.monthly_revenue }));
     rows.sort((a, b) => Date.parse(a.month + '-01') - Date.parse(b.month + '-01'));
     return rows;
   }, [dbDocs]);
@@ -946,6 +975,58 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
   const closeDetailsModal = () => {
     setDetailsModal(null);
     setDocumentDetails(null);
+  };
+
+  // Handle saving Net Difference to monthly_revenue column
+  const handleSaveNetDifference = async (payload: {
+    documentDetails: any;
+    selectedMap: Record<string, number[]>;
+    selectedTotalFromCategories: number;
+    effectiveMainTotals: Record<string, number>;
+    difference: number;
+  }) => {
+    try {
+      // Get the document ID from the current document details
+      const documentId = documentDetails?.id;
+      if (!documentId) {
+        console.error('No document ID found for saving monthly revenue');
+        setNotification({
+          show: true,
+          type: 'error',
+          title: 'Error',
+          message: 'No document ID found for saving monthly revenue',
+        });
+        return;
+      }
+
+      // Save the Net Difference as monthly_revenue
+      await updateApplicationDocumentMonthlyRevenue(documentId, payload.difference);
+      
+      console.log('Successfully saved Net Difference to monthly_revenue:', payload.difference);
+      
+      // Format the amount for display
+      const formattedAmount = payload.difference >= 0 
+        ? `+$${Math.abs(payload.difference).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+        : `-$${Math.abs(payload.difference).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+      
+      // Show success notification modal
+      setNotification({
+        show: true,
+        type: 'success',
+        title: 'Successfully saved!',
+        message: 'Data has been saved.',
+        amount: formattedAmount,
+      });
+      
+    } catch (error) {
+      console.error('Error saving Net Difference to monthly_revenue:', error);
+      setNotification({
+        show: true,
+        type: 'error',
+        title: 'Error saving to database',
+        message: error instanceof Error ? error.message : 'Unknown error occurred',
+      });
+    }
   };
 
   const handleContinue = async (_item?: UICardItem) => {
@@ -1568,7 +1649,11 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
 
                                                 {/* Monthly Total Deposits Summary - independent of category filter/search */}
                                                 {documentDetails && (documentDetails.total_deposits !== undefined && documentDetails.total_deposits !== null) && (
-                                                  <TransactionSummarySection documentDetails={documentDetails} monthlyData={monthlyData} />
+                                                  <TransactionSummarySection 
+                                                    documentDetails={documentDetails} 
+                                                    monthlyData={monthlyData} 
+                                                    onSave={handleSaveNetDifference}
+                                                  />
                                                 )}
 
                                                 {/* No Results State */}
@@ -1942,7 +2027,7 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                             </div>
                             <div>
                               <h4 className="text-lg font-bold text-white">Financial Overview</h4>
-                              <p className="text-xs text-slate-300">Monthly analysis • Deposits & Risk</p>
+                              <p className="text-xs text-slate-300">Monthly analysis • Deposits, Revenue & Risk</p>
                             </div>
                           </div>
                           {(dbDocsLoading) && (
@@ -1973,6 +2058,12 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                                 </th>
                                 <th className="px-6 py-3 text-right font-semibold text-slate-700 uppercase tracking-wider text-xs">
                                   <div className="flex items-center justify-end gap-2">
+                                    <div className="w-2 h-2 rounded-full bg-blue-500"></div>
+                                    Revenue
+                                  </div>
+                                </th>
+                                <th className="px-6 py-3 text-right font-semibold text-slate-700 uppercase tracking-wider text-xs">
+                                  <div className="flex items-center justify-end gap-2">
                                     <div className="w-2 h-2 rounded-full bg-orange-500"></div>
                                     Negative Days
                                   </div>
@@ -1992,6 +2083,7 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                                     : (row.month || `Period ${idx + 1}`);
                                   const negativeDays = Number(row.negative_days) || 0;
                                   const deposits = Number(row.total_deposits) || 0;
+                                  const monthlyRevenue = Number(row.monthly_revenue) || 0;
                                   return (
                                     <tr key={row.id || idx} className="hover:bg-slate-50/50 transition-colors duration-150 group">
                                       <td className="px-6 py-3">
@@ -2007,6 +2099,16 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                                           </span>
                                           {deposits > 0 && (
                                             <div className="ml-2 w-1.5 h-1.5 rounded-full bg-green-500"></div>
+                                          )}
+                                        </div>
+                                      </td>
+                                      <td className="px-6 py-3 text-right">
+                                        <div className="inline-flex items-center">
+                                          <span className="font-bold text-slate-900 tabular-nums">
+                                            {fmtCurrency2(monthlyRevenue)}
+                                          </span>
+                                          {monthlyRevenue > 0 && (
+                                            <div className="ml-2 w-1.5 h-1.5 rounded-full bg-blue-500"></div>
                                           )}
                                         </div>
                                       </td>
@@ -2039,6 +2141,11 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                                 <td className="px-6 py-4 text-right">
                                   <span className="font-black text-white text-lg tabular-nums">
                                     {fmtCurrency2(financialOverviewFromDocs.reduce((sum: number, r: any) => sum + (Number(r.total_deposits) || 0), 0))}
+                                  </span>
+                                </td>
+                                <td className="px-6 py-4 text-right">
+                                  <span className="font-black text-white text-lg tabular-nums">
+                                    {fmtCurrency2(financialOverviewFromDocs.reduce((sum: number, r: any) => sum + (Number(r.monthly_revenue) || 0), 0))}
                                   </span>
                                 </td>
                                 <td className="px-6 py-4 text-right">
@@ -2245,6 +2352,66 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
           )}
         </div>
       </div>
+
+      {/* Beautiful Notification Modal */}
+      {notification.show && (
+        <div className="fixed inset-0 z-[200] flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
+          <div className="relative bg-white rounded-3xl shadow-2xl border border-slate-200/50 w-full max-w-md overflow-hidden animate-in fade-in-0 zoom-in-95 duration-300">
+            {/* Header with gradient background */}
+            <div className={`px-8 py-6 ${
+              notification.type === 'success' 
+                ? 'bg-gradient-to-r from-emerald-500 to-green-600' 
+                : 'bg-gradient-to-r from-red-500 to-rose-600'
+            }`}>
+              <div className="flex items-center gap-4">
+                <div className="w-12 h-12 rounded-2xl bg-white/20 backdrop-blur-sm flex items-center justify-center">
+                  {notification.type === 'success' ? (
+                    <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                    </svg>
+                  ) : (
+                    <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                  )}
+                </div>
+                <div>
+                  <h3 className="text-xl font-bold text-white leading-tight">{notification.title}</h3>
+                  <p className="text-white/90 text-sm mt-1">{notification.message}</p>
+                </div>
+              </div>
+            </div>
+
+            {/* Content */}
+            <div className="px-8 py-6">
+              {notification.amount && (
+                <div className="mb-6">
+                  <div className="text-sm font-semibold text-slate-600 uppercase tracking-wider mb-2">Net Difference</div>
+                  <div className={`text-3xl font-black font-mono ${
+                    notification.type === 'success' ? 'text-emerald-600' : 'text-red-600'
+                  }`}>
+                    {notification.amount}
+                  </div>
+                </div>
+              )}
+              
+              <div className="flex items-center justify-end">
+                <button
+                  type="button"
+                  onClick={() => setNotification(prev => ({ ...prev, show: false }))}
+                  className={`px-6 py-3 rounded-xl text-sm font-bold text-white shadow-lg hover:shadow-xl transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-offset-2 ${
+                    notification.type === 'success'
+                      ? 'bg-gradient-to-r from-emerald-600 to-green-600 hover:from-emerald-700 hover:to-green-700 focus:ring-emerald-500'
+                      : 'bg-gradient-to-r from-red-600 to-rose-600 hover:from-red-700 hover:to-rose-700 focus:ring-red-500'
+                  }`}
+                >
+                  OK
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
