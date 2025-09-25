@@ -1,6 +1,6 @@
 import React from 'react';
 import { Upload, FileText, Building2 } from 'lucide-react';
-import { fmtCurrency, fmtCurrency2, isBusinessNameAndOwner, formatDateHuman } from './SubmissionIntermediate.helpers';
+import { fmtCurrency, fmtCurrency2, isBusinessNameAndOwner, formatDateHuman, parseAmount } from './SubmissionIntermediate.helpers';
 
 // Upload Dropzone
 export type UploadDropzoneProps = {
@@ -326,6 +326,8 @@ export const TransactionSummarySection: React.FC<{
   const [modal, setModal] = React.useState<null | { key: string; title: string; amount: number; rows: TxRow[] }>(null);
   // Persist selection per subcategory key: `${mainName}::${subName}`
   const [selectedMap, setSelectedMap] = React.useState<Record<string, Set<number>>>({});
+  // Optimistic override for saved Net Difference so UI updates instantly after Save
+  const [savedOverride, setSavedOverride] = React.useState<number | null>(null);
 
   let totalFromCategories = 0;
   const subTotals: Record<string, number> = {};
@@ -424,6 +426,27 @@ export const TransactionSummarySection: React.FC<{
     selectedTotalFromCategories += mainSum;
   });
   const difference = totalDeposits - selectedTotalFromCategories;
+
+  // Prefer saved monthly_revenue from DB if present (from application_documents.monthly_revenue),
+  // fallback to computed difference. Accept numbers or numeric-like strings.
+  const savedMonthlyRevenueRaw = (documentDetails && (documentDetails.monthly_revenue ??
+    (documentDetails.extracted_json && (documentDetails.extracted_json.monthly_revenue ??
+      (documentDetails.mca_summary && documentDetails.mca_summary.monthly_revenue))))) as any;
+  const savedMonthlyRevenue = parseAmount(savedMonthlyRevenueRaw);
+  const displayedDifference = (savedOverride !== null && Number.isFinite(savedOverride))
+    ? savedOverride
+    : (Number.isFinite(savedMonthlyRevenue) && savedMonthlyRevenue !== 0
+      ? savedMonthlyRevenue
+      : difference);
+
+  // When the prop monthly_revenue arrives from DB, clear the optimistic override
+  React.useEffect(() => {
+    const n = parseAmount(documentDetails?.monthly_revenue);
+    if (savedOverride !== null && Number.isFinite(n) && n !== 0) {
+      setSavedOverride(null);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [documentDetails?.monthly_revenue]);
 
   return (
     <div className="space-y-4 mb-6">
@@ -615,38 +638,38 @@ export const TransactionSummarySection: React.FC<{
           )}
 
           <div className={`rounded-xl border-2 p-6 ${
-            difference >= 0 
+            displayedDifference >= 0 
               ? 'bg-gradient-to-br from-green-50 to-emerald-50 border-green-200' 
               : 'bg-gradient-to-br from-red-50 to-rose-50 border-red-200'
           }`}>
             <div className="flex items-center justify-between">
               <div className="flex items-center space-x-3">
                 <div className={`w-12 h-12 rounded-xl flex items-center justify-center ${
-                  difference >= 0 ? 'bg-green-500' : 'bg-red-500'
+                  displayedDifference >= 0 ? 'bg-green-500' : 'bg-red-500'
                 }`}>
                   <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d={
-                      difference >= 0 
+                      displayedDifference >= 0 
                         ? "M13 7h8m0 0v8m0-8l-8 8-4-4-6 6"
                         : "M13 17h8m0 0V9m0 8l-8-8-4 4-6-6"
                     } />
                   </svg>
                 </div>
                 <div>
-                  <div className={`text-sm font-semibold ${difference >= 0 ? 'text-green-700' : 'text-red-700'}`}>
+                  <div className={`text-sm font-semibold ${displayedDifference >= 0 ? 'text-green-700' : 'text-red-700'}`}>
                     Net Difference
                   </div>
-                  <div className={`text-3xl font-black ${difference >= 0 ? 'text-green-900' : 'text-red-900'}`}>
-                    {difference >= 0 ? '+' : ''}${Math.abs(difference).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  <div className={`text-3xl font-black ${displayedDifference >= 0 ? 'text-green-900' : 'text-red-900'}`}>
+                    {displayedDifference >= 0 ? '+' : ''}${Math.abs(displayedDifference).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                   </div>
                 </div>
               </div>
-              <div className={`${difference >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+              <div className={`${displayedDifference >= 0 ? 'text-green-600' : 'text-red-600'}`}>
                 <div className="text-sm font-medium">
-                  {difference >= 0 ? 'Surplus' : 'Deficit'}
+                  {displayedDifference >= 0 ? 'Surplus' : 'Deficit'}
                 </div>
                 <div className="text-xs opacity-75">
-                  {totalDeposits ? ((Math.abs(difference) / totalDeposits) * 100).toFixed(1) : '0.0'}% of total
+                  {totalDeposits ? ((Math.abs(displayedDifference) / totalDeposits) * 100).toFixed(1) : '0.0'}% of total
                 </div>
               </div>
             </div>
@@ -662,6 +685,8 @@ export const TransactionSummarySection: React.FC<{
                 Object.entries(selectedMap).forEach(([k, set]) => {
                   compactSelected[k] = Array.from(set.values()).sort((a,b)=>a-b);
                 });
+                // Optimistically update the displayed Net Difference to the value being saved
+                setSavedOverride(difference);
                 onSave({
                   documentDetails,
                   selectedMap: compactSelected,

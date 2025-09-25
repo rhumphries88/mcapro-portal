@@ -1,5 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
   import { Upload, FileText, CheckCircle, RefreshCw, Trash2, RotateCcw, TrendingUp } from 'lucide-react';
+import jsPDF from 'jspdf';
+import autoTable from 'jspdf-autotable';
 import { getApplicationDocuments, deleteApplicationDocument, deleteApplicationDocumentByAppAndDate, updateApplicationDocumentMonthlyRevenue, type ApplicationDocument, supabase } from '../lib/supabase';
 
 import { parseAmount, fmtCurrency2, slugify, formatDateHuman, getUniqueDateKey, fetchWithTimeout } from './SubmissionIntermediate.helpers';
@@ -9,7 +11,7 @@ import { UploadDropzone, FilesBucketList, LegalComplianceSection, DocumentDetail
 const NEW_DEAL_WEBHOOK_URL = '/.netlify/functions/new-deal';
 const UPDATING_APPLICATIONS_WEBHOOK_URL = '/.netlify/functions/updating-applications';
 const DOCUMENT_FILE_WEBHOOK_URL = '/.netlify/functions/document-file';
-// Feature flag: temporarily disable updating applications webhook
+// Feature flag: temporarily disable updating applications webhook 
 const DISABLE_UPDATING_APPLICATIONS = true;
 
 
@@ -55,6 +57,346 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
     }
   };
 
+  // Export a professional, structured PDF report
+  const handleDownloadPDF = async () => {
+    try {
+      setExportingPDF(true);
+      const pdf = new jsPDF('p', 'pt', 'a4');
+      const pageWidth = pdf.internal.pageSize.getWidth();
+      const pageHeight = pdf.internal.pageSize.getHeight();
+      const marginX = 50;
+      const marginY = 60;
+      let cursorY = marginY;
+
+      // Professional Header with Company Branding
+      const appId = (details.applicationId as string) || (initial?.applicationId as string) || (details.id as string) || (initial?.id as string) || '';
+      
+      // Header Background
+      pdf.setFillColor(31, 41, 55); // Dark blue-gray
+      pdf.rect(0, 0, pageWidth, 80, 'F');
+      
+      // Company Logo Placeholder (you can replace with actual logo)
+      pdf.setFillColor(59, 130, 246); // Blue
+      pdf.rect(marginX, 15, 40, 40, 'F');
+      pdf.setTextColor(255, 255, 255);
+      pdf.setFont('helvetica', 'bold');
+      pdf.setFontSize(12);
+      pdf.text('MCA', marginX + 12, 38);
+      
+      // Main Title
+      pdf.setTextColor(255, 255, 255);
+      pdf.setFont('helvetica', 'bold');
+      pdf.setFontSize(20);
+      pdf.text('MERCHANT CASH ADVANCE', marginX + 60, 35);
+      pdf.setFontSize(14);
+      pdf.text('Financial Analysis Report', marginX + 60, 52);
+      
+      // Application Info
+      pdf.setFont('helvetica', 'normal');
+      pdf.setFontSize(10);
+      const appInfo = `Application ID: ${appId || 'N/A'}`;
+      const dateInfo = `Generated: ${new Date().toLocaleDateString('en-US', { 
+        year: 'numeric', 
+        month: 'long', 
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit'
+      })}`;
+      pdf.text(appInfo, pageWidth - marginX - pdf.getTextWidth(appInfo), 35);
+      pdf.text(dateInfo, pageWidth - marginX - pdf.getTextWidth(dateInfo), 50);
+      
+      cursorY = 100;
+      
+      // Reset text color for body
+      pdf.setTextColor(0, 0, 0);
+
+      // Gather base metrics used across sections
+      const docsCount = Array.isArray(dbDocs) ? dbDocs.length : 0;
+      const fo = Array.isArray(financialOverviewFromDocs) ? financialOverviewFromDocs : [];
+      const sumDeposits = fo.reduce((s: number, r: any) => s + (Number(r.total_deposits) || 0), 0);
+      const sumRevenue = fo.reduce((s: number, r: any) => s + (Number(r.monthly_revenue) || 0), 0);
+      const sumNegDays = fo.reduce((s: number, r: any) => s + (Number(r.negative_days) || 0), 0);
+      const denom = Math.max(1, fo.length);
+      const avgDeposits = sumDeposits / denom;
+      const avgRevenue = sumRevenue / denom;
+
+      // Add page footer function
+      const addFooter = () => {
+        const footerY = pageHeight - 30;
+        pdf.setFillColor(248, 250, 252); // Light gray
+        pdf.rect(0, footerY - 10, pageWidth, 40, 'F');
+        
+        pdf.setFont('helvetica', 'normal');
+        pdf.setFontSize(8);
+        pdf.setTextColor(100, 116, 139); // Gray
+        
+        // Left footer - Confidential
+        pdf.text('CONFIDENTIAL - FINANCIAL ANALYSIS REPORT', marginX, footerY + 5);
+        
+        // Right footer - Page number
+        const pageNum = `Page ${pdf.getNumberOfPages()}`;
+        pdf.text(pageNum, pageWidth - marginX - pdf.getTextWidth(pageNum), footerY + 5);
+        
+        // Center footer - Company info
+        const centerText = 'Merchant Cash Advance Solutions';
+        pdf.text(centerText, (pageWidth - pdf.getTextWidth(centerText)) / 2, footerY + 5);
+      };
+
+      // 1) Financial Overview Section
+      if (fo.length > 0) {
+        // Section Header with background
+        pdf.setFillColor(239, 246, 255); // Light blue background
+        pdf.rect(marginX - 10, cursorY - 5, pageWidth - 2 * marginX + 20, 25, 'F');
+        
+        pdf.setFont('helvetica', 'bold');
+        pdf.setFontSize(14);
+        pdf.setTextColor(30, 64, 175); // Dark blue
+        pdf.text('📊 FINANCIAL OVERVIEW', marginX, cursorY + 12);
+        pdf.setTextColor(0, 0, 0);
+        cursorY += 35;
+        
+        const foRows = fo
+          .slice()
+          .sort((a: any, b: any) => Date.parse(a.month + '-01') - Date.parse(b.month + '-01'))
+          .map((r: any) => [
+            r.month,
+            fmtCurrency2(Number(r.total_deposits) || 0),
+            fmtCurrency2(Number(r.monthly_revenue) || 0),
+            String(Number(r.negative_days) || 0),
+            (r.file_name || '').length > 20 ? (r.file_name || '').substring(0, 17) + '...' : (r.file_name || ''),
+          ]);
+        
+        autoTable(pdf, {
+          startY: cursorY,
+          styles: { 
+            font: 'helvetica', 
+            fontSize: 9, 
+            cellPadding: 8,
+            lineColor: [226, 232, 240],
+            lineWidth: 0.5
+          },
+          headStyles: { 
+            fillColor: [30, 64, 175], 
+            textColor: 255,
+            fontSize: 10,
+            fontStyle: 'bold',
+            halign: 'center'
+          },
+          alternateRowStyles: { fillColor: [248, 250, 252] },
+          columnStyles: {
+            1: { halign: 'right' },
+            2: { halign: 'right' },
+            3: { halign: 'center' }
+          },
+          theme: 'grid',
+          head: [['Period', 'Deposits', 'Revenue', 'Negative Days', 'File']],
+          body: foRows,
+          margin: { left: marginX, right: marginX }
+        });
+        cursorY = (pdf as any).lastAutoTable.finalY + 30;
+      }
+
+      // 2) Bank Statement Analysis Section
+      if (Array.isArray(mcaSummaryRows) && mcaSummaryRows.length > 0) {
+        // Check if we need a new page
+        if (cursorY > pageHeight - 200) {
+          addFooter();
+          pdf.addPage();
+          cursorY = marginY;
+        }
+        
+        // Section Header
+        pdf.setFillColor(254, 243, 199); // Light yellow background
+        pdf.rect(marginX - 10, cursorY - 5, pageWidth - 2 * marginX + 20, 25, 'F');
+        
+        pdf.setFont('helvetica', 'bold');
+        pdf.setFontSize(14);
+        pdf.setTextColor(180, 83, 9); // Orange
+        pdf.text('🏦 BANK STATEMENT ANALYSIS - TRANSACTIONS', marginX, cursorY + 12);
+        pdf.setTextColor(0, 0, 0);
+        cursorY += 35;
+
+        const txRows: Array<[string, string, string, string, string]> = [];
+        (mcaSummaryRows || []).forEach((row: any) => {
+          const raw = row && row.__mca_raw;
+          const itemsArray = Array.isArray(raw) ? raw : [];
+          const itemsFromObject = (!Array.isArray(raw) && raw && typeof raw === 'object')
+            ? (Object.values(raw).flat().filter(Boolean) as any[])
+            : [];
+          const items = (itemsArray.length ? itemsArray : itemsFromObject).filter((it: any) => it && typeof it === 'object');
+          items.forEach((it: any) => {
+            const period = String((it?.month ?? it?.period ?? '') || '');
+            const funder = String(it?.funder ?? '');
+            const freq = String(it?.dailyweekly ?? it?.debit_frequency ?? '');
+            const amountVal = it?.amount;
+            const amountNum = (typeof amountVal === 'number') ? amountVal : parseAmount(String(amountVal ?? ''));
+            const isWeekly = /weekly/i.test(freq);
+            const displayAmount = isWeekly ? (Number(amountNum) / 5) : Number(amountNum);
+            const notes = String(it?.notes ?? '');
+            txRows.push([
+              period,
+              funder,
+              isWeekly ? 'WEEKLY (daily equiv.)' : freq,
+              Number.isFinite(displayAmount) ? fmtCurrency2(Number(displayAmount)) : (amountVal == null ? '—' : String(amountVal)),
+              notes,
+            ]);
+          });
+        });
+
+        // Limit to avoid overly heavy PDFs; note count in footnote
+        const MAX_ROWS = 600;
+        const clipped = txRows.slice(0, MAX_ROWS);
+        autoTable(pdf, {
+          startY: cursorY,
+          styles: { 
+            font: 'helvetica', 
+            fontSize: 8, 
+            cellPadding: 6,
+            lineColor: [226, 232, 240],
+            lineWidth: 0.5
+          },
+          headStyles: { 
+            fillColor: [180, 83, 9], 
+            textColor: 255,
+            fontSize: 9,
+            fontStyle: 'bold',
+            halign: 'center'
+          },
+          alternateRowStyles: { fillColor: [254, 252, 232] },
+          columnStyles: {
+            2: { halign: 'center' },
+            3: { halign: 'right' }
+          },
+          theme: 'grid',
+          head: [['Period', 'Funder', 'Frequency', 'Amount (Daily)', 'Notes']],
+          body: clipped,
+          margin: { left: marginX, right: marginX },
+          didDrawPage: addFooter
+        });
+        cursorY = (pdf as any).lastAutoTable.finalY + 16;
+        if (txRows.length > MAX_ROWS) {
+          pdf.setFont('helvetica', 'italic');
+          pdf.setFontSize(9);
+          pdf.text(`Note: Showing ${MAX_ROWS} of ${txRows.length} transactions. Refine in app to export fewer rows.`, marginX, cursorY);
+        }
+      }
+
+      // 3) Executive Summary Section
+      {
+        // Check if we need a new page
+        if (cursorY > pageHeight - 300) {
+          addFooter();
+          pdf.addPage();
+          cursorY = marginY;
+        }
+        
+        // Compute Financial Analysis metrics based on mcaSummaryRows logic used in UI
+        let totalFunders = 0;
+        try {
+          (mcaSummaryRows || []).forEach((row: any) => {
+            const raw = row && row.__mca_raw;
+            const arr = Array.isArray(raw) ? raw : (!Array.isArray(raw) && raw && typeof raw === 'object' ? (Object.values(raw).flat().filter(Boolean) as any[]) : []);
+            const items: any[] = (Array.isArray(arr) ? arr : []).filter((it: any) => it && typeof it === 'object');
+            for (const it of items) {
+              const freq = String(it?.dailyweekly ?? it?.debit_frequency ?? '');
+              const amountVal = it?.amount;
+              const amountNum = (typeof amountVal === 'number') ? amountVal : parseAmount(String(amountVal ?? ''));
+              const isWeekly = /weekly/i.test(freq);
+              const displayAmount = isWeekly ? (Number(amountNum) / 5) : Number(amountNum);
+              totalFunders += Number.isFinite(displayAmount) ? Number(displayAmount) : 0;
+            }
+          });
+        } catch { /* ignore */ }
+        const multiplier = 20;
+        const subtotal = totalFunders * multiplier;
+        const ratio = avgRevenue > 0 ? (subtotal / avgRevenue) : 0;
+        // Banker's rounding with 1 decimal (as in UI)
+        const holdbackPct = (() => {
+          const decimals = 1;
+          const pct = ratio * 100;
+          const factor = Math.pow(10, decimals);
+          const x = pct * factor;
+          const floorX = Math.floor(x);
+          const diff = x - floorX;
+          const isHalf = Math.abs(diff - 0.5) < 1e-10;
+          let roundedInt: number;
+          if (isHalf) {
+            roundedInt = (floorX % 2 === 0) ? floorX : floorX + 1;
+          } else {
+            roundedInt = Math.round(x);
+          }
+          return roundedInt / factor;
+        })();
+
+        // Section Header
+        pdf.setFillColor(236, 254, 255); // Light cyan background
+        pdf.rect(marginX - 10, cursorY - 5, pageWidth - 2 * marginX + 20, 25, 'F');
+        
+        pdf.setFont('helvetica', 'bold');
+        pdf.setFontSize(14);
+        pdf.setTextColor(8, 145, 178); // Cyan
+        pdf.text('📋 EXECUTIVE SUMMARY', marginX, cursorY + 12);
+        pdf.setTextColor(0, 0, 0);
+        cursorY += 35;
+        
+        autoTable(pdf, {
+          startY: cursorY,
+          styles: { 
+            font: 'helvetica', 
+            fontSize: 10, 
+            cellPadding: 8,
+            lineColor: [226, 232, 240],
+            lineWidth: 0.5
+          },
+          headStyles: { 
+            fillColor: [8, 145, 178], 
+            textColor: 255,
+            fontSize: 11,
+            fontStyle: 'bold',
+            halign: 'center'
+          },
+          alternateRowStyles: { fillColor: [240, 253, 255] },
+          columnStyles: {
+            1: { halign: 'right', fontStyle: 'bold' }
+          },
+          body: [
+            ['Documents Uploaded', String(docsCount)],
+            ['Average Deposits', fmtCurrency2(avgDeposits)],
+            ['Average Revenue (Saved Net Difference)', fmtCurrency2(avgRevenue)],
+            ['Total Negative Days', String(sumNegDays)],
+            ['', ''], // Spacer row
+            ['🏛️ BANK STATEMENT ANALYSIS', '📊 FINANCIAL METRICS'],
+            ['Total Amount of Funders (Daily)', fmtCurrency2(totalFunders)],
+            ['Calculation Multiplier', `× ${multiplier}`],
+            ['Subtotal', fmtCurrency2(subtotal)],
+            ['Total Revenue (Average)', fmtCurrency2(avgRevenue)],
+            ['Ratio (Subtotal ÷ Revenue)', ratio.toFixed(2)],
+            ['🎯 HOLDBACK PERCENTAGE', `${holdbackPct.toFixed(1)}%`],
+          ],
+          theme: 'grid',
+          columns: [
+            { header: 'Metric', dataKey: 0 },
+            { header: 'Value', dataKey: 1 },
+          ],
+          margin: { left: marginX, right: marginX },
+          didDrawPage: addFooter
+        });
+        cursorY = (pdf as any).lastAutoTable.finalY + 30;
+      }
+      
+      // Add final footer
+      addFooter();
+
+      const fileName = `MCA-Financial-Report${appId ? '-' + appId : ''}-${new Date().toISOString().slice(0, 10)}.pdf`;
+      pdf.save(fileName);
+    } catch (e) {
+      console.warn('Failed to export PDF:', e);
+      alert('Failed to generate PDF. Please try again.');
+    } finally {
+      setExportingPDF(false);
+    }
+  };
+
   // Summary retry helper removed by request
 
   
@@ -90,6 +432,10 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
   const [fileBucket, setFileBucket] = useState<File[]>([]);
   const [bucketSubmitting, setBucketSubmitting] = useState(false);
   const [batchProcessing, setBatchProcessing] = useState(false);
+  const [exportingPDF, setExportingPDF] = useState(false);
+
+  // PDF capture root retained (no longer used for screenshot) in case we decide to export specific DOM later
+  const pdfRef = useRef<HTMLDivElement | null>(null);
 
   const addFilesToBucket = (files: FileList | null) => {
     if (!files || files.length === 0) return;
@@ -1992,6 +2338,8 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                     </div>
                   )}
 
+                  {/* PDF Export Root START */}
+                  <div ref={pdfRef} id="pdf-export-root">
                   {/* Financial Overview (from application_documents). Render only when we have docs or data */}
                   {(Array.isArray(dbDocs) && dbDocs.length > 0) || (Array.isArray(financialOverviewFromDocs) && financialOverviewFromDocs.length > 0) ? (
                   <div className="mb-6">
@@ -2254,6 +2602,7 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                                 </th>
                               </tr>
                             </thead>
+                            {(() => { let amountColumnTotal = 0; return (
                             <tbody className="divide-y divide-slate-100">
                               {mcaSummaryRows.map((row: any, index: number) => {
                                 const raw = row && row.__mca_raw;
@@ -2268,6 +2617,11 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                                   const freq = String(it?.dailyweekly ?? it?.debit_frequency ?? '');
                                   const amountVal = it?.amount;
                                   const notes = String(it?.notes ?? '');
+                                  // When frequency is WEEKLY, convert amount to a daily equivalent by dividing by 5
+                                  const amountNum = (typeof amountVal === 'number') ? amountVal : parseAmount(String(amountVal ?? ''));
+                                  const isWeekly = /weekly/i.test(freq);
+                                  const displayAmount = isWeekly ? (Number(amountNum) / 5) : Number(amountNum);
+                                  amountColumnTotal += Number.isFinite(displayAmount) ? Number(displayAmount) : 0;
                                   return (
                                     <tr key={`mca-${index}-${idx}`} className="hover:bg-gradient-to-r hover:from-blue-50/30 hover:to-indigo-50/30 transition-all duration-200 group">
                                       <td className="py-3 px-4 border-r border-slate-100 last:border-r-0">
@@ -2282,14 +2636,32 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                                         </span>
                                       </td>
                                       <td className="py-3 px-4 border-r border-slate-100 last:border-r-0">
-                                        <span className="inline-flex items-center px-3 py-1.5 text-sm font-semibold bg-gradient-to-r from-amber-50 to-yellow-50 text-amber-800 border border-amber-200 rounded-lg shadow-sm uppercase tracking-wide">
-                                          {freq || '—'}
-                                        </span>
+                                        {isWeekly ? (
+                                          <span className="inline-flex items-center px-3 py-1.5 text-sm font-semibold bg-gradient-to-r from-amber-50 to-yellow-50 text-amber-800 border border-amber-200 rounded-lg shadow-sm uppercase tracking-wide">
+                                            WEEKLY = DAILY
+                                          </span>
+                                        ) : (
+                                          <span className="inline-flex items-center px-3 py-1.5 text-sm font-semibold bg-gradient-to-r from-amber-50 to-yellow-50 text-amber-800 border border-amber-200 rounded-lg shadow-sm uppercase tracking-wide">
+                                            {freq || '—'}
+                                          </span>
+                                        )}
                                       </td>
                                       <td className="py-3 px-4 text-right border-r border-slate-100 last:border-r-0">
-                                        <span className="inline-flex items-center px-3 py-1.5 text-sm font-bold bg-gradient-to-r from-indigo-50 to-blue-50 text-indigo-900 border border-indigo-200 rounded-lg shadow-sm font-mono">
-                                          {typeof amountVal === 'number' ? fmtCurrency2(amountVal) : (amountVal == null ? '—' : String(amountVal))}
-                                        </span>
+                                        {isWeekly ? (
+                                          <div className="flex items-center justify-end gap-2">
+                                            <span className="inline-flex items-center px-2 py-1 text-[11px] font-semibold bg-slate-100 text-slate-700 border border-slate-200 rounded font-mono" title="Original weekly amount">
+                                              {Number.isFinite(Number(amountNum)) ? fmtCurrency2(Number(amountNum)) : (amountVal == null ? '—' : String(amountVal))}
+                                            </span>
+                                            <span className="text-slate-500 font-semibold">=</span>
+                                            <span className="inline-flex items-center px-3 py-1.5 text-sm font-bold bg-gradient-to-r from-indigo-50 to-blue-50 text-indigo-900 border border-indigo-200 rounded-lg shadow-sm font-mono" title="Computed daily amount (weekly / 5)">
+                                              {Number.isFinite(displayAmount) ? fmtCurrency2(displayAmount) : (amountVal == null ? '—' : String(amountVal))}
+                                            </span>
+                                          </div>
+                                        ) : (
+                                          <span className="inline-flex items-center px-3 py-1.5 text-sm font-bold bg-gradient-to-r from-indigo-50 to-blue-50 text-indigo-900 border border-indigo-200 rounded-lg shadow-sm font-mono">
+                                            {Number.isFinite(displayAmount) ? fmtCurrency2(displayAmount) : (amountVal == null ? '—' : String(amountVal))}
+                                          </span>
+                                        )}
                                       </td>
                                       <td className="py-3 px-4">
                                         <div className="max-w-lg">
@@ -2303,11 +2675,221 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                                 });
                               })}
                             </tbody>
+                            ); })()}
                           </table>
+                          {/* Receipt-style Summary */}
+                          <div className="border-t border-slate-300">
+                            {(() => {
+                              try {
+                                // Recompute total from mcaSummaryRows to ensure value here matches rendered rows
+                                const total = (mcaSummaryRows || []).reduce((sum: number, row: any) => {
+                                  const raw = row && row.__mca_raw;
+                                  const arr = Array.isArray(raw) ? raw : (!Array.isArray(raw) && raw && typeof raw === 'object' ? Object.values(raw).flat().filter(Boolean) : []);
+                                  const items: any[] = (Array.isArray(arr) ? arr : []).filter((it: any) => it && typeof it === 'object');
+                                  let sub = 0;
+                                  for (const it of items) {
+                                    const freq = String(it?.dailyweekly ?? it?.debit_frequency ?? '');
+                                    const amountVal = it?.amount;
+                                    const amountNum = (typeof amountVal === 'number') ? amountVal : parseAmount(String(amountVal ?? ''));
+                                    const isWeekly = /weekly/i.test(freq);
+                                    const displayAmount = isWeekly ? (Number(amountNum) / 5) : Number(amountNum);
+                                    sub += Number.isFinite(displayAmount) ? Number(displayAmount) : 0;
+                                  }
+                                  return sum + sub;
+                                }, 0);
+                                const totalTimes20 = total * 20;
+                                // Calculate Total Revenue to match Financial Overview footer (average across documents)
+                                const totalDocsForRevenue = Array.isArray(financialOverviewFromDocs) ? financialOverviewFromDocs.length : 1;
+                                const revenueSum = (financialOverviewFromDocs || []).reduce((sum: number, r: any) => sum + (Number(r.monthly_revenue) || 0), 0);
+                                const totalRevenue = revenueSum / Math.max(1, totalDocsForRevenue);
+                                const divisionResult = totalRevenue > 0 ? (totalTimes20 / totalRevenue) : 0;
+                                // Bankers rounding (round half to even) with 1 decimal place for holdback percentage
+                                const holdbackPct = (() => {
+                                  const decimals = 1;
+                                  const pct = divisionResult * 100; // convert to percentage
+                                  const factor = Math.pow(10, decimals);
+                                  const x = pct * factor;
+                                  const floorX = Math.floor(x);
+                                  const diff = x - floorX;
+                                  const isHalf = Math.abs(diff - 0.5) < 1e-10;
+                                  let roundedInt: number;
+                                  if (isHalf) {
+                                    // If exactly at .5, round to the nearest even integer
+                                    roundedInt = (floorX % 2 === 0) ? floorX : floorX + 1;
+                                  } else {
+                                    roundedInt = Math.round(x);
+                                  }
+                                  return roundedInt / factor;
+                                })();
+                                return (
+                                  <div className="bg-gradient-to-br from-slate-50 via-white to-slate-50 px-6 py-6">
+                                    {/* Professional Receipt Header */}
+                                    <div className="text-center mb-6">
+                                      <div className="inline-block bg-white border-2 border-slate-800 px-8 py-4 shadow-sm">
+                                        <div className="border-b-2 border-slate-800 pb-3 mb-3">
+                                          <h2 className="text-2xl font-black text-slate-900 uppercase tracking-widest">BANK STATEMENT</h2>
+                                          <h3 className="text-lg font-bold text-slate-700 uppercase tracking-wider mt-1">TRANSACTION SUMMARY</h3>
+                                        </div>
+                                        <div className="text-xs font-semibold text-slate-600 uppercase tracking-wide">
+                                          FINANCIAL ANALYSIS REPORT
+                                        </div>
+                                      </div>
+                                    </div>
+
+                                    {/* Professional Receipt Body */}
+                                    <div className="max-w-2xl mx-auto bg-white border-2 border-slate-800 shadow-lg overflow-hidden">
+                                      {/* Receipt Header Section */}
+                                      <div className="bg-slate-800 text-white px-8 py-4">
+                                        <div className="flex justify-between items-center">
+                                          <div>
+                                            <div className="text-xs font-semibold uppercase tracking-wider opacity-80">Document No.</div>
+                                            <div className="font-mono text-sm font-bold">BSA-{new Date().getFullYear()}-{String(Date.now()).slice(-6)}</div>
+                                          </div>
+                                          <div className="text-right">
+                                            <div className="text-xs font-semibold uppercase tracking-wider opacity-80">Date Processed</div>
+                                            <div className="font-mono text-sm font-bold">
+                                              {new Date().toLocaleDateString('en-US', { 
+                                                year: 'numeric', 
+                                                month: '2-digit', 
+                                                day: '2-digit'
+                                              })}
+                                            </div>
+                                          </div>
+                                        </div>
+                                      </div>
+
+                                      <div className="px-6 py-6 space-y-1">
+                                        {/* Line Items with Professional Formatting */}
+                                        <div className="flex justify-between items-center py-3 border-b border-slate-200">
+                                          <div className="flex-1">
+                                            <div className="text-sm font-bold text-slate-900 uppercase tracking-wide">TOTAL AMOUNT OF FUNDERS</div>
+                                            <div className="text-xs text-slate-500 mt-1">Daily equivalent calculation applied</div>
+                                          </div>
+                                          <div className="text-right min-w-[120px]">
+                                            <div className="font-mono text-lg font-black text-slate-900 tabular-nums">
+                                              {fmtCurrency2(total)}
+                                            </div>
+                                          </div>
+                                        </div>
+
+                                        <div className="flex justify-between items-center py-3 border-b border-slate-200">
+                                          <div className="flex-1">
+                                            <div className="text-sm font-bold text-slate-900 uppercase tracking-wide">CALCULATION MULTIPLIER</div>
+                                            <div className="text-xs text-slate-500 mt-1">Standard industry factor</div>
+                                          </div>
+                                          <div className="text-right min-w-[120px]">
+                                            <div className="font-mono text-lg font-black text-slate-900">× 20</div>
+                                          </div>
+                                        </div>
+
+                                        {/* Subtotal Section */}
+                                        <div className="bg-slate-100 -mx-6 px-6 py-4 border-y-2 border-slate-300">
+                                          <div className="flex justify-between items-center">
+                                            <div className="flex-1">
+                                              <div className="text-lg font-black text-slate-900 uppercase tracking-wider">SUBTOTAL</div>
+                                              <div className="text-sm text-slate-600 mt-1">Amount × Multiplier</div>
+                                            </div>
+                                            <div className="text-right">
+                                              <div className="font-mono text-2xl font-black text-slate-900 tabular-nums">
+                                                {fmtCurrency2(totalTimes20)}
+                                              </div>
+                                            </div>
+                                          </div>
+                                        </div>
+
+                                        {/* Revenue Analysis Section */}
+                                        {totalRevenue > 0 && (
+                                          <>
+                                            <div className="pt-4 pb-2">
+                                              <div className="text-sm font-bold text-slate-700 uppercase tracking-wider border-b border-slate-300 pb-2">
+                                                REVENUE ANALYSIS
+                                              </div>
+                                            </div>
+
+                                            <div className="flex justify-between items-center py-3 border-b border-slate-200">
+                                              <div className="flex-1">
+                                                <div className="text-sm font-semibold text-slate-900">Total Revenue (Average)</div>
+                                                <div className="text-xs text-slate-500 mt-1">From financial overview</div>
+                                              </div>
+                                              <div className="text-right min-w-[120px]">
+                                                <div className="font-mono text-base font-bold text-slate-900 tabular-nums">
+                                                  {fmtCurrency2(totalRevenue)}
+                                                </div>
+                                              </div>
+                                            </div>
+
+                                            <div className="flex justify-between items-center py-3 border-b border-slate-200">
+                                              <div className="flex-1">
+                                                <div className="text-sm font-semibold text-slate-900">Ratio (Total ÷ Revenue)</div>
+                                                <div className="text-xs text-slate-500 mt-1">Calculation factor</div>
+                                              </div>
+                                              <div className="text-right min-w-[120px]">
+                                                <div className="font-mono text-base font-bold text-slate-900 tabular-nums">
+                                                  {divisionResult.toFixed(2)}
+                                                </div>
+                                              </div>
+                                            </div>
+
+                                            {/* Final Holdback */}
+                                            <div className="bg-slate-800 text-white -mx-6 px-6 py-4 mt-4">
+                                              <div className="flex justify-between items-center">
+                                                <div className="flex-1">
+                                                  <div className="text-lg font-black uppercase tracking-wider">HOLDBACK PERCENTAGE</div>
+                                                  <div className="text-sm opacity-80 mt-1">Final calculation result</div>
+                                                </div>
+                                                <div className="text-right">
+                                                  <div className="font-mono text-3xl font-black tabular-nums">
+                                                    {holdbackPct.toFixed(1)}%
+                                                  </div>
+                                                </div>
+                                              </div>
+                                            </div>
+                                          </>
+                                        )}
+                                      </div>
+
+                                      {/* Professional Receipt Footer */}
+                                      <div className="bg-slate-100 border-t-2 border-slate-300 px-6 py-4">
+                                        <div className="flex justify-between items-center text-xs">
+                                          <div>
+                                            <div className="font-bold text-slate-700 uppercase tracking-wider">Generated</div>
+                                            <div className="font-mono text-slate-600 mt-1">
+                                              {new Date().toLocaleDateString('en-US', { 
+                                                year: 'numeric', 
+                                                month: '2-digit', 
+                                                day: '2-digit',
+                                                hour: '2-digit',
+                                                minute: '2-digit',
+                                                hour12: false
+                                              })}
+                                            </div>
+                                          </div>
+                                          <div className="text-right">
+                                            <div className="font-bold text-slate-700 uppercase tracking-wider">Status</div>
+                                            <div className="text-slate-600 mt-1">AUTO-CALCULATED</div>
+                                          </div>
+                                        </div>
+                                        
+                                        <div className="mt-3 pt-3 border-t border-slate-300 text-center">
+                                             <div className="text-xs font-semibold text-slate-600 uppercase tracking-widest">
+                                            BANK STATEMENT ANALYSIS • CONFIDENTIAL
+                                          </div>
+                                        </div>
+                                      </div>
+                                    </div>
+                                  </div>
+                                );
+                              } catch {
+                                return null;
+                              }
+                            })()}
+                          </div>
                         </div>
                       </div>
                     </div>
                   )}
+                  </div>
+                  {/* PDF Export Root END */}
                   {/* Financial Summary removed per request */}
 
                   
@@ -2355,6 +2937,32 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                       Back
                     </button>
                   )}
+                  <button
+                    type="button"
+                    onClick={handleDownloadPDF}
+                    disabled={exportingPDF || (financialOverviewFromDocs?.length || 0) === 0}
+                    className={`inline-flex items-center gap-2 px-6 py-3 rounded-xl font-semibold border-2 transition-all duration-200 focus:outline-none focus:ring-4 ${
+                      (exportingPDF || (financialOverviewFromDocs?.length || 0) === 0)
+                        ? 'bg-gradient-to-r from-gray-200 to-gray-300 text-gray-600 border-gray-200 cursor-not-allowed'
+                        : 'bg-white text-slate-800 border-slate-200 hover:border-blue-300 hover:text-blue-700 hover:shadow-md focus:ring-blue-500/20'
+                    }`}
+                    aria-label="Download PDF"
+                    aria-busy={exportingPDF}
+                  >
+                    {exportingPDF ? (
+                      <>
+                        <div className="w-4 h-4 border-2 border-current border-t-transparent rounded-full animate-spin" />
+                        Generating PDF…
+                      </>
+                    ) : (
+                      <>
+                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 16v-8m0 8l-3-3m3 3l3-3M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2" />
+                        </svg>
+                        Download PDF
+                      </>
+                    )}
+                  </button>
                 </div>
                 <div className="flex items-center">
                   <button
