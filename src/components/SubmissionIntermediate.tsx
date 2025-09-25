@@ -1,9 +1,9 @@
 import React, { useEffect, useRef, useState } from 'react';
-  import { Upload, FileText, CheckCircle, RefreshCw, Trash2, RotateCcw, TrendingUp, Calendar } from 'lucide-react';
+  import { Upload, FileText, CheckCircle, RefreshCw, Trash2, RotateCcw, TrendingUp } from 'lucide-react';
 import { getApplicationDocuments, deleteApplicationDocument, deleteApplicationDocumentByAppAndDate, updateApplicationDocumentMonthlyRevenue, type ApplicationDocument, supabase } from '../lib/supabase';
 
 import { parseAmount, fmtCurrency2, slugify, formatDateHuman, getUniqueDateKey, fetchWithTimeout } from './SubmissionIntermediate.helpers';
-import { UploadDropzone, FilesBucketList, LegalComplianceSection, AnalysisSummarySection, FundingDetailsSection, DocumentDetailsControls, TransactionSummarySection } from './SubmissionIntermediate.Views';
+import { UploadDropzone, FilesBucketList, LegalComplianceSection, DocumentDetailsControls, TransactionSummarySection } from './SubmissionIntermediate.Views';
 
 
 const NEW_DEAL_WEBHOOK_URL = '/.netlify/functions/new-deal';
@@ -27,24 +27,6 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
   const [details, setDetails] = useState<Record<string, string | boolean>>({
     id: (initial?.id as string) || '',
     applicationId: (initial?.applicationId as string) || '',
-    dealName: (initial?.dealName as string) || '',
-    entityType: (initial?.entityType as string) || '',
-    industry: (initial?.industry as string) || '',
-    state: (initial?.state as string) || '',
-    // Financial details should start empty after submit
-    creditScore: '',
-    timeInBiz: '',
-    grossAnnualRevenue: '',
-    avgMonthlyRevenue: '',
-    averageMonthlyDeposits: '',
-    existingDebt: '',
-    requestedAmount: '',
-    avgDailyBalance: '',
-    avgMonthlyDepositCount: '',
-    nsfCount: '',
-    negativeDays: '',
-    currentPositionCount: '',
-    holdback: '',
     hasBankruptcies: Boolean(initial?.hasBankruptcies) || false,
     hasOpenJudgments: Boolean(initial?.hasOpenJudgments) || false,
   });
@@ -57,54 +39,9 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
       ...prev,
       id: (initial.id as string) ?? (prev.id as string) ?? '',
       applicationId: (initial.applicationId as string) ?? (prev.applicationId as string) ?? '',
-      dealName: (initial.dealName as string) ?? prev.dealName ?? '',
-      entityType: (initial.entityType as string) ?? prev.entityType ?? '',
-      industry: (initial.industry as string) ?? prev.industry ?? '',
-      state: (initial.state as string) ?? prev.state ?? '',
-      // Keep financial fields empty upon receiving initial unless user already typed
-      creditScore: (prev.creditScore as string) || '',
-      timeInBiz: (prev.timeInBiz as string) || '',
-      grossAnnualRevenue: (prev.grossAnnualRevenue as string) || '',
-      avgMonthlyRevenue: (prev.avgMonthlyRevenue as string) || '',
-      averageMonthlyDeposits: (prev.averageMonthlyDeposits as string) || '',
-      existingDebt: (prev.existingDebt as string) || '',
-      requestedAmount: (prev.requestedAmount as string) || '',
-      avgDailyBalance: (prev.avgDailyBalance as string) || '',
-      avgMonthlyDepositCount: (prev.avgMonthlyDepositCount as string) || '',
-      nsfCount: (prev.nsfCount as string) || '',
-      negativeDays: (prev.negativeDays as string) || '',
-      currentPositionCount: (prev.currentPositionCount as string) || '',
-      holdback: (prev.holdback as string) || '',
       hasBankruptcies: typeof initial.hasBankruptcies === 'boolean' ? initial.hasBankruptcies : Boolean(prev.hasBankruptcies),
       hasOpenJudgments: typeof initial.hasOpenJudgments === 'boolean' ? initial.hasOpenJudgments : Boolean(prev.hasOpenJudgments),
     }));
-    // Only mark basic business fields from `initial` as auto-populated.
-    // Financial fields must ONLY highlight after a bank statement upload triggers the newDeal webhook.
-    const highlightable = [
-      'dealName','industry','entityType','state'
-    ];
-    const provided: string[] = [];
-    highlightable.forEach(k => {
-      const v = (initial as Record<string, unknown>)[k];
-      if (v !== undefined && v !== null && String(v).trim() !== '') provided.push(k);
-    });
-    setTimeout(() => {
-      // Post-merge snapshot for verification
-      console.log('[SubmissionIntermediate] details after merge snapshot:', {
-        entityType: (initial.entityType as string) ?? '',
-        state: (initial.state as string) ?? '',
-        grossAnnualRevenue: (initial.grossAnnualRevenue as string) ?? '',
-        avgDailyBalance: (initial.avgDailyBalance as string) ?? '',
-        averageMonthlyDeposits: (initial.averageMonthlyDeposits as string) ?? '',
-        existingDebt: (initial.existingDebt as string) ?? '',
-        requestedAmount: (initial.requestedAmount as string) ?? '',
-        avgMonthlyDepositCount: (initial.avgMonthlyDepositCount as string) ?? '',
-        nsfCount: (initial.nsfCount as string) ?? '',
-        negativeDays: (initial.negativeDays as string) ?? '',
-        currentPositionCount: (initial.currentPositionCount as string) ?? '',
-        holdback: (initial.holdback as string) ?? '',
-      });
-    }, 0);
   }, [initial]);
 
   // Fetch already-saved documents for this application (if any)
@@ -339,7 +276,6 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
   // Removed: application_financials state and loading
 
   // Bank Statement Summary data state removed (migrated to mcaSummaryRows from DB)
-  const [expandedCards, setExpandedCards] = useState<Set<string>>(new Set());
   // Analysis in-progress flag: covers loading, background processing, and active uploads
   const isAnalysisInProgress = (
     batchProcessing ||
@@ -632,41 +568,9 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
   // helpers moved to SubmissionIntermediate.helpers.ts
 
   // Removed: valueFromFinancial (no longer needed)
+  
 
-  // Helper: recursively collect array-of-object sections from any nested path within a summary object
-  const findArraySections = (obj: any, basePath: string = ''): Array<{ key: string; items: any[] }> => {
-    const out: Array<{ key: string; items: any[] }> = [];
-    try {
-      if (Array.isArray(obj)) {
-        if (obj.some((it) => it && typeof it === 'object')) {
-          out.push({ key: basePath || 'items', items: obj as any[] });
-        }
-        return out;
-      }
-      if (obj && typeof obj === 'object') {
-        for (const [k, v] of Object.entries(obj as Record<string, any>)) {
-          const path = basePath ? `${basePath}.${k}` : k;
-          out.push(...findArraySections(v, path));
-        }
-      }
-    } catch {
-      // ignore
-    }
-    return out;
-  };
-
-  // Toggle card expansion
-  const toggleCardExpansion = (cardId: string) => {
-    setExpandedCards(prev => {
-      const newSet = new Set(prev);
-      if (newSet.has(cardId)) {
-        newSet.delete(cardId);
-      } else {
-        newSet.add(cardId);
-      }
-      return newSet;
-    });
-  };
+  // Removed: per-document expand/collapse state (UI now renders in a single combined card)
 
   
 
@@ -1148,46 +1052,16 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
           applicationId: baseIds.applicationId,
         });
       }
-      // Build a flat application-shaped payload from current details only
-      const flatNumericNames = new Set([
-        'creditScore','timeInBiz','avgMonthlyRevenue','averageMonthlyDeposits','existingDebt','requestedAmount','avgDailyBalance','avgMonthlyDepositCount','nsfCount','negativeDays','currentPositionCount','holdback','grossAnnualRevenue'
-      ]);
-      const sanitized: Record<string, unknown> = { ...details };
-      for (const k of Object.keys(details)) {
-        if (flatNumericNames.has(k)) {
-          const raw = String((details as Record<string, unknown>)[k] ?? '');
-          if (!raw) continue;
-          const withoutCommas = raw.replace(/,/g, '');
-          const cleanedStr = k === 'holdback' ? withoutCommas.replace(/%/g, '') : withoutCommas;
-          sanitized[k] = cleanedStr;
-        }
-      }
+      // Build a minimal payload; we no longer send business/financial detail fields from this screen
       const payload: Record<string, unknown> = {
         id: baseIds.id,
         applicationId: baseIds.applicationId,
-        dealName: sanitized.dealName ?? '',
-        entityType: sanitized.entityType ?? '',
-        industry: sanitized.industry ?? '',
-        state: sanitized.state ?? '',
-        creditScore: sanitized.creditScore ?? '',
-        timeInBiz: sanitized.timeInBiz ?? '',
-        grossAnnualRevenue: sanitized.grossAnnualRevenue ?? '',
-        avgMonthlyRevenue: sanitized.avgMonthlyRevenue ?? '',
-        averageMonthlyDeposits: sanitized.averageMonthlyDeposits ?? '',
-        existingDebt: sanitized.existingDebt ?? '',
-        requestedAmount: sanitized.requestedAmount ?? '',
-        avgDailyBalance: sanitized.avgDailyBalance ?? '',
-        avgMonthlyDepositCount: sanitized.avgMonthlyDepositCount ?? '',
-        nsfCount: sanitized.nsfCount ?? '',
-        negativeDays: sanitized.negativeDays ?? '',
-        currentPositionCount: sanitized.currentPositionCount ?? '',
-        holdback: sanitized.holdback ?? '',
-        hasBankruptcies: Boolean(sanitized.hasBankruptcies ?? details.hasBankruptcies ?? false),
-        hasOpenJudgments: Boolean(sanitized.hasOpenJudgments ?? details.hasOpenJudgments ?? false),
+        hasBankruptcies: Boolean(details.hasBankruptcies ?? false),
+        hasOpenJudgments: Boolean(details.hasOpenJudgments ?? false),
       };
       // Only attempt the webhook if enabled and we have a valid applicationId
       if (!DISABLE_UPDATING_APPLICATIONS && baseIds.applicationId && isValidUUID(baseIds.applicationId)) {
-        try { console.log('[updatingApplications] payload preview (flat)', payload); } catch {}
+        try { console.log('[updatingApplications] payload preview (minimal)', payload); } catch {}
         const resp = await fetchWithTimeout(UPDATING_APPLICATIONS_WEBHOOK_URL, {
           method: 'POST',
           headers: {
@@ -2189,6 +2063,11 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                                   const negativeDays = Number(row.negative_days) || 0;
                                   const deposits = Number(row.total_deposits) || 0;
                                   const monthlyRevenue = Number(row.monthly_revenue) || 0;
+                                  const monthDocCount = Array.isArray(financialOverviewFromDocs)
+                                    ? Math.max(1, financialOverviewFromDocs.filter((r: any) => r && r.month === row.month).length)
+                                    : 1;
+                                  const depositsAvg = deposits / monthDocCount;
+                                  const revenueAvg = monthlyRevenue / monthDocCount;
                                   return (
                                     <tr key={row.id || idx} className="hover:bg-slate-50/50 transition-colors duration-150 group">
                                       <td className="px-6 py-3">
@@ -2205,7 +2084,7 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                                       <td className="px-6 py-3 text-right">
                                         <div className="inline-flex items-center">
                                           <span className="font-bold text-slate-900 tabular-nums">
-                                            {fmtCurrency2(deposits)}
+                                            {fmtCurrency2(depositsAvg)}
                                           </span>
                                           {deposits > 0 && (
                                             <div className="ml-2 w-1.5 h-1.5 rounded-full bg-green-500"></div>
@@ -2215,7 +2094,7 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                                       <td className="px-6 py-3 text-right">
                                         <div className="inline-flex items-center">
                                           <span className="font-bold text-slate-900 tabular-nums">
-                                            {fmtCurrency2(monthlyRevenue)}
+                                            {fmtCurrency2(revenueAvg)}
                                           </span>
                                           {monthlyRevenue > 0 && (
                                             <div className="ml-2 w-1.5 h-1.5 rounded-full bg-blue-500"></div>
@@ -2250,12 +2129,20 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                                 </td>
                                 <td className="px-6 py-4 text-right">
                                   <span className="font-black text-white text-lg tabular-nums">
-                                    {fmtCurrency2(financialOverviewFromDocs.reduce((sum: number, r: any) => sum + (Number(r.total_deposits) || 0), 0))}
+                                    {(() => {
+                                      const totalDocs = Array.isArray(financialOverviewFromDocs) ? financialOverviewFromDocs.length : 1;
+                                      const sum = financialOverviewFromDocs.reduce((sum: number, r: any) => sum + (Number(r.total_deposits) || 0), 0);
+                                      return fmtCurrency2(sum / Math.max(1, totalDocs));
+                                    })()}
                                   </span>
                                 </td>
                                 <td className="px-6 py-4 text-right">
                                   <span className="font-black text-white text-lg tabular-nums">
-                                    {fmtCurrency2(financialOverviewFromDocs.reduce((sum: number, r: any) => sum + (Number(r.monthly_revenue) || 0), 0))}
+                                    {(() => {
+                                      const totalDocs = Array.isArray(financialOverviewFromDocs) ? financialOverviewFromDocs.length : 1;
+                                      const sum = financialOverviewFromDocs.reduce((sum: number, r: any) => sum + (Number(r.monthly_revenue) || 0), 0);
+                                      return fmtCurrency2(sum / Math.max(1, totalDocs));
+                                    })()}
                                   </span>
                                 </td>
                                 <td className="px-6 py-4 text-right">
@@ -2306,237 +2193,118 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                   ) : null}
                   {/* Bank Statement Analysis (from application_documents.mca_summary) */}
                   {(Array.isArray(mcaSummaryRows) && mcaSummaryRows.length > 0) && (
-                    <div className="mb-8">
-                      <div className="bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-200 rounded-lg shadow-lg mb-6">
-                        <div className="px-8 py-6">
+                    <div className="mb-6">
+                      <div className="bg-white border border-slate-200 rounded-xl shadow-lg overflow-hidden">
+                        {/* Enhanced Header */}
+                        <div className="px-5 py-4 bg-gradient-to-r from-slate-50 via-blue-50 to-indigo-50 border-b border-slate-200">
                           <div className="flex items-center justify-between">
-                            <div className="flex items-center gap-5">
-                              <div className="p-4 bg-blue-600 rounded-xl shadow-md">
-                                <FileText className="w-6 h-6 text-white" />
+                            <div className="flex items-center gap-4">
+                              <div className="w-10 h-10 bg-gradient-to-br from-blue-600 to-indigo-600 rounded-lg flex items-center justify-center shadow-md">
+                                <FileText className="w-5 h-5 text-white" />
                               </div>
                               <div>
-                                <h4 className="text-2xl font-bold text-slate-800 mb-1">Bank Statement Analysis</h4>
-                                <p className="text-blue-700 font-medium">Financial Performance Review & Assessment</p>
+                                <h4 className="text-xl font-bold text-slate-800 tracking-tight">Bank Statement Analysis</h4>
+                                <p className="text-sm text-slate-600 font-medium">Financial Performance Review & Assessment</p>
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-3">
+                              {/* Show only the count of files processed */}
+                              <div className="flex items-center gap-1.5 px-2 py-0.5 bg-emerald-50 border border-emerald-200 rounded">
+                                <span className="w-1 h-1 rounded-full bg-emerald-500" />
+                                <span className="text-xs font-medium text-emerald-700">{mcaSummaryRows.length} Files Processed</span>
                               </div>
                             </div>
                           </div>
                         </div>
-                      </div>
-                      <div className="space-y-6">
-                        {mcaSummaryRows.map((row: any, index: number) => {
-                          const cardId = row.id || `mca-card-${index}`;
-                          const isExpanded = expandedCards.has(cardId);
-                          return (
-                            <div key={cardId} className="bg-white border border-slate-200 rounded-xl shadow-lg hover:shadow-xl transition-all duration-300">
-                              <div
-                                className="px-8 py-6 cursor-pointer hover:bg-gradient-to-r hover:from-blue-50 hover:to-indigo-50 transition-all duration-300 rounded-t-xl border-b border-slate-100"
-                                onClick={() => toggleCardExpansion(cardId)}
-                              >
-                                <div className="flex items-center justify-between">
-                                  <div className="flex items-center gap-5">
-                                    <div className="w-4 h-4 bg-gradient-to-r from-blue-500 to-indigo-500 rounded-full shadow-sm"></div>
-                                    <h5 className="text-xl font-bold text-slate-800">{row.month || `Period ${index + 1}`}</h5>
+                        
+                        {/* Enhanced Table */}
+                        <div className="overflow-x-auto">
+                          <table className="w-full">
+                            <thead>
+                              <tr className="bg-gradient-to-r from-slate-800 via-slate-700 to-slate-800">
+                                <th className="text-left py-3 px-4 font-bold text-white text-sm uppercase tracking-wider border-r border-slate-600 last:border-r-0">
+                                  <div className="flex items-center gap-2">
+                                    <span className="w-1 h-4 bg-blue-400 rounded-full" />
+                                    Period
                                   </div>
-                                  <div className="flex items-center gap-4">
-                                    <div className="px-4 py-2 bg-gradient-to-r from-slate-100 to-slate-50 text-slate-700 text-sm font-semibold rounded-lg border border-slate-200 shadow-sm">
-                                      Statement Period
-                                    </div>
-                                    <button className="w-10 h-10 bg-gradient-to-r from-blue-500 to-indigo-500 hover:from-blue-600 hover:to-indigo-600 text-white rounded-lg shadow-md hover:shadow-lg transition-all duration-200 flex items-center justify-center">
-                                      {isExpanded ? (
-                                        <span className="font-bold text-lg leading-none">−</span>
-                                      ) : (
-                                        <span className="font-bold text-lg leading-none">+</span>
-                                      )}
-                                    </button>
+                                </th>
+                                <th className="text-left py-3 px-4 font-bold text-white text-sm uppercase tracking-wider border-r border-slate-600 last:border-r-0">
+                                  <div className="flex items-center gap-2">
+                                    <span className="w-1 h-4 bg-emerald-400 rounded-full" />
+                                    Funder
                                   </div>
-                                </div>
-                              </div>
-                              {isExpanded && (
-                                <div className="px-8 pb-8 bg-gradient-to-b from-white to-slate-50">
-                                  <AnalysisSummarySection row={row} />
-                                  <FundingDetailsSection row={row} />
-                                  {/* Render all values from mca_summary for this specific document id */}
-                                  {row && row.__mca_raw && (
-                                    <div className="mt-6">
-                                      {/* Render array/object sections like funding insights if present */}
-                                      {/* Case A: mca_summary is an array of objects directly */}
-                                      {Array.isArray(row.__mca_raw) && (
-                                        <div className="mt-8">
-                                          <div className="flex items-center gap-4 mb-6">
-                                            <div className="p-3 rounded-xl bg-gradient-to-br from-emerald-500 to-teal-600 shadow-lg">
-                                              <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
-                                              </svg>
-                                            </div>
-                                            <div>
-                                              <h6 className="text-2xl font-bold text-slate-800">Funding Analysis</h6>
-                                              <p className="text-slate-600 font-medium">MCA transactions and payment patterns</p>
-                                            </div>
-                                          </div>
-                                          <div className="bg-white rounded-xl border border-slate-200/60 overflow-hidden shadow-sm">
-                                            <div className="overflow-x-auto">
-                                              <table className="w-full table-fixed">
-                                                <colgroup>
-                                                  <col className="w-[12%]" />
-                                                  <col className="w-[20%]" />
-                                                  <col className="w-[12%]" />
-                                                  <col className="w-[15%]" />
-                                                  <col className="w-[41%]" />
-                                                </colgroup>
-                                                <thead>
-                                                  <tr className="bg-gradient-to-r from-slate-900 to-slate-800">
-                                                    <th className="text-left py-3 px-4 font-bold text-white text-sm uppercase tracking-wider">Period</th>
-                                                    <th className="text-left py-3 px-4 font-bold text-white text-sm uppercase tracking-wider">Funder</th>
-                                                    <th className="text-left py-3 px-4 font-bold text-white text-sm uppercase tracking-wider">Frequency</th>
-                                                    <th className="text-right py-3 px-4 font-bold text-white text-sm uppercase tracking-wider">Amount</th>
-                                                    <th className="text-left py-3 px-4 font-bold text-white text-sm uppercase tracking-wider">Analysis</th>
-                                                  </tr>
-                                                </thead>
-                                                <tbody className="divide-y divide-slate-100">
-                                                  {(row.__mca_raw as any[]).map((it: any, idx: number) => (
-                                                    <tr key={`mca-array-${idx}`} className="hover:bg-gradient-to-r hover:from-blue-50/40 hover:to-emerald-50/40 transition-all duration-300 group">
-                                                      <td className="py-3 px-4">
-                                                        <div className="flex items-center gap-2">
-                                                          <div className="w-2 h-2 rounded-full bg-blue-500 group-hover:bg-blue-600 transition-colors"></div>
-                                                          <span className="font-semibold text-slate-900 text-sm truncate">{String(it?.month ?? '')}</span>
-                                                        </div>
-                                                      </td>
-                                                      <td className="py-3 px-4">
-                                                        <div className="inline-flex items-center px-3 py-1 bg-gradient-to-r from-emerald-50 to-teal-50 border border-emerald-200/60 rounded-lg">
-                                                          <span className="font-semibold text-emerald-800 text-sm truncate">{String(it?.funder ?? '')}</span>
-                                                        </div>
-                                                      </td>
-                                                      <td className="py-3 px-4">
-                                                        <div className="inline-flex items-center px-3 py-1 bg-slate-100 border border-slate-200 rounded-lg">
-                                                          <span className="font-medium text-slate-700 uppercase tracking-wide text-xs truncate">{String(it?.dailyweekly ?? it?.debit_frequency ?? '')}</span>
-                                                        </div>
-                                                      </td>
-                                                      <td className="py-3 px-4 text-right">
-                                                        <div className="inline-flex items-center px-3 py-1.5 bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-200/60 rounded-lg">
-                                                          <span className="font-bold text-blue-900 text-base tabular-nums">
-                                                            {typeof it?.amount === 'number' ? fmtCurrency2(it.amount) : (it?.amount == null ? '—' : String(it?.amount))}
-                                                          </span>
-                                                        </div>
-                                                      </td>
-                                                      <td className="py-3 px-4">
-                                                        <p className="text-slate-700 leading-snug text-sm">{String(it?.notes ?? '')}</p>
-                                                      </td>
-                                                    </tr>
-                                                  ))}
-                                                </tbody>
-                                              </table>
-                                            </div>
-                                          </div>
+                                </th>
+                                <th className="text-left py-3 px-4 font-bold text-white text-sm uppercase tracking-wider border-r border-slate-600 last:border-r-0">
+                                  <div className="flex items-center gap-2">
+                                    <span className="w-1 h-4 bg-amber-400 rounded-full" />
+                                    Frequency
+                                  </div>
+                                </th>
+                                <th className="text-right py-3 px-4 font-bold text-white text-sm uppercase tracking-wider border-r border-slate-600 last:border-r-0">
+                                  <div className="flex items-center justify-end gap-2">
+                                    <span className="w-1 h-4 bg-indigo-400 rounded-full" />
+                                    Amount
+                                  </div>
+                                </th>
+                                <th className="text-left py-3 px-4 font-bold text-white text-sm uppercase tracking-wider">
+                                  <div className="flex items-center gap-2">
+                                    <span className="w-1 h-4 bg-purple-400 rounded-full" />
+                                    Notes
+                                  </div>
+                                </th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-100">
+                              {mcaSummaryRows.map((row: any, index: number) => {
+                                const raw = row && row.__mca_raw;
+                                const itemsArray = Array.isArray(raw) ? raw : [];
+                                const itemsFromObject = (!Array.isArray(raw) && raw && typeof raw === 'object')
+                                  ? Object.values(raw).flat().filter(Boolean)
+                                  : [];
+                                const items: any[] = (itemsArray.length ? itemsArray : itemsFromObject).filter((it: any) => it && typeof it === 'object');
+                                return items.map((it: any, idx: number) => {
+                                  const period = String((it?.month ?? it?.period ?? '') || '');
+                                  const funder = String(it?.funder ?? '');
+                                  const freq = String(it?.dailyweekly ?? it?.debit_frequency ?? '');
+                                  const amountVal = it?.amount;
+                                  const notes = String(it?.notes ?? '');
+                                  return (
+                                    <tr key={`mca-${index}-${idx}`} className="hover:bg-gradient-to-r hover:from-blue-50/30 hover:to-indigo-50/30 transition-all duration-200 group">
+                                      <td className="py-3 px-4 border-r border-slate-100 last:border-r-0">
+                                        <div className="flex items-center gap-3">
+                                          <span className="w-2 h-2 rounded-full bg-gradient-to-r from-blue-500 to-indigo-500 group-hover:scale-110 transition-transform" />
+                                          <span className="font-semibold text-slate-800 text-sm">{period || '—'}</span>
                                         </div>
-                                      )}
-                                      {/* Case B: mca_summary is an object with array sections */}
-                                      {(!Array.isArray(row.__mca_raw) ? Object.entries(row.__mca_raw as Record<string, any>) : [])
-                                        .filter(([, v]) => Array.isArray(v) && (v as any[]).some((it) => it && typeof it === 'object'))
-                                        .map(([sectionKey, arr]) => {
-                                          const items = (arr as any[]).filter(Boolean);
-                                          // Only render if it looks like funding/insight objects (has at least one of these keys)
-                                          const looksLikeFunding = items.some((it) => (
-                                            typeof it === 'object' && (
-                                              'funder' in it || 'notes' in it || 'amount' in it || 'dailyweekly' in it || 'month' in it
-                                            )
-                                          ));
-                                          if (!looksLikeFunding) return null;
-                                          return (
-                                            <div key={sectionKey} className="mt-8">
-                                              <div className="flex items-center gap-4 mb-6">
-                                                <div className="p-3 rounded-xl bg-gradient-to-br from-emerald-500 to-teal-600 shadow-lg">
-                                                  <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
-                                                  </svg>
-                                                </div>
-                                                <div>
-                                                  <h6 className="text-2xl font-bold text-slate-800">
-                                                    {String(sectionKey).replace(/_/g, ' ').replace(/\b\w/g, (m) => m.toUpperCase())}
-                                                  </h6>
-                                                  <p className="text-slate-600 font-medium">Detailed funding transaction analysis</p>
-                                                </div>
-                                              </div>
-                                              <div className="bg-white rounded-xl border border-slate-200/60 overflow-hidden shadow-sm">
-                                                <div className="overflow-x-auto">
-                                                  <table className="w-full table-fixed">
-                                                    <colgroup>
-                                                      <col className="w-[12%]" />
-                                                      <col className="w-[20%]" />
-                                                      <col className="w-[12%]" />
-                                                      <col className="w-[15%]" />
-                                                      <col className="w-[41%]" />
-                                                    </colgroup>
-                                                    <thead>
-                                                      <tr className="bg-gradient-to-r from-slate-900 to-slate-800">
-                                                        <th className="text-left py-3 px-4 font-bold text-white text-sm uppercase tracking-wider">Period</th>
-                                                        <th className="text-left py-3 px-4 font-bold text-white text-sm uppercase tracking-wider">Funder</th>
-                                                        <th className="text-left py-3 px-4 font-bold text-white text-sm uppercase tracking-wider">Frequency</th>
-                                                        <th className="text-right py-3 px-4 font-bold text-white text-sm uppercase tracking-wider">Amount</th>
-                                                        <th className="text-left py-3 px-4 font-bold text-white text-sm uppercase tracking-wider">Analysis</th>
-                                                      </tr>
-                                                    </thead>
-                                                    <tbody className="divide-y divide-slate-100">
-                                                      {items.map((it, idx) => {
-                                                        if (!it || typeof it !== 'object') return null;
-                                                        const month = (it as any).month ?? '';
-                                                        const funder = (it as any).funder ?? '';
-                                                        const freq = (it as any).dailyweekly ?? (it as any).debit_frequency ?? '';
-                                                        const amount = (it as any).amount;
-                                                        const notes = (it as any).notes ?? '';
-                                                        return (
-                                                          <tr key={`${sectionKey}-${idx}`} className="hover:bg-gradient-to-r hover:from-blue-50/40 hover:to-emerald-50/40 transition-all duration-300 group">
-                                                            <td className="py-3 px-4">
-                                                              <div className="flex items-center gap-2">
-                                                                <div className="w-2 h-2 rounded-full bg-blue-500 group-hover:bg-blue-600 transition-colors"></div>
-                                                                <span className="font-semibold text-slate-900 text-sm truncate">{String(month || '')}</span>
-                                                              </div>
-                                                            </td>
-                                                            <td className="py-3 px-4">
-                                                              <div className="inline-flex items-center px-3 py-1 bg-gradient-to-r from-emerald-50 to-teal-50 border border-emerald-200/60 rounded-lg">
-                                                                <span className="font-semibold text-emerald-800 text-sm truncate">{String(funder || '')}</span>
-                                                              </div>
-                                                            </td>
-                                                            <td className="py-3 px-4">
-                                                              <div className="inline-flex items-center px-3 py-1 bg-slate-100 border border-slate-200 rounded-lg">
-                                                                <span className="font-medium text-slate-700 uppercase tracking-wide text-xs truncate">{String(freq || '')}</span>
-                                                              </div>
-                                                            </td>
-                                                            <td className="py-3 px-4 text-right">
-                                                              <div className="inline-flex items-center px-3 py-1.5 bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-200/60 rounded-lg">
-                                                                <span className="font-bold text-blue-900 text-base tabular-nums">
-                                                                  {typeof amount === 'number' ? fmtCurrency2(amount) : (amount == null ? '—' : String(amount))}
-                                                                </span>
-                                                              </div>
-                                                            </td>
-                                                            <td className="py-3 px-4">
-                                                              <p className="text-slate-700 leading-snug text-sm">{String(notes || '')}</p>
-                                                            </td>
-                                                          </tr>
-                                                        );
-                                                      })}
-                                                    </tbody>
-                                                  </table>
-                                                </div>
-                                              </div>
-                                            </div>
-                                          );
-                                        })}
-                                    </div>
-                                  )}
-                                  <div className="mt-8 pt-6 border-t border-slate-200">
-                                    <div className="flex justify-between items-center text-sm text-slate-500">
-                                      <div className="flex items-center gap-2">
-                                        <Calendar className="w-4 h-4" />
-                                        <span>Statement Period: {row.month || 'Not Specified'}</span>
-                                      </div>
-                                      <span>Generated: {new Date().toLocaleDateString()}</span>
-                                    </div>
-                                  </div>
-                                </div>
-                              )}
-                            </div>
-                          );
-                        })}
+                                      </td>
+                                      <td className="py-3 px-4 border-r border-slate-100 last:border-r-0">
+                                        <span className="inline-flex items-center px-3 py-1.5 text-sm font-semibold bg-gradient-to-r from-emerald-50 to-green-50 text-emerald-800 border border-emerald-200 rounded-lg shadow-sm">
+                                          {funder || '—'}
+                                        </span>
+                                      </td>
+                                      <td className="py-3 px-4 border-r border-slate-100 last:border-r-0">
+                                        <span className="inline-flex items-center px-3 py-1.5 text-sm font-semibold bg-gradient-to-r from-amber-50 to-yellow-50 text-amber-800 border border-amber-200 rounded-lg shadow-sm uppercase tracking-wide">
+                                          {freq || '—'}
+                                        </span>
+                                      </td>
+                                      <td className="py-3 px-4 text-right border-r border-slate-100 last:border-r-0">
+                                        <span className="inline-flex items-center px-3 py-1.5 text-sm font-bold bg-gradient-to-r from-indigo-50 to-blue-50 text-indigo-900 border border-indigo-200 rounded-lg shadow-sm font-mono">
+                                          {typeof amountVal === 'number' ? fmtCurrency2(amountVal) : (amountVal == null ? '—' : String(amountVal))}
+                                        </span>
+                                      </td>
+                                      <td className="py-3 px-4">
+                                        <div className="max-w-lg">
+                                          <p className="text-sm text-slate-700 leading-relaxed" title={notes}>
+                                            {notes || '—'}
+                                          </p>
+                                        </div>
+                                      </td>
+                                    </tr>
+                                  );
+                                });
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
                       </div>
                     </div>
                   )}

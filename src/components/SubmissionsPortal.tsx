@@ -491,31 +491,12 @@ const SubmissionsPortal: React.FC<SubmissionsPortalProps> = ({ initialStep, init
       goTo('matches');
       return;
     }
-    // Helper to parse numeric from possibly formatted strings
-    const num = (v: unknown) => {
-      if (typeof v === 'number') return v;
-      if (typeof v !== 'string') return NaN;
-      const cleaned = v.replace(/[^0-9.]/g, '');
-      const parts = cleaned.split('.');
-      const joined = parts.length > 2 ? `${parts[0]}.${parts.slice(1).join('')}` : cleaned;
-      const n = Number(joined);
-      return isNaN(n) ? NaN : n;
-    };
+    // No numeric mapping needed here anymore
 
+    // We no longer map intermediate details fields into the application here.
+    // Preserve the current application state as-is; only ID normalization happens below.
     const updated: AppData = {
       ...application,
-      // mapped updates from details
-      businessName: (details.dealName as string) || application.businessName,
-      industry: (details.industry as string) || application.industry,
-      // entityType from details maps to businessType if present on AppData
-      businessType: (details.entityType as string) || application.businessType,
-      creditScore: isNaN(num(details.creditScore)) ? application.creditScore : num(details.creditScore),
-      timeInBusiness: isNaN(num(details.timeInBiz)) ? application.timeInBusiness : num(details.timeInBiz),
-      monthlyRevenue: isNaN(num(details.avgMonthlyRevenue)) ? application.monthlyRevenue : num(details.avgMonthlyRevenue),
-      annualRevenue: isNaN(num(details.grossAnnualRevenue)) ? application.annualRevenue : num(details.grossAnnualRevenue),
-      monthlyDeposits: isNaN(num(details.avgMonthlyDepositCount)) ? (application.monthlyDeposits ?? 0) : num(details.avgMonthlyDepositCount),
-      requestedAmount: isNaN(num(details.requestedAmount)) ? application.requestedAmount : num(details.requestedAmount),
-      // keep others as-is
     };
 
     setApplication(updated);
