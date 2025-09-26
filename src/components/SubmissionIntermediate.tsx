@@ -70,42 +70,33 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
       // Professional Header with Company Branding
       const appId = (details.applicationId as string) || (initial?.applicationId as string) || (details.id as string) || (initial?.id as string) || '';
       
-      // Header background with gradient effect
-      pdf.setFillColor(30, 58, 138); // Professional blue
-      pdf.rect(0, 0, pageWidth, 90, 'F');
+      // Premium header with sophisticated typography
+      pdf.setTextColor(25, 25, 25);
+      pdf.setFont('times', 'bold');
+      pdf.setFontSize(22);
+      pdf.text('FINANCIAL ANALYSIS REPORT', marginX, 45);
       
-      // Add subtle border
-      pdf.setDrawColor(255, 255, 255);
-      pdf.setLineWidth(1);
-      pdf.line(0, 90, pageWidth, 90);
+      // Sophisticated double underline
+      pdf.setDrawColor(25, 25, 25);
+      pdf.setLineWidth(2.5);
+      pdf.line(marginX, 52, marginX + 280, 52);
+      pdf.setLineWidth(0.8);
+      pdf.line(marginX, 55, marginX + 280, 55);
       
-      // Main title
-      pdf.setTextColor(255, 255, 255);
-      pdf.setFont('helvetica', 'bold');
-      pdf.setFontSize(24);
-      pdf.text('FINANCIAL ANALYSIS REPORT', marginX, 40);
+      // Elegant date styling
+      pdf.setFont('times', 'italic');
+      pdf.setFontSize(11);
+      pdf.setTextColor(60, 60, 60);
       
-      // Subtitle
-      pdf.setFont('helvetica', 'normal');
-      pdf.setFontSize(14);
-      pdf.text('Merchant Cash Advance Application Review', marginX, 65);
-      
-      // Application info on right with better formatting
-      pdf.setFont('helvetica', 'normal');
-      pdf.setFontSize(10);
-      if (appId) {
-        const appText = `Application: ${appId}`;
-        pdf.text(appText, pageWidth - marginX - pdf.getTextWidth(appText), 40);
-      }
       const dateText = new Date().toLocaleDateString('en-US', { 
-        weekday: 'long',
         year: 'numeric', 
         month: 'long', 
         day: 'numeric' 
       });
-      pdf.text(dateText, pageWidth - marginX - pdf.getTextWidth(dateText), 55);
+      const dateWidth = pdf.getTextWidth(dateText);
+      pdf.text(dateText, pageWidth - marginX - dateWidth, 45);
       
-      cursorY = 120;
+      cursorY = 75;
 
       // Gather base metrics used across sections
       const docsCount = Array.isArray(dbDocs) ? dbDocs.length : 0;
@@ -122,18 +113,17 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
 
       // 1) Financial Overview Section - only show if data exists
       if (fo.length > 0) {
-        // Modern section header
-        pdf.setFillColor(248, 250, 252);
-        pdf.rect(marginX - 10, cursorY - 5, pageWidth - 2 * marginX + 20, 30, 'F');
-        pdf.setDrawColor(30, 58, 138);
-        pdf.setLineWidth(3);
-        pdf.line(marginX - 10, cursorY - 5, marginX - 10, cursorY + 25);
-        
-        pdf.setTextColor(30, 58, 138);
-        pdf.setFont('helvetica', 'bold');
-        pdf.setFontSize(18);
-        pdf.text('FINANCIAL OVERVIEW', marginX, cursorY + 15);
-        cursorY += 45;
+        // Elegant section header with premium styling
+        pdf.setFillColor(245, 247, 250);
+        pdf.rect(marginX - 8, cursorY - 10, pageWidth - 2 * marginX + 16, 24, 'F');
+        pdf.setDrawColor(180, 190, 200);
+        pdf.setLineWidth(0.5);
+        pdf.rect(marginX - 8, cursorY - 10, pageWidth - 2 * marginX + 16, 24, 'S');
+        pdf.setTextColor(30, 40, 50);
+        pdf.setFont('times', 'bold');
+        pdf.setFontSize(14);
+        pdf.text('FINANCIAL OVERVIEW', marginX, cursorY + 6);
+        cursorY += 28;
         
         // Only show actual data from the system
         const foRows = fo
@@ -150,76 +140,102 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
         autoTable(pdf, {
           startY: cursorY,
           styles: { 
-            font: 'helvetica', 
-            fontSize: 11, 
+            font: 'times', 
+            fontSize: 10, 
             cellPadding: 10,
-            lineColor: [226, 232, 240],
-            lineWidth: 1
+            lineColor: [200, 210, 220],
+            lineWidth: 0.8,
+            textColor: [30, 30, 30]
           },
           headStyles: { 
-            fillColor: [30, 58, 138], 
+            fillColor: [52, 73, 94], 
             textColor: [255, 255, 255],
-            fontSize: 12,
+            fontSize: 11,
             fontStyle: 'bold',
-            halign: 'center'
+            halign: 'center',
+            font: 'times',
+            cellPadding: 12
           },
-          alternateRowStyles: { fillColor: [248, 250, 252] },
+          alternateRowStyles: { fillColor: [252, 253, 254] },
+          bodyStyles: {
+            lineColor: [220, 230, 240],
+            lineWidth: 0.5
+          },
           theme: 'striped',
           head: [['Period', 'Total Deposits', 'Net Revenue', 'Negative Days', 'Source Document']],
           body: foRows,
           columnStyles: {
-            0: { halign: 'center', fontStyle: 'bold', fillColor: [241, 245, 249] },
-            1: { halign: 'right', fontStyle: 'bold' },
-            2: { halign: 'right', fontStyle: 'bold' },
-            3: { halign: 'center' },
-            4: { halign: 'left', fontSize: 10, textColor: [71, 85, 105] }
-          }
+            0: { halign: 'center', fontStyle: 'bold', fontSize: 10, font: 'times', fillColor: [250, 251, 252] },
+            1: { halign: 'right', fontSize: 10, fontStyle: 'bold', font: 'times', textColor: [22, 101, 52] },
+            2: { halign: 'right', fontSize: 10, fontStyle: 'bold', font: 'times', textColor: [22, 101, 52] },
+            3: { halign: 'center', fontSize: 10, font: 'times' },
+            4: { halign: 'left', fontSize: 9, textColor: [75, 85, 99], font: 'times', fontStyle: 'italic' }
+          },
+          tableWidth: 'auto',
+          margin: { left: marginX, right: marginX }
         });
-        cursorY = (pdf as any).lastAutoTable.finalY + 35;
+        cursorY = (pdf as any).lastAutoTable.finalY + 15;
       }
 
       // 2) Transaction Analysis - only show if data exists
       if (Array.isArray(mcaSummaryRows) && mcaSummaryRows.length > 0) {
-        // Modern section header
-        pdf.setFillColor(248, 250, 252);
-        pdf.rect(marginX - 10, cursorY - 5, pageWidth - 2 * marginX + 20, 30, 'F');
-        pdf.setDrawColor(30, 58, 138);
-        pdf.setLineWidth(3);
-        pdf.line(marginX - 10, cursorY - 5, marginX - 10, cursorY + 25);
-        
-        pdf.setTextColor(30, 58, 138);
-        pdf.setFont('helvetica', 'bold');
-        pdf.setFontSize(18);
-        pdf.text('TRANSACTION ANALYSIS', marginX, cursorY + 15);
-        cursorY += 45;
+        // Elegant section header with premium styling
+        pdf.setFillColor(245, 247, 250);
+        pdf.rect(marginX - 8, cursorY - 10, pageWidth - 2 * marginX + 16, 24, 'F');
+        pdf.setDrawColor(180, 190, 200);
+        pdf.setLineWidth(0.5);
+        pdf.rect(marginX - 8, cursorY - 10, pageWidth - 2 * marginX + 16, 24, 'S');
+        pdf.setTextColor(30, 40, 50);
+        pdf.setFont('times', 'bold');
+        pdf.setFontSize(14);
+        pdf.text('Funders Analysis', marginX, cursorY + 6);
+        cursorY += 28;
 
-        // Extract only real transaction data from system
-        const txRows: Array<[string, string, string, string, string]> = [];
+        // Extract transaction data using EXACT same logic as frontend UI
+        const txRows: Array<[string, string, string, string, string, string]> = [];
         (mcaSummaryRows || []).forEach((row: any) => {
           const raw = row && row.__mca_raw;
           const itemsArray = Array.isArray(raw) ? raw : [];
           const itemsFromObject = (!Array.isArray(raw) && raw && typeof raw === 'object')
-            ? (Object.values(raw).flat().filter(Boolean) as any[])
+            ? Object.values(raw).flat().filter(Boolean)
             : [];
-          const items = (itemsArray.length ? itemsArray : itemsFromObject).filter((it: any) => it && typeof it === 'object');
+          const items: any[] = (itemsArray.length ? itemsArray : itemsFromObject).filter((it: any) => it && typeof it === 'object');
+          
           items.forEach((it: any) => {
-            const period = String((it?.month ?? it?.period ?? '') || '').trim();
-            const funder = String(it?.funder ?? '').trim();
-            const freq = String(it?.dailyweekly ?? it?.debit_frequency ?? '').trim();
+            const period = String((it?.month ?? it?.period ?? '') || '');
+            const funder = String(it?.funder ?? '');
+            const freq = String(it?.dailyweekly ?? it?.debit_frequency ?? '');
             const amountVal = it?.amount;
+            const notes = String(it?.notes ?? '');
+            
+            // EXACT same calculation as frontend UI (lines 2654-2656)
             const amountNum = (typeof amountVal === 'number') ? amountVal : parseAmount(String(amountVal ?? ''));
             const isWeekly = /weekly/i.test(freq);
             const displayAmount = isWeekly ? (Number(amountNum) / 5) : Number(amountNum);
-            const notes = String(it?.notes ?? '').trim();
             
-            // Only add rows with actual data
-            if (period || funder || (Number.isFinite(displayAmount) && displayAmount > 0)) {
+            // Split amounts for color styling
+            if (isWeekly) {
+              const originalAmount = Number.isFinite(Number(amountNum)) ? fmtCurrency2(Number(amountNum)) : (amountVal == null ? '—' : String(amountVal));
+              const dailyAmount = Number.isFinite(displayAmount) ? fmtCurrency2(displayAmount) : (amountVal == null ? '—' : String(amountVal));
+              
               txRows.push([
-                period || 'N/A',
-                funder || 'Unknown',
-                freq ? (isWeekly ? 'Weekly (Daily Equiv.)' : freq) : 'N/A',
-                Number.isFinite(displayAmount) ? fmtCurrency2(Number(displayAmount)) : '$0.00',
-                notes || 'No additional notes',
+                period || '—',
+                funder || '—',
+                'WEEKLY = DAILY',
+                originalAmount, // Will be styled gray
+                dailyAmount,    // Will be styled green
+                notes || '—',
+              ]);
+            } else {
+              const singleAmount = Number.isFinite(displayAmount) ? fmtCurrency2(displayAmount) : (amountVal == null ? '—' : String(amountVal));
+              
+              txRows.push([
+                period || '—',
+                funder || '—',
+                freq || '—',
+                '—', // No original amount for non-weekly
+                singleAmount, // Will be styled green
+                notes || '—',
               ]);
             }
           });
@@ -227,53 +243,48 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
 
         // Only show table if we have actual transaction data
         if (txRows.length > 0) {
-          const MAX_ROWS = 50; // Reduced for better readability
+          const MAX_ROWS = 10; // Reduced significantly for single page
           const clipped = txRows.slice(0, MAX_ROWS);
           
           autoTable(pdf, {
             startY: cursorY,
             styles: { 
-              font: 'helvetica', 
+              font: 'times', 
               fontSize: 10, 
-              cellPadding: 8,
-              lineColor: [226, 232, 240],
-              lineWidth: 1
+              cellPadding: 10,
+              lineColor: [200, 210, 220],
+              lineWidth: 0.8,
+              textColor: [30, 30, 30]
             },
             headStyles: { 
-              fillColor: [30, 58, 138], 
+              fillColor: [52, 73, 94], 
               textColor: [255, 255, 255],
               fontSize: 11,
               fontStyle: 'bold',
-              halign: 'center'
+              halign: 'center',
+              font: 'times',
+              cellPadding: 12
             },
-            alternateRowStyles: { fillColor: [248, 250, 252] },
+            alternateRowStyles: { fillColor: [252, 253, 254] },
+            bodyStyles: {
+              lineColor: [220, 230, 240],
+              lineWidth: 0.5
+            },
             theme: 'striped',
-            head: [['Period', 'Funding Source', 'Frequency', 'Daily Amount', 'Notes']],
+            head: [['Period', 'Funding Source', 'Frequency', 'Original Amount', 'Daily Amount', 'Notes']],
             body: clipped,
             columnStyles: {
-              0: { halign: 'center', fontStyle: 'bold', fillColor: [241, 245, 249] },
-              1: { halign: 'left', fontStyle: 'bold' },
-              2: { halign: 'center' },
-              3: { halign: 'right', fontStyle: 'bold', textColor: [22, 101, 52] },
-              4: { halign: 'left', fontSize: 9, textColor: [71, 85, 105] }
+              0: { halign: 'center', fontStyle: 'bold', fontSize: 10, font: 'times', fillColor: [250, 251, 252] },
+              1: { halign: 'left', fontSize: 10, font: 'times', fontStyle: 'bold', fillColor: [248, 250, 252] },
+              2: { halign: 'center', fontSize: 10, font: 'times' },
+              3: { halign: 'right', fontStyle: 'bold', fontSize: 10, textColor: [120, 120, 120], font: 'times' },
+              4: { halign: 'right', fontStyle: 'bold', fontSize: 10, textColor: [22, 101, 52], font: 'times' },
+              5: { halign: 'left', fontSize: 9, textColor: [75, 85, 99], font: 'times', fontStyle: 'italic' }
             },
-            didDrawPage: () => {
-              // Clean professional footer
-              const pageNum = pdf.getNumberOfPages();
-              pdf.setFillColor(248, 250, 252);
-              pdf.rect(0, pageHeight - 25, pageWidth, 25, 'F');
-              pdf.setDrawColor(226, 232, 240);
-              pdf.setLineWidth(1);
-              pdf.line(0, pageHeight - 25, pageWidth, pageHeight - 25);
-              
-              pdf.setTextColor(100, 116, 139);
-              pdf.setFont('helvetica', 'normal');
-              pdf.setFontSize(9);
-              pdf.text(`Page ${pageNum}`, pageWidth - marginX, pageHeight - 10, { align: 'right' });
-              pdf.text('Financial Analysis Report', marginX, pageHeight - 10);
-            },
+            tableWidth: 'auto',
+            margin: { left: marginX, right: marginX },
           });
-          cursorY = (pdf as any).lastAutoTable.finalY + 30;
+          cursorY = (pdf as any).lastAutoTable.finalY + 15;
           
           if (txRows.length > MAX_ROWS) {
             pdf.setFont('helvetica', 'italic');
@@ -287,18 +298,17 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
 
       // 3) Executive Summary - only show if we have meaningful data
       if (fo.length > 0 || (Array.isArray(mcaSummaryRows) && mcaSummaryRows.length > 0)) {
-        // Modern section header
-        pdf.setFillColor(248, 250, 252);
-        pdf.rect(marginX - 10, cursorY - 5, pageWidth - 2 * marginX + 20, 30, 'F');
-        pdf.setDrawColor(30, 58, 138);
-        pdf.setLineWidth(3);
-        pdf.line(marginX - 10, cursorY - 5, marginX - 10, cursorY + 25);
-        
-        pdf.setTextColor(30, 58, 138);
-        pdf.setFont('helvetica', 'bold');
-        pdf.setFontSize(18);
-        pdf.text('EXECUTIVE SUMMARY', marginX, cursorY + 15);
-        cursorY += 45;
+        // Elegant section header with premium styling
+        pdf.setFillColor(245, 247, 250);
+        pdf.rect(marginX - 8, cursorY - 10, pageWidth - 2 * marginX + 16, 24, 'F');
+        pdf.setDrawColor(180, 190, 200);
+        pdf.setLineWidth(0.5);
+        pdf.rect(marginX - 8, cursorY - 10, pageWidth - 2 * marginX + 16, 24, 'S');
+        pdf.setTextColor(30, 40, 50);
+        pdf.setFont('times', 'bold');
+        pdf.setFontSize(14);
+        pdf.text('MCA SUMMARY', marginX, cursorY + 6);
+        cursorY += 28;
         
         // Compute Financial Analysis metrics from actual system data
         let totalFunders = 0;
@@ -343,10 +353,9 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
         
         // Document metrics (only if we have documents)
         if (docsCount > 0) {
-          summaryData.push(['DOCUMENT ANALYSIS', '']);
-          summaryData.push(['Documents Processed', String(docsCount)]);
-          if (avgDeposits > 0) summaryData.push(['Average Monthly Deposits', fmtCurrency2(avgDeposits)]);
-          if (avgRevenue > 0) summaryData.push(['Average Net Revenue', fmtCurrency2(avgRevenue)]);
+          summaryData.push(['Documents Uploaded', String(docsCount)]);
+          if (avgDeposits > 0) summaryData.push(['Total Average Deposits', fmtCurrency2(avgDeposits)]);
+          if (avgRevenue > 0) summaryData.push(['Total Revenue (Average)', fmtCurrency2(avgRevenue)]);
           if (sumNegDays > 0) summaryData.push(['Total Negative Days', String(sumNegDays)]);
           summaryData.push(['', '']); // Spacer
         }
@@ -354,15 +363,15 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
         // Risk assessment (only if we have transaction data)
         if (totalFunders > 0) {
           summaryData.push(['RISK ASSESSMENT', '']);
-          summaryData.push(['Daily Funding Exposure', fmtCurrency2(totalFunders)]);
-          summaryData.push(['Risk Multiplier', `× ${multiplier}`]);
-          summaryData.push(['Total Risk Exposure', fmtCurrency2(subtotal)]);
-          if (ratio > 0) summaryData.push(['Coverage Ratio', ratio.toFixed(2)]);
+          summaryData.push(['Total Amount of Funders', fmtCurrency2(totalFunders)]);
+          summaryData.push(['Calculation Multiplier', `× ${multiplier}`]);
+          summaryData.push(['Amount of Funders x Multiplier', fmtCurrency2(subtotal)]);
+          if (ratio > 0) summaryData.push(['Ratio (Total ÷ Revenue)', ratio.toFixed(2)]);
           summaryData.push(['', '']); // Spacer
           
           // Final recommendation
           summaryData.push(['RECOMMENDATION', '']);
-          summaryData.push(['Suggested Holdback Rate', `${holdbackPct.toFixed(1)}%`]);
+          summaryData.push(['Holdback Rate', `${holdbackPct.toFixed(1)}%`]);
         }
 
         // Only show summary table if we have data
@@ -370,47 +379,79 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
           autoTable(pdf, {
             startY: cursorY,
             styles: { 
-              font: 'helvetica', 
-              fontSize: 12, 
+              font: 'times', 
+              fontSize: 10, 
               cellPadding: 10,
-              lineColor: [226, 232, 240],
-              lineWidth: 1
+              lineColor: [200, 210, 220],
+              lineWidth: 0.8,
+              textColor: [30, 30, 30]
             },
             headStyles: { 
-              fillColor: [30, 58, 138], 
+              fillColor: [52, 73, 94], 
               textColor: [255, 255, 255],
-              fontSize: 13,
+              fontSize: 11,
               fontStyle: 'bold',
-              halign: 'center'
+              halign: 'center',
+              font: 'times',
+              cellPadding: 12
             },
-            alternateRowStyles: { fillColor: [248, 250, 252] },
+            alternateRowStyles: { fillColor: [252, 253, 254] },
+            bodyStyles: {
+              lineColor: [220, 230, 240],
+              lineWidth: 0.5
+            },
             theme: 'striped',
             head: [['Analysis Category', 'Value']],
             body: summaryData,
             columnStyles: {
-              0: { halign: 'left', fontStyle: 'bold' },
-              1: { halign: 'right', fontStyle: 'bold' }
+              0: { halign: 'left', fontStyle: 'bold', fontSize: 10, font: 'times', fillColor: [250, 251, 252] },
+              1: { halign: 'right', fontSize: 10, fontStyle: 'bold', font: 'times' }
             },
+            tableWidth: 'auto',
+            margin: { left: marginX, right: marginX },
             didParseCell: (data: any) => {
               const rowIndex = data.row.index;
               const row = summaryData[rowIndex];
               
-              // Style section headers
+              // Style section headers with professional background
               if (row && (row[0] === 'DOCUMENT ANALYSIS' || row[0] === 'RISK ASSESSMENT' || row[0] === 'RECOMMENDATION')) {
-                data.cell.styles.fillColor = [30, 58, 138];
+                data.cell.styles.fillColor = [52, 73, 94];
                 data.cell.styles.textColor = [255, 255, 255];
-                data.cell.styles.fontSize = 11;
+                data.cell.styles.fontSize = 10;
+                data.cell.styles.fontStyle = 'bold';
               }
               
-              // Highlight the final recommendation
-              if (row && row[0] === 'Suggested Holdback Rate' && data.column.index === 1) {
-                data.cell.styles.textColor = [220, 38, 127];
-                data.cell.styles.fontSize = 14;
+              // Highlight the final recommendation with elegant green
+              if (row && row[0] === 'Holdback Rate' && data.column.index === 1) {
+                data.cell.styles.textColor = [20, 83, 45];
+                data.cell.styles.fontSize = 12;
                 data.cell.styles.fontStyle = 'bold';
+                data.cell.styles.font = 'times';
               }
             }
           });
         }
+      }
+
+      // Draw a consistent footer on every page
+      const drawFooter = (pageNumber: number) => {
+        const footerHeight = 25;
+        pdf.setFillColor(248, 250, 252);
+        pdf.rect(0, pageHeight - footerHeight, pageWidth, footerHeight, 'F');
+        pdf.setDrawColor(226, 232, 240);
+        pdf.setLineWidth(1);
+        pdf.line(0, pageHeight - footerHeight, pageWidth, pageHeight - footerHeight);
+        pdf.setTextColor(51, 65, 85);
+        pdf.setFont('helvetica', 'normal');
+        pdf.setFontSize(9);
+        pdf.text('Financial Analysis Report', marginX, pageHeight - 10);
+        pdf.text(`Page ${pageNumber}` as any, pageWidth - marginX, pageHeight - 10, { align: 'right' });
+      };
+
+      const totalPages = pdf.getNumberOfPages();
+      for (let i = 1; i <= totalPages; i++) {
+        pdf.setPage(i);
+        drawFooter(i);
       }
 
       const fileName = `mca-application${appId ? '-' + appId : ''}-office-report.pdf`;
