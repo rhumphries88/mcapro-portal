@@ -203,6 +203,8 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
           
           items.forEach((it: any) => {
             const period = String((it?.month ?? it?.period ?? '') || '');
+            const periodNorm = normalizePeriodToYYYYMM(period);
+            if (periodNorm !== lastMonthKey) return; // Filter to last month only
             const funder = String(it?.funder ?? '');
             const freq = String(it?.dailyweekly ?? it?.debit_frequency ?? '');
             const amountVal = it?.amount;
@@ -310,7 +312,7 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
         pdf.text('MCA SUMMARY', marginX, cursorY + 6);
         cursorY += 28;
         
-        // Compute Financial Analysis metrics from actual system data
+        // Compute Financial Analysis metrics from actual system data (previous month only)
         let totalFunders = 0;
         try {
           (mcaSummaryRows || []).forEach((row: any) => {
@@ -318,6 +320,9 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
             const arr = Array.isArray(raw) ? raw : (!Array.isArray(raw) && raw && typeof raw === 'object' ? (Object.values(raw).flat().filter(Boolean) as any[]) : []);
             const items: any[] = (Array.isArray(arr) ? arr : []).filter((it: any) => it && typeof it === 'object');
             for (const it of items) {
+              const periodRaw = String((it?.month ?? it?.period ?? '') || '');
+              const periodNorm = normalizePeriodToYYYYMM(periodRaw);
+              if (periodNorm !== lastMonthKey) continue; // align with UI filter
               const freq = String(it?.dailyweekly ?? it?.debit_frequency ?? '');
               const amountVal = it?.amount;
               const amountNum = (typeof amountVal === 'number') ? amountVal : parseAmount(String(amountVal ?? ''));
@@ -629,6 +634,47 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
   const [categoryDropdownOpen, setCategoryDropdownOpen] = useState<boolean>(false);
   // Anchor to scroll the modal content to the data tables
   const tablesStartRef = useRef<HTMLDivElement | null>(null);
+  
+  // Tab state for Bank Statement Analysis table
+  const [activeTab, setActiveTab] = useState<'consistent' | 'single'>('consistent');
+
+  // Normalize "Period" strings to YYYY-MM and compute last-month key
+  const lastMonthKey = React.useMemo(() => {
+    const d = new Date();
+    d.setDate(1);
+    d.setMonth(d.getMonth() - 1);
+    const ym = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+    return ym;
+  }, []);
+
+  // Helper: normalize period label to YYYY-MM so we can filter to last month
+  const normalizePeriodToYYYYMM = React.useCallback((periodRaw: string): string | null => {
+    if (!periodRaw) return null;
+    const s = String(periodRaw).trim();
+    if (/^\d{4}-\d{2}$/.test(s)) return s;
+    const m = s.match(/^(January|February|March|April|May|June|July|August|September|October|November|December|Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)\s+(\d{4})$/i);
+    if (m) {
+      const name = m[1].toLowerCase();
+      const year = Number(m[2]);
+      const map: Record<string, number> = {
+        january: 1, jan: 1,
+        february: 2, feb: 2,
+        march: 3, mar: 3,
+        april: 4, apr: 4,
+        may: 5,
+        june: 6, jun: 6,
+        july: 7, jul: 7,
+        august: 8, aug: 8,
+        september: 9, sep: 9, sept: 9,
+        october: 10, oct: 10,
+        november: 11, nov: 11,
+        december: 12, dec: 12,
+      };
+      const month = map[name];
+      if (month) return `${year}-${String(month).padStart(2, '0')}`;
+    }
+    return null;
+  }, []);
 
   // Track dismissal of the blue "New upload" badge per filename
   const [newUploadBadgeDismissed, setNewUploadBadgeDismissed] = useState<Set<string>>(new Set());
@@ -923,6 +969,78 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
     filtered.sort((a, b) => Date.parse(a.month + '-01') - Date.parse(b.month + '-01'));
     return filtered;
   }, [dbDocs]);
+
+  // Classify previous-month MCA items into Consistent vs Single groups
+  type MCAItem = {
+    period: string;
+    funder: string;
+    freq: string;
+    amountVal: any;
+    amountNum: number;
+    isWeekly: boolean;
+    displayAmount: number;
+    notes: string;
+  };
+
+  const { consistentItems, singleItems } = React.useMemo(() => {
+    const items: MCAItem[] = [];
+    (dbDocs || []).forEach((d: any) => {
+      try {
+        const ej = (d as any)?.extracted_json as any | undefined;
+        let sum: any = (d as any)?.mca_summary ?? (ej && (ej as any).mca_summary) ?? null;
+        if (sum && typeof sum === 'string') { try { sum = JSON.parse(sum); } catch { sum = null; } }
+        if (!sum || typeof sum !== 'object') return;
+        const raw = sum;
+        const itemsArray = Array.isArray(raw) ? raw : [];
+        const itemsFromObject = (!Array.isArray(raw) && raw && typeof raw === 'object')
+          ? (Object.values(raw).flat().filter(Boolean) as any[])
+          : [];
+        const list: any[] = (itemsArray.length ? itemsArray : itemsFromObject).filter((it: any) => it && typeof it === 'object');
+        for (const it of list) {
+          const periodRaw = String((it?.month ?? it?.period ?? '') || '');
+          const periodNorm = normalizePeriodToYYYYMM(periodRaw);
+          if (periodNorm !== lastMonthKey) continue;
+          const funder = String(it?.funder ?? '');
+          const freq = String(it?.dailyweekly ?? it?.debit_frequency ?? '');
+          const amountVal = it?.amount;
+          const amountNum = (typeof amountVal === 'number') ? amountVal : parseAmount(String(amountVal ?? ''));
+          const isWeekly = /weekly/i.test(freq);
+          const displayAmount = isWeekly ? (Number(amountNum) / 5) : Number(amountNum);
+          const notes = String(it?.notes ?? '');
+          items.push({
+            period: periodRaw,
+            funder,
+            freq,
+            amountVal,
+            amountNum: Number(amountNum),
+            isWeekly,
+            displayAmount: Number(displayAmount),
+            notes,
+          });
+        }
+      } catch { /* ignore row */ }
+    });
+
+    // Count occurrences per funder (case-insensitive)
+    const counts: Record<string, number> = {};
+    for (const it of items) {
+      const key = it.funder.trim().toLowerCase() || '__unknown__';
+      counts[key] = (counts[key] || 0) + 1;
+    }
+
+    const recurringByNotes = (notes: string) => /recurr|weekly|every\s+(mon|tue|wed|thu|fri|sat|sun)|bi-?weekly|monthly/i.test(notes || '');
+
+    const consistent: MCAItem[] = [];
+    const single: MCAItem[] = [];
+    for (const it of items) {
+      const key = it.funder.trim().toLowerCase() || '__unknown__';
+      const times = counts[key] || 0;
+      if (times >= 2 || recurringByNotes(it.notes)) consistent.push(it);
+      else single.push(it);
+    }
+
+    return { consistentItems: consistent, singleItems: single };
+  }, [dbDocs, lastMonthKey, normalizePeriodToYYYYMM]);
 
   // Derive MCA summary rows from application_documents.mca_summary (fallback to extracted_json.mca_summary)
   const mcaSummaryRows = React.useMemo(() => {
@@ -2610,9 +2728,9 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                   {(Array.isArray(mcaSummaryRows) && mcaSummaryRows.length > 0) && (
                     <div className="mb-6">
                       <div className="bg-white border border-slate-200 rounded-xl shadow-lg overflow-hidden">
-                        {/* Enhanced Header */}
+                        {/* Enhanced Header with Tabs */}
                         <div className="px-5 py-4 bg-gradient-to-r from-slate-50 via-blue-50 to-indigo-50 border-b border-slate-200">
-                          <div className="flex items-center justify-between">
+                          <div className="flex items-center justify-between mb-4">
                             <div className="flex items-center gap-4">
                               <div className="w-10 h-10 bg-gradient-to-br from-blue-600 to-indigo-600 rounded-lg flex items-center justify-center shadow-md">
                                 <FileText className="w-5 h-5 text-white" />
@@ -2629,6 +2747,30 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                                 <span className="text-xs font-medium text-emerald-700">{mcaSummaryRows.length} Files Processed</span>
                               </div>
                             </div>
+                          </div>
+                          
+                          {/* Tab Buttons */}
+                          <div className="flex items-center gap-2">
+                            <button
+                              onClick={() => setActiveTab('consistent')}
+                              className={`px-4 py-2 text-sm font-semibold rounded-lg transition-all duration-200 ${
+                                activeTab === 'consistent'
+                                  ? 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-md'
+                                  : 'bg-white text-slate-600 border border-slate-200 hover:bg-slate-50 hover:text-slate-800'
+                              }`}
+                            >
+                              Consistent Payment
+                            </button>
+                            <button
+                              onClick={() => setActiveTab('single')}
+                              className={`px-4 py-2 text-sm font-semibold rounded-lg transition-all duration-200 ${
+                                activeTab === 'single'
+                                  ? 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-md'
+                                  : 'bg-white text-slate-600 border border-slate-200 hover:bg-slate-50 hover:text-slate-800'
+                              }`}
+                            >
+                              Single Payment
+                            </button>
                           </div>
                         </div>
                         
@@ -2669,28 +2811,22 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                                 </th>
                               </tr>
                             </thead>
-                            {(() => { let amountColumnTotal = 0; return (
+                            {(() => { 
+                              const selected = activeTab === 'consistent' ? consistentItems : singleItems;
+                              let amountColumnTotal = 0; 
+                              return (
                             <tbody className="divide-y divide-slate-100">
-                              {mcaSummaryRows.map((row: any, index: number) => {
-                                const raw = row && row.__mca_raw;
-                                const itemsArray = Array.isArray(raw) ? raw : [];
-                                const itemsFromObject = (!Array.isArray(raw) && raw && typeof raw === 'object')
-                                  ? Object.values(raw).flat().filter(Boolean)
-                                  : [];
-                                const items: any[] = (itemsArray.length ? itemsArray : itemsFromObject).filter((it: any) => it && typeof it === 'object');
-                                return items.map((it: any, idx: number) => {
-                                  const period = String((it?.month ?? it?.period ?? '') || '');
-                                  const funder = String(it?.funder ?? '');
-                                  const freq = String(it?.dailyweekly ?? it?.debit_frequency ?? '');
-                                  const amountVal = it?.amount;
-                                  const notes = String(it?.notes ?? '');
-                                  // When frequency is WEEKLY, convert amount to a daily equivalent by dividing by 5
-                                  const amountNum = (typeof amountVal === 'number') ? amountVal : parseAmount(String(amountVal ?? ''));
-                                  const isWeekly = /weekly/i.test(freq);
-                                  const displayAmount = isWeekly ? (Number(amountNum) / 5) : Number(amountNum);
+                              {selected.map((it: any, idx: number) => {
+                                  const period = String(it?.period || '');
+                                  const funder = String(it?.funder || '');
+                                  const freq = String(it?.freq || '');
+                                  const amountNum = Number(it?.amountNum);
+                                  const isWeekly = !!it?.isWeekly;
+                                  const displayAmount = Number(it?.displayAmount);
+                                  const notes = String(it?.notes || '');
                                   amountColumnTotal += Number.isFinite(displayAmount) ? Number(displayAmount) : 0;
                                   return (
-                                    <tr key={`mca-${index}-${idx}`} className="hover:bg-gradient-to-r hover:from-blue-50/30 hover:to-indigo-50/30 transition-all duration-200 group">
+                                    <tr key={`mca-sel-${idx}`} className="hover:bg-gradient-to-r hover:from-blue-50/30 hover:to-indigo-50/30 transition-all duration-200 group">
                                       <td className="py-3 px-4 border-r border-slate-100 last:border-r-0">
                                         <div className="flex items-center gap-3">
                                           <span className="w-2 h-2 rounded-full bg-gradient-to-r from-blue-500 to-indigo-500 group-hover:scale-110 transition-transform" />
@@ -2717,16 +2853,16 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                                         {isWeekly ? (
                                           <div className="flex items-center justify-end gap-2">
                                             <span className="inline-flex items-center px-2 py-1 text-[11px] font-semibold bg-slate-100 text-slate-700 border border-slate-200 rounded font-mono" title="Original weekly amount">
-                                              {Number.isFinite(Number(amountNum)) ? fmtCurrency2(Number(amountNum)) : (amountVal == null ? '—' : String(amountVal))}
+                                              {Number.isFinite(Number(amountNum)) ? fmtCurrency2(Number(amountNum)) : (isNaN(amountNum) ? '—' : String(amountNum))}
                                             </span>
                                             <span className="text-slate-500 font-semibold">=</span>
                                             <span className="inline-flex items-center px-3 py-1.5 text-sm font-bold bg-gradient-to-r from-indigo-50 to-blue-50 text-indigo-900 border border-indigo-200 rounded-lg shadow-sm font-mono" title="Computed daily amount (weekly / 5)">
-                                              {Number.isFinite(displayAmount) ? fmtCurrency2(displayAmount) : (amountVal == null ? '—' : String(amountVal))}
+                                              {Number.isFinite(displayAmount) ? fmtCurrency2(displayAmount) : (isNaN(displayAmount) ? '—' : String(displayAmount))}
                                             </span>
                                           </div>
                                         ) : (
                                           <span className="inline-flex items-center px-3 py-1.5 text-sm font-bold bg-gradient-to-r from-indigo-50 to-blue-50 text-indigo-900 border border-indigo-200 rounded-lg shadow-sm font-mono">
-                                            {Number.isFinite(displayAmount) ? fmtCurrency2(displayAmount) : (amountVal == null ? '—' : String(amountVal))}
+                                            {Number.isFinite(displayAmount) ? fmtCurrency2(displayAmount) : (isNaN(displayAmount) ? '—' : String(displayAmount))}
                                           </span>
                                         )}
                                       </td>
@@ -2739,30 +2875,21 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                                       </td>
                                     </tr>
                                   );
-                                });
-                              })}
+                                })}
                             </tbody>
                             ); })()}
                           </table>
                           {/* Receipt-style Summary */}
                           <div className="border-t border-slate-300">
                             {(() => {
+                              // Only show the receipt-style summary for Consistent Payment tab
+                              if (activeTab !== 'consistent') return null;
                               try {
-                                // Recompute total from mcaSummaryRows to ensure value here matches rendered rows
-                                const total = (mcaSummaryRows || []).reduce((sum: number, row: any) => {
-                                  const raw = row && row.__mca_raw;
-                                  const arr = Array.isArray(raw) ? raw : (!Array.isArray(raw) && raw && typeof raw === 'object' ? Object.values(raw).flat().filter(Boolean) : []);
-                                  const items: any[] = (Array.isArray(arr) ? arr : []).filter((it: any) => it && typeof it === 'object');
-                                  let sub = 0;
-                                  for (const it of items) {
-                                    const freq = String(it?.dailyweekly ?? it?.debit_frequency ?? '');
-                                    const amountVal = it?.amount;
-                                    const amountNum = (typeof amountVal === 'number') ? amountVal : parseAmount(String(amountVal ?? ''));
-                                    const isWeekly = /weekly/i.test(freq);
-                                    const displayAmount = isWeekly ? (Number(amountNum) / 5) : Number(amountNum);
-                                    sub += Number.isFinite(displayAmount) ? Number(displayAmount) : 0;
-                                  }
-                                  return sum + sub;
+                                // Compute total from the same selected items driving the table
+                                const selectedForTotal = activeTab === 'consistent' ? consistentItems : singleItems;
+                                const total = selectedForTotal.reduce((sum: number, it: any) => {
+                                  const val = Number(it?.displayAmount);
+                                  return sum + (Number.isFinite(val) ? val : 0);
                                 }, 0);
                                 const totalTimes20 = total * 20;
                                 // Calculate Total Revenue to match Financial Overview footer (average across documents)
