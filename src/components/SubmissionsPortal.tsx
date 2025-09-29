@@ -491,13 +491,30 @@ const SubmissionsPortal: React.FC<SubmissionsPortalProps> = ({ initialStep, init
       goTo('matches');
       return;
     }
-    // No numeric mapping needed here anymore
-
-    // We no longer map intermediate details fields into the application here.
-    // Preserve the current application state as-is; only ID normalization happens below.
+    
+    // Debug the values being passed
+    console.log('[SubmissionsPortal] Details from SubmissionIntermediate:', details);
+    console.log('[SubmissionsPortal] Current application values:', {
+      monthlyRevenue: application.monthlyRevenue,
+      creditScore: application.creditScore,
+      requestedAmount: application.requestedAmount
+    });
+    
+    // Update application with values from SubmissionIntermediate
     const updated: AppData = {
       ...application,
+      // Update monthlyRevenue, creditScore, and requestedAmount from details
+      monthlyRevenue: details.monthlyRevenue ? Number(details.monthlyRevenue) : application.monthlyRevenue,
+      creditScore: details.creditScore ? Number(details.creditScore) : application.creditScore,
+      requestedAmount: details.requestedAmount ? Number(details.requestedAmount) : application.requestedAmount,
     };
+    
+    // Debug the updated values
+    console.log('[SubmissionsPortal] Updated application values:', {
+      monthlyRevenue: updated.monthlyRevenue,
+      creditScore: updated.creditScore,
+      requestedAmount: updated.requestedAmount
+    });
 
     setApplication(updated);
 

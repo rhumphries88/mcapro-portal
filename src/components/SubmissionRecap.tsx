@@ -62,7 +62,8 @@ const SubmissionRecap: React.FC<SubmissionRecapProps> = ({
       smtpPort: '',
       smtpUser: '',
       smtpPassword: '',
-      fromEmail: application?.contactInfo?.email || ''
+      // Always start with empty fromEmail
+      fromEmail: ''
     };
     
     if (savedSettings) {
@@ -70,7 +71,9 @@ const SubmissionRecap: React.FC<SubmissionRecapProps> = ({
         const parsed = JSON.parse(savedSettings);
         return {
           ...parsed,
-          fromEmail: application?.contactInfo?.email || parsed.fromEmail
+          // Always use empty fromEmail and smtpUser
+          fromEmail: '',
+          smtpUser: ''
         };
       } catch (error) {
         console.error('Error parsing saved SMTP settings:', error);
@@ -93,7 +96,7 @@ const SubmissionRecap: React.FC<SubmissionRecapProps> = ({
   // UI: show/hide password in Email Settings
   const [showPassword, setShowPassword] = useState<boolean>(false);
   // UI: simple validation state for SMTP form
-  const [smtpErrors, setSmtpErrors] = useState<{ host?: string; port?: string; user?: string; password?: string }>({});
+  const [smtpErrors, setSmtpErrors] = useState<{ host?: string; port?: string; user?: string; password?: string; fromEmail?: string }>({});
 
   const applyPreset = (preset: 'gmail_tls' | 'gmail_ssl' | 'outlook_tls') => {
     if (preset === 'gmail_tls') {
@@ -104,18 +107,18 @@ const SubmissionRecap: React.FC<SubmissionRecapProps> = ({
       setEmailSettings(prev => ({ ...prev, smtpHost: 'smtp.office365.com', smtpPort: '587' }));
     }
   };
-
+  
+  // Simple validation for SMTP settings
   const validateSmtp = () => {
-    const errs: typeof smtpErrors = {};
-    if (!emailSettings.smtpHost.trim()) errs.host = 'SMTP host is required.';
-    if (!emailSettings.smtpPort.trim()) errs.port = 'SMTP port is required.';
-    if (emailSettings.smtpPort && !/^[0-9]+$/.test(emailSettings.smtpPort.trim())) errs.port = 'Port must be numeric.';
-    if (!emailSettings.smtpUser.trim()) errs.user = 'Username is required.';
-    // password can be optional depending on provider, so do not force here
-    setSmtpErrors(errs);
-    return Object.keys(errs).length === 0;
+    const errors: { host?: string; port?: string; user?: string; password?: string; fromEmail?: string } = {};
+    if (!emailSettings.smtpHost) errors.host = 'SMTP Host is required';
+    if (!emailSettings.smtpPort) errors.port = 'SMTP Port is required';
+    if (!emailSettings.smtpUser) errors.user = 'Username is required.';
+    if (!emailSettings.smtpPassword) errors.password = 'Password is required.';
+    if (!emailSettings.fromEmail) errors.fromEmail = 'From Email is required.';
+    setSmtpErrors(errors);
+    return Object.keys(errors).length === 0;
   };
-
   // Load lenders from Supabase
   React.useEffect(() => {
     const loadLenders = async () => {
@@ -131,7 +134,7 @@ const SubmissionRecap: React.FC<SubmissionRecapProps> = ({
             id: application.id,
             business_name: application.businessName,
             owner_name: application.contactInfo.ownerName,
-            email: application.contactInfo.email,
+            email: emailSettings.fromEmail || '',
             phone: application.contactInfo.phone,
             address: application.contactInfo.address,
             ein: application.businessInfo.ein,
@@ -428,7 +431,7 @@ const SubmissionRecap: React.FC<SubmissionRecapProps> = ({
       .replace(/\{\{annualRevenue\}\}/g, application.financialInfo.annualRevenue.toLocaleString())
       .replace(/\{\{creditScore\}\}/g, application.creditScore.toString())
       .replace(/\{\{existingDebt\}\}/g, application.financialInfo.existingDebt.toLocaleString())
-      .replace(/\{\{email\}\}/g, application.contactInfo.email)
+      .replace(/\{\{email\}\}/g, emailSettings.fromEmail || 'Not provided')
       .replace(/\{\{phone\}\}/g, application.contactInfo.phone)
       .replace(/\{\{address\}\}/g, application.contactInfo.address)
       .replace(/\{\{lenderName\}\}/g, lender.name)
@@ -455,7 +458,7 @@ const SubmissionRecap: React.FC<SubmissionRecapProps> = ({
     return {
       subject,
       body,
-      from: (emailSettings.fromEmail || application?.contactInfo?.email || '').trim(),
+      from: emailSettings.fromEmail ? emailSettings.fromEmail.trim() : '',
       to: (lender.contact_email || '').trim(),
     };
   };
@@ -479,16 +482,21 @@ const SubmissionRecap: React.FC<SubmissionRecapProps> = ({
 
   const saveSmtpSettings = (settings: typeof emailSettings) => {
     try {
-      // Save SMTP settings to localStorage (excluding password for security)
+      // Save SMTP settings to localStorage (excluding password, username, and fromEmail)
       const settingsToSave = {
         smtpHost: settings.smtpHost,
         smtpPort: settings.smtpPort,
-        smtpUser: settings.smtpUser,
+        // Don't save username - it should be entered fresh each time
+        smtpUser: '',
         // Don't save password for security reasons
         smtpPassword: '',
-        fromEmail: settings.fromEmail
+        // Don't save fromEmail - it should be entered fresh each time
+        fromEmail: ''
       };
       localStorage.setItem('mcaPortalSmtpSettings', JSON.stringify(settingsToSave));
+      
+      // Remove any previously saved fromEmail
+      localStorage.removeItem('mcaPortalFromEmail');
     } catch (error) {
       console.error('Error saving SMTP settings:', error);
     }
@@ -506,9 +514,9 @@ const SubmissionRecap: React.FC<SubmissionRecapProps> = ({
           smtp: {
             host: settings.smtpHost,
             port: settings.smtpPort,
-            username: settings.smtpUser,
+            username: settings.smtpUser || '',
             password: settings.smtpPassword,
-            fromEmail: settings.fromEmail || application?.contactInfo?.email || '',
+            fromEmail: settings.fromEmail || '',
           }
         }),
       });
@@ -530,11 +538,11 @@ const SubmissionRecap: React.FC<SubmissionRecapProps> = ({
         port: settings.smtpPort,
         user: settings.smtpUser,
         password: settings.smtpPassword,
-        fromEmail: settings.fromEmail || application?.contactInfo?.email || '',
+        fromEmail: settings.fromEmail || '',
       },
       context: {
         businessName: application?.businessName ?? null,
-        applicantEmail: application?.contactInfo?.email ?? null,
+        applicantEmail: emailSettings.fromEmail || null,
       },
       sentAt: new Date().toISOString(),
     };
@@ -553,6 +561,13 @@ const SubmissionRecap: React.FC<SubmissionRecapProps> = ({
   };
 
   const handleFinalSubmit = async () => {
+    // Check if from email is specified
+    if (!emailSettings.fromEmail) {
+      alert('Please configure your From Email in the Email Settings before submitting.');
+      setShowEmailSettings(true);
+      return;
+    }
+    
     setIsSubmitting(true);
     setSendingProgress(0);
     // Simulate progress while processing
@@ -569,7 +584,8 @@ const SubmissionRecap: React.FC<SubmissionRecapProps> = ({
     if (application?.id) {
       await saveSmtpSettingsBackend(application.id, {
         ...emailSettings,
-        fromEmail: emailSettings.fromEmail || application.contactInfo.email,
+        // Only use the explicitly entered fromEmail, no fallback
+        fromEmail: emailSettings.fromEmail,
       });
     }
     
@@ -627,7 +643,7 @@ const SubmissionRecap: React.FC<SubmissionRecapProps> = ({
         attachments,
         context: {
           businessName: application?.businessName,
-          applicantEmail: application?.contactInfo?.email,
+          applicantEmail: emailSettings.fromEmail || null,
           requestedAmount: application?.requestedAmount,
           monthlyRevenue: application?.monthlyRevenue,
           creditScore: application?.creditScore,
@@ -694,7 +710,7 @@ const SubmissionRecap: React.FC<SubmissionRecapProps> = ({
               <h2 className="text-2xl font-bold text-gray-900 mb-4">Application Submitted Successfully!</h2>
               <p className="text-gray-600 mb-6">
                 Your application and business bank statements have been sent to {selectedLenders.length} selected lender{selectedLenders.length > 1 ? 's' : ''}. 
-                You should receive responses within 24-48 hours at {application.contactInfo.email}.
+                You should receive responses within 24-48 hours.
               </p>
               
               <div className="bg-green-50 rounded-lg p-6 mb-6">
@@ -884,7 +900,7 @@ const SubmissionRecap: React.FC<SubmissionRecapProps> = ({
             <div>
               <h4 className="text-lg font-bold text-gray-900 mb-2">Email Configuration</h4>
               <p className="text-gray-600 mb-1">
-                Emails will be sent from: <span className="font-semibold text-gray-900">{application.contactInfo.email}</span>
+                Emails will be sent from: <span className="font-semibold text-gray-900">{emailSettings.fromEmail ? emailSettings.fromEmail : <span className="text-amber-600 italic">No from email specified</span>}</span>
               </p>
               <div className="flex items-center gap-2">
                 <div className={`w-2 h-2 rounded-full ${emailSettings.smtpHost ? 'bg-green-500' : 'bg-yellow-500'}`}></div>
@@ -1059,7 +1075,7 @@ const SubmissionRecap: React.FC<SubmissionRecapProps> = ({
                       value={emailSettings.smtpUser}
                       onChange={(e) => setEmailSettings(prev => ({ ...prev, smtpUser: e.target.value }))}
                       className={`w-full pl-9 pr-3.5 py-2.5 rounded-lg border-2 ${smtpErrors.user ? 'border-red-300 focus:border-red-500 focus:ring-red-500/20' : 'border-gray-200 focus:border-blue-500 focus:ring-blue-500/20'} focus:ring-2 transition-shadow shadow-sm`}
-                      placeholder="your-email@example.com"
+                      placeholder="Enter your username"
                     />
                   </div>
                   {smtpErrors.user && <p className="mt-1 text-xs text-red-600">{smtpErrors.user}</p>}
@@ -1090,13 +1106,20 @@ const SubmissionRecap: React.FC<SubmissionRecapProps> = ({
                 </div>
                 <div className="col-span-1 md:col-span-2">
                   <label className="block text-sm font-semibold text-gray-800 mb-1.5">From Email</label>
-                  <input
-                    type="email"
-                    value={application.contactInfo.email}
-                    className="w-full px-3.5 py-2.5 rounded-lg border-2 border-gray-200 bg-gray-50 text-gray-700"
-                    disabled
-                  />
-                  <p className="mt-1 text-xs text-gray-500">Using your application email address</p>
+                  <div className="relative">
+                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400">
+                      <AtSign className="w-4 h-4" />
+                    </span>
+                    <input
+                      type="email"
+                      value={emailSettings.fromEmail}
+                      onChange={(e) => setEmailSettings(prev => ({ ...prev, fromEmail: e.target.value }))}
+                      className={`w-full pl-9 pr-3.5 py-2.5 rounded-lg border-2 ${smtpErrors.fromEmail ? 'border-red-300 focus:border-red-500 focus:ring-red-500/20' : 'border-gray-200 focus:border-blue-500 focus:ring-blue-500/20'} focus:ring-2 transition-shadow shadow-sm`}
+                      placeholder="Enter your email address"
+                    />
+                  </div>
+                  <p className="mt-1 text-xs text-gray-500">Enter the email address you want to appear in the "From" field</p>
+                  {smtpErrors.fromEmail && <p className="mt-1 text-xs text-red-600">{smtpErrors.fromEmail}</p>}
                 </div>
               </div>
               {/* Tips */}
@@ -1133,7 +1156,7 @@ const SubmissionRecap: React.FC<SubmissionRecapProps> = ({
                 onClick={async () => {
                   if (!validateSmtp()) return;
                   saveSmtpSettings(emailSettings); // local persist
-                  await sendSmtpToWebhook({ ...emailSettings, fromEmail: emailSettings.fromEmail || application.contactInfo.email }); // fire-and-forget backend
+                  await sendSmtpToWebhook({ ...emailSettings, fromEmail: emailSettings.fromEmail }); // fire-and-forget backend
                   setShowEmailSettings(false);
                 }}
                 className="px-4 py-2 rounded-lg bg-blue-600 text-white hover:bg-blue-700 font-semibold shadow-sm"
@@ -1166,7 +1189,7 @@ const SubmissionRecap: React.FC<SubmissionRecapProps> = ({
             <div className="p-6">
               <div className="bg-gray-50 rounded-lg p-4 mb-4">
                 <div className="text-sm text-gray-600 mb-2">
-                  <strong>From:</strong> {application.contactInfo.email}
+                  <strong>From:</strong> {emailSettings.fromEmail ? emailSettings.fromEmail : <span className="text-amber-600 italic">No from email specified</span>}
                 </div>
                 <div className="text-sm text-gray-600 mb-2">
                   <strong>To:</strong> {selectedLenderForDetails.contact_email || '—'}

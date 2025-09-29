@@ -1396,7 +1396,7 @@ const ApplicationForm: React.FC<ApplicationFormProps> = ({ onSubmit, initialStep
                 <input
                   type="text"
                   inputMode="numeric"
-                  pattern="\\d*"
+                  pattern="[0-9]*"
                   id="creditScore"
                   value={formData.creditScore}
                   onChange={(e) => setFormData({ ...formData, creditScore: e.target.value.replace(/[^0-9]/g, '') })}

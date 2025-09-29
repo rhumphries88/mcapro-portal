@@ -34,6 +34,13 @@ interface LenderMatchesProps {
 }
 
 const LenderMatches: React.FC<LenderMatchesProps> = ({ application, matches, onLenderSelect, onBack, lockedLenderIds = [] }) => {
+  // Debug the application values received
+  console.log('[LenderMatches] Received application values:', {
+    monthlyRevenue: application?.monthlyRevenue,
+    creditScore: application?.creditScore,
+    requestedAmount: application?.requestedAmount
+  });
+  
   const [lenders, setLenders] = useState<(DBLender & { match_score?: number; matchScore?: number })[]>([]);
   const [selectedLenderIds, setSelectedLenderIds] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
@@ -185,16 +192,20 @@ const LenderMatches: React.FC<LenderMatchesProps> = ({ application, matches, onL
             </div>
             <div className="text-sm font-medium text-gray-600">Requested Amount</div>
           </div>
-          <div className="mt-3 text-3xl font-bold text-slate-800">${(application.requestedAmount || 0).toLocaleString()}</div>
+          <div className="mt-3 text-3xl font-bold text-slate-800">
+            ${typeof application.requestedAmount === 'number' ? application.requestedAmount.toLocaleString() : '0'}
+          </div>
         </div>
         <div className="bg-white rounded-2xl p-6 shadow-lg ring-1 ring-gray-100 hover:shadow-xl transition-shadow h-full">
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-green-100 flex items-center justify-center shadow-inner">
+            <div className="w-10 h-10 rounded-xl bg-green-50 flex items-center justify-center shadow-inner">
               <TrendingUp className="w-5 h-5 text-green-600" />
             </div>
-            <div className="text-sm font-medium text-gray-600">Monthly Revenue</div>
+            <div className="text-sm font-medium text-gray-600">Average Revenue</div>
           </div>
-          <div className="mt-3 text-3xl font-bold text-slate-800">${(application.monthlyRevenue || 0).toLocaleString()}</div>
+          <div className="mt-3 text-3xl font-bold text-slate-800">
+            ${typeof application.monthlyRevenue === 'number' ? application.monthlyRevenue.toLocaleString() : '0'}
+          </div>
         </div>
         <div className="bg-white rounded-2xl p-6 shadow-lg ring-1 ring-gray-100 hover:shadow-xl transition-shadow h-full">
           <div className="flex items-center gap-3">
@@ -203,7 +214,9 @@ const LenderMatches: React.FC<LenderMatchesProps> = ({ application, matches, onL
             </div>
             <div className="text-sm font-medium text-gray-600">Credit Score</div>
           </div>
-          <div className="mt-3 text-3xl font-bold text-slate-800">{application.creditScore || 'N/A'}</div>
+          <div className="mt-3 text-3xl font-bold text-slate-800">
+            {typeof application.creditScore === 'number' ? application.creditScore : 'N/A'}
+          </div>
         </div>
         <div className="bg-white rounded-2xl p-6 shadow-lg ring-1 ring-gray-100 hover:shadow-xl transition-shadow h-full">
           <div className="flex items-center gap-3">

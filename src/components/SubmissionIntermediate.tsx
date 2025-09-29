@@ -12,7 +12,7 @@ const NEW_DEAL_WEBHOOK_URL = '/.netlify/functions/new-deal';
 const UPDATING_APPLICATIONS_WEBHOOK_URL = '/.netlify/functions/updating-applications';
 const DOCUMENT_FILE_WEBHOOK_URL = '/.netlify/functions/document-file';
 // Feature flag: temporarily disable updating applications webhook
-const DISABLE_UPDATING_APPLICATIONS = true;
+const DISABLE_UPDATING_APPLICATIONS = false;
 
 
 type Props = {
@@ -31,6 +31,8 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
     applicationId: (initial?.applicationId as string) || '',
     hasBankruptcies: Boolean(initial?.hasBankruptcies) || false,
     hasOpenJudgments: Boolean(initial?.hasOpenJudgments) || false,
+    creditScore: (initial?.creditScore as string) || '',
+    requestedAmount: (initial?.requestedAmount as string) || '',
   });
 
   // Keep form state in sync when `initial` updates (e.g., after webhook response arrives)
@@ -43,6 +45,9 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
       applicationId: (initial.applicationId as string) ?? (prev.applicationId as string) ?? '',
       hasBankruptcies: typeof initial.hasBankruptcies === 'boolean' ? initial.hasBankruptcies : Boolean(prev.hasBankruptcies),
       hasOpenJudgments: typeof initial.hasOpenJudgments === 'boolean' ? initial.hasOpenJudgments : Boolean(prev.hasOpenJudgments),
+      // Include credit score and requested amount for passing to LenderMatches
+      creditScore: (initial.creditScore as string) ?? (prev.creditScore as string) ?? '',
+      requestedAmount: (initial.requestedAmount as string) ?? (prev.requestedAmount as string) ?? '',
     }));
   }, [initial]);
 
@@ -1583,12 +1588,102 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
           applicationId: baseIds.applicationId,
         });
       }
-      // Build a minimal payload; we no longer send business/financial detail fields from this screen
+      // Build payload with financial overview data and holdback percentage
       const payload: Record<string, unknown> = {
         id: baseIds.id,
         applicationId: baseIds.applicationId,
         hasBankruptcies: Boolean(details.hasBankruptcies ?? false),
         hasOpenJudgments: Boolean(details.hasOpenJudgments ?? false),
+        
+        // Add financial overview data - exactly as displayed in UI with values rounded to two decimal places
+        financial_overview: {
+          // Calculate financial metrics from documents
+          total_documents: Array.isArray(financialOverviewFromDocs) ? financialOverviewFromDocs.length : 0,
+          average_deposits: (() => {
+            const totalDocs = Array.isArray(financialOverviewFromDocs) ? financialOverviewFromDocs.length : 1;
+            const sum = financialOverviewFromDocs.reduce((sum: number, r: any) => sum + (Number(r.total_deposits) || 0), 0);
+            // Round to 2 decimal places to match UI display
+            return Number((sum / Math.max(1, totalDocs)).toFixed(2));
+          })(),
+          average_revenue: (() => {
+            const totalDocs = Array.isArray(financialOverviewFromDocs) ? financialOverviewFromDocs.length : 1;
+            const sum = financialOverviewFromDocs.reduce((sum: number, r: any) => sum + (Number(r.monthly_revenue) || 0), 0);
+            // Round to 2 decimal places to match UI display
+            return Number((sum / Math.max(1, totalDocs)).toFixed(2));
+          })(),
+          total_negative_days: financialOverviewFromDocs.reduce((sum: number, r: any) => sum + (Number(r.negative_days) || 0), 0),
+        },
+        
+        // Add MCA summary data with holdback percentage
+        mca_summary: (() => {
+          try {
+            // Calculate total funders amount
+            const total = (mcaSummaryRows || []).reduce((sum: number, row: any) => {
+              const raw = row && row.__mca_raw;
+              const arr = Array.isArray(raw) ? raw : (!Array.isArray(raw) && raw && typeof raw === 'object' ? (Object.values(raw).flat().filter(Boolean) as any[]) : []);
+              const items: any[] = (Array.isArray(arr) ? arr : []).filter((it: any) => it && typeof it === 'object');
+              
+              let rowTotal = 0;
+              for (const it of items) {
+                const periodRaw = String((it?.month ?? it?.period ?? '') || '');
+                const periodNorm = normalizePeriodToYYYYMM(periodRaw);
+                if (periodNorm !== lastMonthKey) continue; // align with UI filter
+                const freq = String(it?.dailyweekly ?? it?.debit_frequency ?? '');
+                const amountVal = it?.amount;
+                const amountNum = (typeof amountVal === 'number') ? amountVal : parseAmount(String(amountVal ?? ''));
+                const isWeekly = /weekly/i.test(freq);
+                const displayAmount = isWeekly ? (Number(amountNum) / 5) : Number(amountNum);
+                rowTotal += Number.isFinite(displayAmount) ? Number(displayAmount) : 0;
+              }
+              return sum + rowTotal;
+            }, 0);
+            
+            // Calculate multiplier, subtotal and holdback percentage
+            const multiplier = 20;
+            const subtotal = total * multiplier;
+            
+            // Calculate average revenue from financial overview
+            const totalDocsForRevenue = Array.isArray(financialOverviewFromDocs) ? financialOverviewFromDocs.length : 1;
+            const revenueSum = (financialOverviewFromDocs || []).reduce((sum: number, r: any) => sum + (Number(r.monthly_revenue) || 0), 0);
+            const totalRevenue = revenueSum / Math.max(1, totalDocsForRevenue);
+            
+            // Calculate ratio and holdback percentage
+            const ratio = totalRevenue > 0 ? (subtotal / totalRevenue) : 0;
+            const holdbackPct = (() => {
+              const decimals = 1;
+              const pct = ratio * 100;
+              const factor = Math.pow(10, decimals);
+              const x = pct * factor;
+              const floorX = Math.floor(x);
+              const diff = x - floorX;
+              const isHalf = Math.abs(diff - 0.5) < 1e-10;
+              let roundedInt: number;
+              if (isHalf) {
+                roundedInt = (floorX % 2 === 0) ? floorX : floorX + 1;
+              } else {
+                roundedInt = Math.round(x);
+              }
+              return roundedInt / factor;
+            })();
+            
+            return {
+              total_funders: Number(total.toFixed(2)),
+              multiplier: multiplier,
+              subtotal: Number(subtotal.toFixed(2)),
+              ratio: Number(ratio.toFixed(2)),
+              holdback_percentage: holdbackPct
+            };
+          } catch (e) {
+            console.error('[updatingApplications] Error calculating MCA summary:', e);
+            return {
+              total_funders: 0.00,
+              multiplier: 20,
+              subtotal: 0.00,
+              ratio: 0.00,
+              holdback_percentage: 0.0
+            };
+          }
+        })()
       };
       // Only attempt the webhook if enabled and we have a valid applicationId
       if (!DISABLE_UPDATING_APPLICATIONS && baseIds.applicationId && isValidUUID(baseIds.applicationId)) {
@@ -1619,8 +1714,31 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
     } catch (e) {
       console.error('[updatingApplications] Error sending webhook:', e);
     } finally {
+      // Calculate average monthly revenue from financial overview to pass to the next step
+      const avgMonthlyRevenue = (() => {
+        const totalDocs = Array.isArray(financialOverviewFromDocs) ? financialOverviewFromDocs.length : 1;
+        const sum = financialOverviewFromDocs.reduce((sum: number, r: any) => sum + (Number(r.monthly_revenue) || 0), 0);
+        return Number((sum / Math.max(1, totalDocs)).toFixed(2));
+      })();
+
+      // Add monthly revenue, credit score and requested amount to details before passing to parent
+      // Convert to string to match the expected Record<string, string | boolean> type
+      const enhancedDetails = {
+        ...details,
+        monthlyRevenue: String(avgMonthlyRevenue),
+        creditScore: details.creditScore || '',
+        requestedAmount: details.requestedAmount || ''
+      };
+      
+      // Debug the values being passed to parent
+      console.log('[SubmissionIntermediate] Passing to parent:', {
+        monthlyRevenue: enhancedDetails.monthlyRevenue,
+        creditScore: enhancedDetails.creditScore,
+        requestedAmount: enhancedDetails.requestedAmount
+      });
+      
       // Trigger parent flow so parent can flip loading immediately
-      onContinue(details);
+      onContinue(enhancedDetails);
       // Keep local loading true until after handing off control
       setSubmitting(false);
     }
