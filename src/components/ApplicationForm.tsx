@@ -299,6 +299,8 @@ const ApplicationForm: React.FC<ApplicationFormProps> = ({ onSubmit, initialStep
       'phone',
       'address',
       'annualRevenue',
+      'creditScore',
+      'requestedAmount',
     ]);
     let count = 0;
     visibleKeys.forEach(k => { if (populatedFields.has(k)) count++; });
@@ -1354,6 +1356,57 @@ const ApplicationForm: React.FC<ApplicationFormProps> = ({ onSubmit, initialStep
                   />
                 </div>
                 {populatedFields.has('annualRevenue') && (
+                  <div className="mt-2 flex items-center gap-2 text-emerald-700 text-xs font-medium">
+                    <div className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse"></div>
+                    <span>Extracted from documents</span>
+                  </div>
+                )}
+              </div>
+            </div>
+            <div>
+              <div className="relative">
+                <label className="block text-sm font-bold text-gray-800 mb-2" htmlFor="requestedAmount">Requested Amount</label>
+                <div className="relative">
+                  <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
+                    <span className="text-gray-500 font-medium">$</span>
+                  </div>
+                  <input
+                    type="number"
+                    id="requestedAmount"
+                    value={formData.requestedAmount}
+                    onChange={(e) => setFormData({ ...formData, requestedAmount: e.target.value })}
+                    className={`w-full pl-8 pr-4 py-3 rounded-xl border-2 text-gray-900 font-medium transition-all duration-200 focus:outline-none ${
+                      populatedFields.has('requestedAmount')
+                        ? 'border-emerald-300 bg-gradient-to-r from-emerald-50 to-green-50 ring-2 ring-emerald-200/50 shadow-sm focus:border-emerald-400 focus:ring-emerald-300/50'
+                        : 'border-gray-200 bg-white hover:border-gray-300 focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 shadow-sm hover:shadow-sm'
+                    }`}
+                  />
+                </div>
+                {populatedFields.has('requestedAmount') && (
+                  <div className="mt-2 flex items-center gap-2 text-emerald-700 text-xs font-medium">
+                    <div className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse"></div>
+                    <span>Extracted from documents</span>
+                  </div>
+                )}
+              </div>
+            </div>
+            <div>
+              <div className="relative">
+                <label className="block text-sm font-bold text-gray-800 mb-2" htmlFor="creditScore">Credit Score</label>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  pattern="\\d*"
+                  id="creditScore"
+                  value={formData.creditScore}
+                  onChange={(e) => setFormData({ ...formData, creditScore: e.target.value.replace(/[^0-9]/g, '') })}
+                  className={`w-full px-4 py-3 rounded-xl border-2 text-gray-900 font-medium transition-all duration-200 focus:outline-none ${
+                    populatedFields.has('creditScore')
+                      ? 'border-emerald-300 bg-gradient-to-r from-emerald-50 to-green-50 ring-2 ring-emerald-200/50 shadow-sm focus:border-emerald-400 focus:ring-emerald-300/50'
+                      : 'border-gray-200 bg-white hover:border-gray-300 focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 shadow-sm hover:shadow-sm'
+                  }`}
+                />
+                {populatedFields.has('creditScore') && (
                   <div className="mt-2 flex items-center gap-2 text-emerald-700 text-xs font-medium">
                     <div className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse"></div>
                     <span>Extracted from documents</span>
