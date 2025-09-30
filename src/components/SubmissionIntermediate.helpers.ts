@@ -34,6 +34,15 @@ export const isBusinessNameAndOwner = (name: string): boolean => {
   );
 };
 
+// Utility: detect if a category is "Funder List" which should also be excluded from calculations
+export const isFunderList = (name: string): boolean => {
+  const norm = String(name || '')
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .trim();
+  return norm === 'funder list';
+};
+
 // Utility: format YYYY-MM-DD into Month DD, YYYY
 export const formatDateHuman = (value: any): string => {
   const raw = String(value || '').trim();
@@ -47,6 +56,66 @@ export const formatDateHuman = (value: any): string => {
   } catch {
     return raw;
   }
+};
+
+// Format any date string into a full readable format like "August 11, 2025"
+export const formatFullDate = (value: any): string => {
+  if (!value) return '—';
+  const raw = String(value).trim();
+  
+  // Try different date formats
+  try {
+    // YYYY-MM or YYYY-MM-DD format
+    if (/^\d{4}-\d{2}(-\d{2})?$/.test(raw)) {
+      const parts = raw.split('-');
+      const year = parseInt(parts[0]);
+      const month = parseInt(parts[1]) - 1; // JS months are 0-indexed
+      const day = parts.length > 2 ? parseInt(parts[2]) : 15; // Default to middle of month if no day
+      
+      const date = new Date(year, month, day);
+      return date.toLocaleDateString('en-US', { 
+        year: 'numeric', 
+        month: 'long', 
+        day: 'numeric' 
+      });
+    }
+    
+    // Month name format (e.g., "July" or "July 2025")
+    const monthNames = ['january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december'];
+    const lowercaseRaw = raw.toLowerCase();
+    
+    for (let i = 0; i < monthNames.length; i++) {
+      if (lowercaseRaw.includes(monthNames[i])) {
+        // Extract year if present, otherwise use current year
+        const yearMatch = raw.match(/\d{4}/);
+        const year = yearMatch ? parseInt(yearMatch[0]) : new Date().getFullYear();
+        
+        // Extract day if present, otherwise use 15th (middle of month)
+        const dayMatch = raw.match(/\b(\d{1,2})\b/);
+        const day = dayMatch ? parseInt(dayMatch[1]) : 15;
+        
+        const date = new Date(year, i, day);
+        return date.toLocaleDateString('en-US', { 
+          year: 'numeric', 
+          month: 'long', 
+          day: 'numeric' 
+        });
+      }
+    }
+    
+    // If all else fails, try to parse as a date directly
+    const date = new Date(raw);
+    if (!isNaN(date.getTime())) {
+      return date.toLocaleDateString('en-US', { 
+        year: 'numeric', 
+        month: 'long', 
+        day: 'numeric' 
+      });
+    }
+  } catch {}
+  
+  // Return original if we couldn't parse it
+  return raw;
 };
 
 // Simple format helpers for the financials

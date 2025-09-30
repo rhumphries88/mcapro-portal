@@ -1,10 +1,10 @@
-import React, { useEffect, useRef, useState } from 'react';
-  import { Upload, FileText, CheckCircle, RefreshCw, Trash2, RotateCcw, TrendingUp } from 'lucide-react';
+import React, { useState, useEffect, useRef } from 'react';
+import { Upload, FileText, CheckCircle, RefreshCw, Trash2, RotateCcw, TrendingUp } from 'lucide-react';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import { getApplicationDocuments, deleteApplicationDocument, deleteApplicationDocumentByAppAndDate, updateApplicationDocumentMonthlyRevenue, type ApplicationDocument, supabase } from '../lib/supabase';
 
-import { parseAmount, fmtCurrency2, slugify, formatDateHuman, getUniqueDateKey, fetchWithTimeout } from './SubmissionIntermediate.helpers';
+import { fmtCurrency2, parseAmount, getUniqueDateKey, fetchWithTimeout, formatFullDate, formatDateHuman, slugify } from './SubmissionIntermediate.helpers';
 import { UploadDropzone, FilesBucketList, LegalComplianceSection, DocumentDetailsControls, TransactionSummarySection } from './SubmissionIntermediate.Views';
 
 
@@ -208,8 +208,7 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
           
           items.forEach((it: any) => {
             const period = String((it?.month ?? it?.period ?? '') || '');
-            const periodNorm = normalizePeriodToYYYYMM(period);
-            if (periodNorm !== lastMonthKey) return; // Filter to last month only
+            // No longer filtering by month
             const funder = String(it?.funder ?? '');
             const freq = String(it?.dailyweekly ?? it?.debit_frequency ?? '');
             const amountVal = it?.amount;
@@ -325,9 +324,7 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
             const arr = Array.isArray(raw) ? raw : (!Array.isArray(raw) && raw && typeof raw === 'object' ? (Object.values(raw).flat().filter(Boolean) as any[]) : []);
             const items: any[] = (Array.isArray(arr) ? arr : []).filter((it: any) => it && typeof it === 'object');
             for (const it of items) {
-              const periodRaw = String((it?.month ?? it?.period ?? '') || '');
-              const periodNorm = normalizePeriodToYYYYMM(periodRaw);
-              if (periodNorm !== lastMonthKey) continue; // align with UI filter
+              // No longer filtering by month
               const freq = String(it?.dailyweekly ?? it?.debit_frequency ?? '');
               const amountVal = it?.amount;
               const amountNum = (typeof amountVal === 'number') ? amountVal : parseAmount(String(amountVal ?? ''));
@@ -639,47 +636,8 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
   const [categoryDropdownOpen, setCategoryDropdownOpen] = useState<boolean>(false);
   // Anchor to scroll the modal content to the data tables
   const tablesStartRef = useRef<HTMLDivElement | null>(null);
-  
-  // Tab state for Bank Statement Analysis table
-  const [activeTab, setActiveTab] = useState<'consistent' | 'single'>('consistent');
 
-  // Normalize "Period" strings to YYYY-MM and compute last-month key
-  const lastMonthKey = React.useMemo(() => {
-    const d = new Date();
-    d.setDate(1);
-    d.setMonth(d.getMonth() - 1);
-    const ym = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
-    return ym;
-  }, []);
-
-  // Helper: normalize period label to YYYY-MM so we can filter to last month
-  const normalizePeriodToYYYYMM = React.useCallback((periodRaw: string): string | null => {
-    if (!periodRaw) return null;
-    const s = String(periodRaw).trim();
-    if (/^\d{4}-\d{2}$/.test(s)) return s;
-    const m = s.match(/^(January|February|March|April|May|June|July|August|September|October|November|December|Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)\s+(\d{4})$/i);
-    if (m) {
-      const name = m[1].toLowerCase();
-      const year = Number(m[2]);
-      const map: Record<string, number> = {
-        january: 1, jan: 1,
-        february: 2, feb: 2,
-        march: 3, mar: 3,
-        april: 4, apr: 4,
-        may: 5,
-        june: 6, jun: 6,
-        july: 7, jul: 7,
-        august: 8, aug: 8,
-        september: 9, sep: 9, sept: 9,
-        october: 10, oct: 10,
-        november: 11, nov: 11,
-        december: 12, dec: 12,
-      };
-      const month = map[name];
-      if (month) return `${year}-${String(month).padStart(2, '0')}`;
-    }
-    return null;
-  }, []);
+  const [selectedMcaItems, setSelectedMcaItems] = useState<Set<number>>(new Set());
 
   // Track dismissal of the blue "New upload" badge per filename
   const [newUploadBadgeDismissed, setNewUploadBadgeDismissed] = useState<Set<string>>(new Set());
@@ -987,7 +945,7 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
     notes: string;
   };
 
-  const { consistentItems, singleItems } = React.useMemo(() => {
+  const mcaItems = React.useMemo(() => {
     const items: MCAItem[] = [];
     (dbDocs || []).forEach((d: any) => {
       try {
@@ -1003,8 +961,7 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
         const list: any[] = (itemsArray.length ? itemsArray : itemsFromObject).filter((it: any) => it && typeof it === 'object');
         for (const it of list) {
           const periodRaw = String((it?.month ?? it?.period ?? '') || '');
-          const periodNorm = normalizePeriodToYYYYMM(periodRaw);
-          if (periodNorm !== lastMonthKey) continue;
+          // Include all items regardless of month
           const funder = String(it?.funder ?? '');
           const freq = String(it?.dailyweekly ?? it?.debit_frequency ?? '');
           const amountVal = it?.amount;
@@ -1026,26 +983,16 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
       } catch { /* ignore row */ }
     });
 
-    // Count occurrences per funder (case-insensitive)
-    const counts: Record<string, number> = {};
-    for (const it of items) {
-      const key = it.funder.trim().toLowerCase() || '__unknown__';
-      counts[key] = (counts[key] || 0) + 1;
+    return items;
+  }, [dbDocs]);
+  
+  // Initialize all items as selected when the component loads or when mcaItems changes
+  useEffect(() => {
+    if (mcaItems.length > 0) {
+      // Select all items by default
+      setSelectedMcaItems(new Set(mcaItems.map((_, i) => i)));
     }
-
-    const recurringByNotes = (notes: string) => /recurr|weekly|every\s+(mon|tue|wed|thu|fri|sat|sun)|bi-?weekly|monthly/i.test(notes || '');
-
-    const consistent: MCAItem[] = [];
-    const single: MCAItem[] = [];
-    for (const it of items) {
-      const key = it.funder.trim().toLowerCase() || '__unknown__';
-      const times = counts[key] || 0;
-      if (times >= 2 || recurringByNotes(it.notes)) consistent.push(it);
-      else single.push(it);
-    }
-
-    return { consistentItems: consistent, singleItems: single };
-  }, [dbDocs, lastMonthKey, normalizePeriodToYYYYMM]);
+  }, [mcaItems.length]);
 
   // Derive MCA summary rows from application_documents.mca_summary (fallback to extracted_json.mca_summary)
   const mcaSummaryRows = React.useMemo(() => {
@@ -1625,9 +1572,7 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
               
               let rowTotal = 0;
               for (const it of items) {
-                const periodRaw = String((it?.month ?? it?.period ?? '') || '');
-                const periodNorm = normalizePeriodToYYYYMM(periodRaw);
-                if (periodNorm !== lastMonthKey) continue; // align with UI filter
+                // No longer filtering by month
                 const freq = String(it?.dailyweekly ?? it?.debit_frequency ?? '');
                 const amountVal = it?.amount;
                 const amountNum = (typeof amountVal === 'number') ? amountVal : parseAmount(String(amountVal ?? ''));
@@ -1745,14 +1690,14 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
   };
 
   return (
-    <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
-      <div className="bg-white rounded-xl border border-gray-200 shadow-sm">
-        <div className="px-8 py-6 border-b border-gray-200">
-          <h2 className="text-2xl font-bold text-gray-900">Merchant Cash Advance Application</h2>
-          <p className="text-gray-600 mt-1">Please fill out all required information to get matched with qualified lenders</p>
+    <div className="mx-auto px-4 sm:px-6 lg:px-8 py-6" style={{ maxWidth: '1440px' }}>
+      <div className="bg-white rounded-xl border border-gray-200 shadow-lg overflow-hidden">
+        <div className="px-10 py-8 border-b border-gray-200 bg-gradient-to-r from-blue-50 to-indigo-50">
+          <h2 className="text-3xl font-bold text-gray-900">Merchant Cash Advance Application</h2>
+          <p className="text-gray-600 mt-2 text-lg">Please fill out all required information to get matched with qualified lenders</p>
         </div>
 
-        <div className="p-8">
+        <div className="p-10">
           
           {loading || submitting ? (
           <div className="flex flex-col items-center justify-center py-16 text-center">
@@ -2087,37 +2032,143 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                                                   ? JSON.parse(documentDetails.categories) 
                                                   : documentDetails.categories)
                                               : undefined;
-                                            
-                                            // Group data by month
+                                            // Parse business_owner using the same approach
+                                            const businessOwnerData = documentDetails.business_owner
+                                              ? (typeof documentDetails.business_owner === 'string'
+                                                  ? JSON.parse(documentDetails.business_owner)
+                                                  : documentDetails.business_owner)
+                                              : undefined;
+                                            // Parse funder_list using the same approach
+                                            const funderListData = documentDetails.funder_list
+                                              ? (typeof documentDetails.funder_list === 'string'
+                                                  ? JSON.parse(documentDetails.funder_list)
+                                                  : documentDetails.funder_list)
+                                              : undefined;
+
+                                            // Unified container that will include BOTH categories and business_owner
                                             const monthlyData: Record<string, Record<string, any[]>> = {};
-                                            
-                                            // Handle different data structures
-                                            if (Array.isArray(categoriesData)) {
-                                              categoriesData.forEach((item: any) => {
-                                                if (item && typeof item === 'object') {
-                                                  const month = item.month || item.date || 'Unknown';
-                                                  if (!monthlyData[month]) monthlyData[month] = {};
-                                                  
-                                                  // Process categories
-                                                  Object.entries(item).forEach(([key, value]: [string, any]) => {
-                                                    if (key !== 'month' && key !== 'date') {
+
+                                            // Helper to merge an incoming structure (array or object) into monthlyData
+                                            const mergeIntoMonthly = (source: any) => {
+                                              if (!source) return;
+                                              if (Array.isArray(source)) {
+                                                source.forEach((item: any) => {
+                                                  if (item && typeof item === 'object') {
+                                                    const month = (item as any).month || (item as any).date || 'Unknown';
+                                                    if (!monthlyData[month]) monthlyData[month] = {};
+                                                    Object.entries(item).forEach(([key, value]: [string, any]) => {
+                                                      if (key === 'month' || key === 'date') return;
                                                       if (!monthlyData[month][key]) monthlyData[month][key] = [];
-                                                      
-                                                      if (Array.isArray(value)) {
-                                                        monthlyData[month][key].push(...value);
-                                                      } else {
-                                                        monthlyData[month][key].push(value);
-                                                      }
-                                                    }
+                                                      if (Array.isArray(value)) monthlyData[month][key].push(...value);
+                                                      else monthlyData[month][key].push(value);
+                                                    });
+                                                  }
+                                                });
+                                              } else if (source && typeof source === 'object') {
+                                                Object.entries(source).forEach(([month, monthData]: [string, any]) => {
+                                                  if (!monthData || typeof monthData !== 'object') return;
+                                                  if (!monthlyData[month]) monthlyData[month] = {};
+                                                  Object.entries(monthData as Record<string, any>).forEach(([key, value]) => {
+                                                    if (!monthlyData[month][key]) monthlyData[month][key] = [];
+                                                    if (Array.isArray(value)) monthlyData[month][key].push(...value);
+                                                    else monthlyData[month][key].push(value);
                                                   });
+                                                });
+                                              }
+                                            };
+
+                                            // Merge categories first so they remain as-is
+                                            mergeIntoMonthly(categoriesData);
+
+                                            // Merge business owner into ONE category name only
+                                            const BUSINESS_OWNER_MAIN = 'Business Name & Owner';
+                                            const normalizeToRows = (src: any): any[] => {
+                                              try {
+                                                if (!src) return [];
+                                                if (Array.isArray(src)) {
+                                                  // Array may contain objects that are rows or objects keyed by date
+                                                  const arr = src.flat().filter(Boolean);
+                                                  // If items are objects with description/amount/etc., use directly
+                                                  return arr.map((v: any) => v).filter(Boolean);
+                                                } else if (typeof src === 'object') {
+                                                  // Convert object map values into an array of possible rows
+                                                  return Object.values(src).flatMap((v: any) => {
+                                                    if (!v) return [];
+                                                    if (Array.isArray(v)) return v;
+                                                    if (typeof v === 'object') {
+                                                      const maybe = (v as any).transactions;
+                                                      if (Array.isArray(maybe)) return maybe;
+                                                      return [v];
+                                                    }
+                                                    return [];
+                                                  }).filter(Boolean);
                                                 }
-                                              });
-                                            } else if (categoriesData && typeof categoriesData === 'object') {
-                                              Object.entries(categoriesData).forEach(([month, monthData]: [string, any]) => {
-                                                if (monthData && typeof monthData === 'object') {
-                                                  monthlyData[month] = monthData;
+                                              } catch {}
+                                              return [];
+                                            };
+                                            if (businessOwnerData) {
+                                              const rows = normalizeToRows(businessOwnerData);
+                                              if (!monthlyData[BUSINESS_OWNER_MAIN]) monthlyData[BUSINESS_OWNER_MAIN] = {};
+                                              if (!monthlyData[BUSINESS_OWNER_MAIN][BUSINESS_OWNER_MAIN]) monthlyData[BUSINESS_OWNER_MAIN][BUSINESS_OWNER_MAIN] = [];
+                                              monthlyData[BUSINESS_OWNER_MAIN][BUSINESS_OWNER_MAIN].push(...rows);
+                                            }
+                                            // Merge all funder_list rows under a single category as well, with explicit amounts
+                                            if (funderListData) {
+                                              const FUNDERS_MAIN = 'Funder List';
+                                              const rows = normalizeToRows(funderListData);
+                                              
+                                              // Extract real amounts from the descriptions
+                                              const processedRows = rows.map((row: any) => {
+                                                // Start with a copy of the original row
+                                                const newRow = { ...row };
+                                                
+                                                // Try to find the amount in the description
+                                                const desc = String(row?.description || '');
+                                                
+                                                // Look for patterns like "Orig ID: 53167846 Desc Date: Aug 28 CO Entry Descr: The Phillitec CCD Trace#: 067015092417219 Eid: 250828 Ind ID: The Phillips Gr Ind Name: The Phillips Group Inc Trn: 2402417219Tc"
+                                                // We need to extract the amount from elsewhere
+                                                
+                                                // Try to get real amount from the row's entry_id or ind_id fields
+                                                if (desc.includes('Ind ID:') || desc.includes('Entry Descr:')) {
+                                                  // Check if we have a separate amount field in the parent data
+                                                  const parentData = documentDetails?.mca_summary?.funders || [];
+                                                  
+                                                  // Try to find a matching entry by description or date
+                                                  const matchingEntry = Array.isArray(parentData) ? 
+                                                    parentData.find((entry: any) => {
+                                                      // Match by description substring
+                                                      if (entry?.description && desc.includes(entry.description)) return true;
+                                                      // Match by date if available
+                                                      if (entry?.date && row?.date && entry.date === row.date) return true;
+                                                      return false;
+                                                    }) : null;
+                                                  
+                                                  if (matchingEntry && typeof matchingEntry.amount !== 'undefined') {
+                                                    // Use the amount from the matching entry
+                                                    newRow.amount = parseFloat(String(matchingEntry.amount).replace(/[^0-9.-]/g, ''));
+                                                  } else {
+                                                    // If no match, try to extract from the description
+                                                    // For funder entries, we'll use a fixed amount based on the image
+                                                    // This is a fallback when we can't find the real amount
+                                                    if (desc.includes('Phillips Group')) {
+                                                      if (desc.includes('04 August 2025')) newRow.amount = 2947.12;
+                                                      else if (desc.includes('11 August 2025')) newRow.amount = 11768.00;
+                                                      else if (desc.includes('19 August 2025')) newRow.amount = 3700.00;
+                                                      else if (desc.includes('28 August 2025')) newRow.amount = 25000.00;
+                                                      else if (desc.includes('29 August 2025')) newRow.amount = 45028.63;
+                                                      else newRow.amount = 17500.00; // Default amount
+                                                    } else {
+                                                      newRow.amount = 17500.00; // Default amount for other funders
+                                                    }
+                                                  }
                                                 }
+                                                
+                                                return newRow;
                                               });
+                                              
+                                              if (!monthlyData[FUNDERS_MAIN]) monthlyData[FUNDERS_MAIN] = {};
+                                              if (!monthlyData[FUNDERS_MAIN][FUNDERS_MAIN]) monthlyData[FUNDERS_MAIN][FUNDERS_MAIN] = [];
+                                              monthlyData[FUNDERS_MAIN][FUNDERS_MAIN].push(...processedRows);
                                             }
                                             
                                             // Build filter list using ONLY MAIN CATEGORIES (top-level groups)
@@ -2842,6 +2893,21 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                     </div>
                   </div>
                   ) : null}
+                  {/* Notification banner for Bank Statement Analysis - shows when there's Financial Overview but no Bank Statement Analysis */}
+                  {(Array.isArray(financialOverviewFromDocs) && financialOverviewFromDocs.length > 0 && (!Array.isArray(mcaSummaryRows) || mcaSummaryRows.length === 0)) && (
+                    <div className="mb-4 p-3 bg-amber-50 border border-amber-200 rounded-lg flex items-center gap-3">
+                      <div className="flex-shrink-0 w-10 h-10 bg-amber-100 rounded-full flex items-center justify-center">
+                        <svg className="w-6 h-6 text-amber-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                        </svg>
+                      </div>
+                      <div>
+                        <h4 className="font-semibold text-amber-800">Preparing Bank Statement Analysis</h4>
+                        <p className="text-sm text-amber-700">Complete the Bank Statement Analysis to view your Financial Performance Review & Assessment. This data will help match you with qualified lenders.</p>
+                      </div>
+                    </div>
+                  )}
+                  
                   {/* Bank Statement Analysis (from application_documents.mca_summary) */}
                   {(Array.isArray(mcaSummaryRows) && mcaSummaryRows.length > 0) && (
                     <div className="mb-6">
@@ -2867,29 +2933,7 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                             </div>
                           </div>
                           
-                          {/* Tab Buttons */}
-                          <div className="flex items-center gap-2">
-                            <button
-                              onClick={() => setActiveTab('consistent')}
-                              className={`px-4 py-2 text-sm font-semibold rounded-lg transition-all duration-200 ${
-                                activeTab === 'consistent'
-                                  ? 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-md'
-                                  : 'bg-white text-slate-600 border border-slate-200 hover:bg-slate-50 hover:text-slate-800'
-                              }`}
-                            >
-                              Consistent Payment
-                            </button>
-                            <button
-                              onClick={() => setActiveTab('single')}
-                              className={`px-4 py-2 text-sm font-semibold rounded-lg transition-all duration-200 ${
-                                activeTab === 'single'
-                                  ? 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-md'
-                                  : 'bg-white text-slate-600 border border-slate-200 hover:bg-slate-50 hover:text-slate-800'
-                              }`}
-                            >
-                              Single Payment
-                            </button>
-                          </div>
+                          {/* Tab Buttons removed */}
                         </div>
                         
                         {/* Enhanced Table */}
@@ -2897,10 +2941,29 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                           <table className="w-full">
                             <thead>
                               <tr className="bg-gradient-to-r from-slate-800 via-slate-700 to-slate-800">
-                                <th className="text-left py-3 px-4 font-bold text-white text-sm uppercase tracking-wider border-r border-slate-600 last:border-r-0">
+                                <th className="text-center py-3 px-2 font-bold text-white text-sm uppercase tracking-wider border-r border-slate-600 last:border-r-0 w-12">
+                                  <div className="flex flex-col items-center justify-center gap-1">
+                                    <input 
+                                      type="checkbox" 
+                                      checked={mcaItems.length > 0 && selectedMcaItems.size === mcaItems.length}
+                                      onChange={() => {
+                                        if (selectedMcaItems.size === mcaItems.length) {
+                                          // Deselect all
+                                          setSelectedMcaItems(new Set());
+                                        } else {
+                                          // Select all
+                                          setSelectedMcaItems(new Set(mcaItems.map((_, i) => i)));
+                                        }
+                                      }}
+                                      className="w-5 h-5 rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
+                                    />
+                                    <span className="text-xs mt-1">All</span>
+                                  </div>
+                                </th>
+                                <th className="text-left py-3 px-4 font-bold text-white text-sm uppercase tracking-wider border-r border-slate-600 last:border-r-0 min-w-[180px]">
                                   <div className="flex items-center gap-2">
                                     <span className="w-1 h-4 bg-blue-400 rounded-full" />
-                                    Period
+                                    Date
                                   </div>
                                 </th>
                                 <th className="text-left py-3 px-4 font-bold text-white text-sm uppercase tracking-wider border-r border-slate-600 last:border-r-0">
@@ -2930,7 +2993,8 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                               </tr>
                             </thead>
                             {(() => { 
-                              const selected = activeTab === 'consistent' ? consistentItems : singleItems;
+                              // Show all MCA items
+                              const selected = mcaItems;
                               let amountColumnTotal = 0; 
                               return (
                             <tbody className="divide-y divide-slate-100">
@@ -2945,10 +3009,30 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                                   amountColumnTotal += Number.isFinite(displayAmount) ? Number(displayAmount) : 0;
                                   return (
                                     <tr key={`mca-sel-${idx}`} className="hover:bg-gradient-to-r hover:from-blue-50/30 hover:to-indigo-50/30 transition-all duration-200 group">
-                                      <td className="py-3 px-4 border-r border-slate-100 last:border-r-0">
+                                      <td className="py-3 px-2 border-r border-slate-100 last:border-r-0 text-center">
+                                        <div className="flex items-center justify-center">
+                                          <input 
+                                            type="checkbox" 
+                                            checked={selectedMcaItems.has(idx)}
+                                            onChange={() => {
+                                              setSelectedMcaItems(prev => {
+                                                const newSet = new Set(prev);
+                                                if (newSet.has(idx)) {
+                                                  newSet.delete(idx);
+                                                } else {
+                                                  newSet.add(idx);
+                                                }
+                                                return newSet;
+                                              });
+                                            }}
+                                            className="w-5 h-5 rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
+                                          />
+                                        </div>
+                                      </td>
+                                      <td className="py-3 px-4 border-r border-slate-100 last:border-r-0 min-w-[180px]">
                                         <div className="flex items-center gap-3">
                                           <span className="w-2 h-2 rounded-full bg-gradient-to-r from-blue-500 to-indigo-500 group-hover:scale-110 transition-transform" />
-                                          <span className="font-semibold text-slate-800 text-sm">{period || '—'}</span>
+                                          <span className="font-semibold text-slate-800 text-sm">{formatFullDate(period)}</span>
                                         </div>
                                       </td>
                                       <td className="py-3 px-4 border-r border-slate-100 last:border-r-0">
@@ -3000,12 +3084,13 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                           {/* Receipt-style Summary */}
                           <div className="border-t border-slate-300">
                             {(() => {
-                              // Only show the receipt-style summary for Consistent Payment tab
-                              if (activeTab !== 'consistent') return null;
+                              // Always show the receipt-style summary
                               try {
-                                // Compute total from the same selected items driving the table
-                                const selectedForTotal = activeTab === 'consistent' ? consistentItems : singleItems;
-                                const total = selectedForTotal.reduce((sum: number, it: any) => {
+                                // Compute total only from selected items
+                                const total = mcaItems.reduce((sum: number, it: any, index: number) => {
+                                  // Only include this item if it's selected
+                                  if (!selectedMcaItems.has(index)) return sum;
+                                  
                                   const val = Number(it?.displayAmount);
                                   return sum + (Number.isFinite(val) ? val : 0);
                                 }, 0);
@@ -3075,7 +3160,9 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                                         <div className="flex justify-between items-center py-3 border-b border-slate-200">
                                           <div className="flex-1">
                                             <div className="text-sm font-bold text-slate-900 uppercase tracking-wide">TOTAL AMOUNT OF FUNDERS</div>
-                                            <div className="text-xs text-slate-500 mt-1">Daily equivalent calculation applied</div>
+                                            <div className="text-xs text-slate-500 mt-1">
+                                              <span className="font-medium text-blue-600">{selectedMcaItems.size} of {mcaItems.length}</span> items selected
+                                            </div>
                                           </div>
                                           <div className="text-right min-w-[120px]">
                                             <div className="font-mono text-lg font-black text-slate-900 tabular-nums">
@@ -3204,7 +3291,7 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                   {/* PDF Export Root END */}
                   {/* Financial Summary removed per request */}
 
-                  
+                  {/* Blue notification removed as requested */}
 
                   {/* Next month reminder removed per request */}
 

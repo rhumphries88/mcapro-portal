@@ -1,6 +1,6 @@
 import React from 'react';
 import { Upload, FileText, Building2 } from 'lucide-react';
-import { fmtCurrency, fmtCurrency2, isBusinessNameAndOwner, formatDateHuman, parseAmount } from './SubmissionIntermediate.helpers';
+import { fmtCurrency, fmtCurrency2, isBusinessNameAndOwner, isFunderList, formatDateHuman, parseAmount } from './SubmissionIntermediate.helpers';
 
 // Upload Dropzone
 export type UploadDropzoneProps = {
@@ -345,15 +345,43 @@ export const TransactionSummarySection: React.FC<{
         categories.forEach((transaction: any) => {
           const dateRaw = transaction?.date || transaction?.Date || transaction?.transaction_date || transaction?.posted_at || '';
           const description = transaction?.description || transaction?.Description || transaction?.memo || transaction?.details || '';
-          const amount = parseFloat(String(transaction?.amount || transaction?.Amount || transaction?.value || transaction?.amt || 0).replace(/[^0-9.-]/g, '')) || 0;
+          // Robust amount parsing (supports many keys and regex fallback from description)
+          const tryFields = [
+            transaction?.amount,
+            transaction?.Amount,
+            transaction?.value,
+            transaction?.amt,
+            transaction?.debit_amount,
+            transaction?.debitAmount,
+            transaction?.daily_amount,
+            (transaction && (transaction['Daily Amount'] || transaction['daily Amount'])),
+            transaction?.original_amount,
+            transaction?.OriginalAmount,
+          ];
+          let amount = 0;
+          for (const v of tryFields) {
+            const n = parseFloat(String(v ?? '').toString().replace(/[^0-9.-]/g, ''));
+            if (Number.isFinite(n) && n !== 0) { amount = n; break; }
+          }
+          if (!Number.isFinite(amount) || amount === 0) {
+            // Fallback: extract last currency-like number from description
+            const m = String(description || '').match(/-?\$?\s*([0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]{2})|[0-9]+(?:\.[0-9]{2})?)/g);
+            if (m && m.length) {
+              const last = m[m.length - 1];
+              const n = parseFloat(last.replace(/[^0-9.-]/g, ''));
+              if (Number.isFinite(n)) amount = n;
+            }
+          }
+          // Final guard
+          if (!Number.isFinite(amount)) amount = 0;
           subTotals[mainName] += amount;
           subSum += amount;
-          if (!isBusinessNameAndOwner(mainName)) totalFromCategories += amount;
+          if (!isBusinessNameAndOwner(mainName) && !isFunderList(mainName)) totalFromCategories += amount;
           const key = `${mainName}::${mainName}`;
           if (!subToRows[key]) subToRows[key] = [];
           subToRows[key].push({ date: String(dateRaw || ''), description: String(description || ''), amount });
         });
-        mainTotals[mainName] += isBusinessNameAndOwner(mainName) ? 0 : subSum;
+        mainTotals[mainName] += (isBusinessNameAndOwner(mainName) || isFunderList(mainName)) ? 0 : subSum;
         mainToSubs[mainName].push({ name: mainName, amount: subSum });
       } else if (categories && typeof categories === 'object') {
         let mainSum = 0;
@@ -384,15 +412,42 @@ export const TransactionSummarySection: React.FC<{
           rows.forEach((transaction: any) => {
             const dateRaw = transaction?.date || transaction?.Date || transaction?.transaction_date || transaction?.posted_at || '';
             const description = transaction?.description || transaction?.Description || transaction?.memo || transaction?.details || '';
-            const amount = parseFloat(String(transaction?.amount || transaction?.Amount || transaction?.value || transaction?.amt || 0).replace(/[^0-9.-]/g, '')) || 0;
+            // Robust amount parsing (supports many keys and regex fallback from description)
+            const tryFields = [
+              transaction?.amount,
+              transaction?.Amount,
+              transaction?.value,
+              transaction?.amt,
+              transaction?.debit_amount,
+              transaction?.debitAmount,
+              transaction?.daily_amount,
+              (transaction && (transaction['Daily Amount'] || transaction['daily Amount'])),
+              transaction?.original_amount,
+              transaction?.OriginalAmount,
+            ];
+            let amount = 0;
+            for (const v of tryFields) {
+              const n = parseFloat(String(v ?? '').toString().replace(/[^0-9.-]/g, ''));
+              if (Number.isFinite(n) && n !== 0) { amount = n; break; }
+            }
+            if (!Number.isFinite(amount) || amount === 0) {
+              const m = String(description || '').match(/-?\$?\s*([0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]{2})|[0-9]+(?:\.[0-9]{2})?)/g);
+              if (m && m.length) {
+                const last = m[m.length - 1];
+                const n = parseFloat(last.replace(/[^0-9.-]/g, ''));
+                if (Number.isFinite(n)) amount = n;
+              }
+            }
+            // Final guard
+            if (!Number.isFinite(amount)) amount = 0;
             subTotals[subName] += amount;
             subSum += amount;
-            if (!isBusinessNameAndOwner(subName)) totalFromCategories += amount;
+            if (!isBusinessNameAndOwner(subName) && !isFunderList(subName)) totalFromCategories += amount;
             const key = `${mainName}::${subName}`;
             if (!subToRows[key]) subToRows[key] = [];
             subToRows[key].push({ date: String(dateRaw || ''), description: String(description || ''), amount });
           });
-          mainSum += isBusinessNameAndOwner(subName) ? 0 : subSum;
+          mainSum += (isBusinessNameAndOwner(subName) || isFunderList(subName)) ? 0 : subSum;
           mainToSubs[mainName].push({ name: subName, amount: subSum });
         });
         if (!mainTotals[mainName]) mainTotals[mainName] = 0;
