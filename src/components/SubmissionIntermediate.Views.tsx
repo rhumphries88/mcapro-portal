@@ -379,12 +379,15 @@ export const TransactionSummarySection: React.FC<{
           if (!Number.isFinite(amount)) amount = 0;
           subTotals[mainName] += amount;
           subSum += amount;
+          // Only base "totalFromCategories" on non-special categories
           if (!isBusinessNameAndOwner(mainName) && !isFunderList(mainName)) totalFromCategories += amount;
           const key = `${mainName}::${mainName}`;
           if (!subToRows[key]) subToRows[key] = [];
           subToRows[key].push({ date: String(dateRaw || ''), description: String(description || ''), amount });
         });
-        mainTotals[mainName] += (isBusinessNameAndOwner(mainName) || isFunderList(mainName)) ? 0 : subSum;
+        // For display, record the raw total for this main (even if special),
+        // effective inclusion will be handled later via selection/default logic
+        mainTotals[mainName] += subSum;
         mainToSubs[mainName].push({ name: mainName, amount: subSum });
       } else if (categories && typeof categories === 'object') {
         let mainSum = 0;
@@ -450,7 +453,8 @@ export const TransactionSummarySection: React.FC<{
             if (!subToRows[key]) subToRows[key] = [];
             subToRows[key].push({ date: String(dateRaw || ''), description: String(description || ''), amount });
           });
-          mainSum += (isBusinessNameAndOwner(subName) || isFunderList(subName)) ? 0 : subSum;
+          // For display purposes, track the raw sum; effective inclusion is handled later
+          mainSum += subSum;
           mainToSubs[mainName].push({ name: subName, amount: subSum });
         });
         if (!mainTotals[mainName]) mainTotals[mainName] = 0;
@@ -476,9 +480,13 @@ export const TransactionSummarySection: React.FC<{
       if (sel) {
         rows.forEach((r, idx) => { if (sel.has(idx)) subEffective += (r.amount || 0); });
       } else {
-        subEffective = s.amount || rows.reduce((sum, r) => sum + (r.amount || 0), 0);
+        // Default behavior: specials (business/owner and funder list) are NOT auto-included
+        const isSpecial = isBusinessNameAndOwner(s.name) || isFunderList(s.name);
+        subEffective = isSpecial
+          ? 0
+          : (s.amount || rows.reduce((sum, r) => sum + (r.amount || 0), 0));
       }
-      if (!isBusinessNameAndOwner(s.name) && !isFunderList(s.name)) mainSum += subEffective;
+      mainSum += subEffective;
     });
     effectiveMainTotals[mainName] = mainSum;
     selectedTotalFromCategories += mainSum;
@@ -588,12 +596,12 @@ export const TransactionSummarySection: React.FC<{
               {/* Enhanced Category Cards (no internal scroll) */}
               <div className="p-8 space-y-6">
                 {Object.entries(mainTotals)
-                  .filter(([mainName, amt]) => amt > 0 && !isBusinessNameAndOwner(mainName) && !isFunderList(mainName))
+                  .filter(([, amt]) => amt > 0)
                   .sort(([, a], [, b]) => b - a)
                   .map(([mainName, mainAmt]) => {
                     // Compute subcategory counts and how many are currently included (based on selection)
                     const subs = mainToSubs[mainName] || [];
-                    const visibleSubs = subs.filter(s => s.amount > 0 && !isBusinessNameAndOwner(s.name) && !isFunderList(s.name));
+                    const visibleSubs = subs.filter(s => s.amount > 0);
                     const totalSubs = visibleSubs.length;
                     let includedSubs = 0;
                     visibleSubs.forEach((s) => {
@@ -604,7 +612,10 @@ export const TransactionSummarySection: React.FC<{
                       if (sel) {
                         rows.forEach((r, idx) => { if (sel.has(idx)) subEffective += (r.amount || 0); });
                       } else {
-                        subEffective = s.amount || rows.reduce((sum, r) => sum + (r.amount || 0), 0);
+                        const isSpecial = isBusinessNameAndOwner(s.name) || isFunderList(s.name);
+                        subEffective = isSpecial
+                          ? 0
+                          : (s.amount || rows.reduce((sum, r) => sum + (r.amount || 0), 0));
                       }
                       if (subEffective > 0) includedSubs += 1;
                     });
@@ -633,7 +644,7 @@ export const TransactionSummarySection: React.FC<{
                           {/* Subcategory Chips */}
                           <div className="flex flex-wrap gap-2">
                             {mainToSubs[mainName]
-                              .filter(s => s.amount > 0 && !isBusinessNameAndOwner(s.name) && !isFunderList(s.name))
+                              .filter(s => s.amount > 0)
                               .sort((a,b)=> b.amount - a.amount)
                               .slice(0, 6)
                               .map(s => {
@@ -645,7 +656,10 @@ export const TransactionSummarySection: React.FC<{
                                 if (sel) {
                                   rows.forEach((r, idx) => { if (sel.has(idx)) effectiveSub += (r.amount || 0); });
                                 } else {
-                                  effectiveSub = s.amount || rows.reduce((sum, r) => sum + (r.amount || 0), 0);
+                                  const isSpecial = isBusinessNameAndOwner(s.name) || isFunderList(s.name);
+                                  effectiveSub = isSpecial
+                                    ? 0
+                                    : (s.amount || rows.reduce((sum, r) => sum + (r.amount || 0), 0));
                                 }
                                 const totalRows = rows.length;
                                 const selectedCount = sel ? sel.size : totalRows;
@@ -764,7 +778,10 @@ export const TransactionSummarySection: React.FC<{
       {modal && (() => {
         const key = modal.key;
         const rows = modal.rows;
-        const sel = selectedMap[key] ?? new Set(rows.map((_, i) => i));
+        // Default: specials are NOT pre-selected; others select all by default
+        const isSpecialModal = isBusinessNameAndOwner(modal.title) || isFunderList(modal.title);
+        const defaultSel = isSpecialModal ? new Set<number>() : new Set(rows.map((_, i) => i));
+        const sel = selectedMap[key] ?? defaultSel;
         const selectedTotal = rows.reduce((sum, r, i) => sum + (sel.has(i) ? (r.amount || 0) : 0), 0);
         const onToggleIndex = (i: number) => {
           setSelectedMap(prev => {
