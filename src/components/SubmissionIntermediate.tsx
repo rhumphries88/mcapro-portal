@@ -6,6 +6,7 @@ import { getApplicationDocuments, deleteApplicationDocument, deleteApplicationDo
 
 import { fmtCurrency2, parseAmount, getUniqueDateKey, fetchWithTimeout, formatFullDate, formatDateHuman, slugify } from './SubmissionIntermediate.helpers';
 import { UploadDropzone, FilesBucketList, LegalComplianceSection, DocumentDetailsControls, TransactionSummarySection } from './SubmissionIntermediate.Views';
+import MTDView from './MTDView';
 
 
 const NEW_DEAL_WEBHOOK_URL = '/.netlify/functions/new-deal';
@@ -507,6 +508,8 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
   const [bucketSubmitting, setBucketSubmitting] = useState(false);
   const [batchProcessing, setBatchProcessing] = useState(false);
   const [exportingPDF, setExportingPDF] = useState(false);
+  // Local tab state for this form only (not connected to other UI)
+  const [activeTab, setActiveTab] = useState<'monthly' | 'mtd'>('monthly');
 
   // PDF capture root retained (no longer used for screenshot) in case we decide to export specific DOM later
   const pdfRef = useRef<HTMLDivElement | null>(null);
@@ -1700,6 +1703,54 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
         <div className="px-10 py-8 border-b border-gray-200 bg-gradient-to-r from-blue-50 to-indigo-50">
           <h2 className="text-3xl font-bold text-gray-900">Merchant Cash Advance Application</h2>
           <p className="text-gray-600 mt-2 text-lg">Please fill out all required information to get matched with qualified lenders</p>
+
+          {/* Enhanced Local Tabs: Monthly vs MTD (Month-To-Date) */}
+          <div className="mt-8">
+            <div role="tablist" aria-label="Form view tabs" className="inline-flex items-center p-1 rounded-2xl bg-gradient-to-r from-slate-100 via-white to-slate-100 border border-slate-200/60 shadow-lg backdrop-blur-sm">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={activeTab === 'monthly'}
+                onClick={() => setActiveTab('monthly')}
+                className={`relative px-6 sm:px-8 py-3 text-sm font-bold rounded-xl transition-all duration-300 ease-out ${
+                  activeTab === 'monthly'
+                    ? 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-lg shadow-blue-500/25 transform scale-[1.02]'
+                    : 'bg-transparent text-slate-600 hover:text-slate-800 hover:bg-white/60 hover:shadow-sm'
+                }`}
+              >
+                <span className="relative z-10 flex items-center gap-2">
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                  </svg>
+                  Monthly
+                </span>
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={activeTab === 'mtd'}
+                onClick={() => setActiveTab('mtd')}
+                className={`relative px-6 sm:px-8 py-3 text-sm font-bold rounded-xl transition-all duration-300 ease-out ${
+                  activeTab === 'mtd'
+                    ? 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-lg shadow-blue-500/25 transform scale-[1.02]'
+                    : 'bg-transparent text-slate-600 hover:text-slate-800 hover:bg-white/60 hover:shadow-sm'
+                }`}
+              >
+                <span className="relative z-10 flex items-center gap-2">
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" />
+                  </svg>
+                  MTD
+                </span>
+              </button>
+            </div>
+            <div className="mt-4 flex items-center gap-2">
+              <div className="w-2 h-2 rounded-full bg-blue-500 animate-pulse"></div>
+              <span className="text-sm font-medium text-slate-600">
+                Viewing: <span className="font-bold text-slate-800 uppercase tracking-wide">{activeTab}</span> Analysis
+              </span>
+            </div>
+          </div>
         </div>
 
         <div className="p-10">
@@ -1736,27 +1787,36 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
             <>
               {/* Business Information Section moved below Bank Statements */}
 
-              {/* Bank Statement Upload - Enhanced Professional Design */}
-              <div className="mb-8">
-                  <div className="mb-8 bg-gradient-to-r from-slate-50 to-blue-50/30 rounded-2xl p-6 border border-slate-200">
-                    <div className="flex items-center justify-between mb-4">
+              {/* MTD View (shown when MTD tab is active) */}
+              {activeTab === 'mtd' && (
+                <MTDView
+                  applicationId={String((details as any)?.applicationId || (initial as any)?.applicationId || (details as any)?.id || (initial as any)?.id || '')}
+                  businessName={String(details?.businessName || initial?.businessName || '')}
+                  ownerName={String(details?.ownerName || initial?.ownerName || '')}
+                />
+              )}
+
+              {/* Bank Statement Upload - Enhanced Professional Design (Monthly tab only) */}
+              <div className={`mb-8 ${activeTab === 'mtd' ? 'hidden' : ''}`}>
+              <div className="mb-8 bg-white rounded-2xl p-6 border border-slate-200 shadow-sm">
+              <div className="flex items-start justify-between">
                       <div className="flex items-center gap-4">
                         <div className="p-3 bg-gradient-to-br from-blue-500 to-indigo-600 rounded-xl shadow-lg">
                           <Upload className="w-6 h-6 text-white" />
                         </div>
                         <div>
-                          <h3 className="text-2xl font-bold text-slate-800 mb-1">Bank Statement Documents</h3>
-                          <p className="text-slate-600 font-medium">Secure document processing for financial analysis</p>
+                          <h3 className="text-2xl font-bold text-slate-800">Bank Statement Documents</h3>
+                          <p className="text-slate-600">Secure document processing for financial analysis</p>
                         </div>
                       </div>
-                      <div className="hidden md:flex items-center gap-2 px-4 py-2 bg-white/60 backdrop-blur-sm rounded-lg border border-slate-200 shadow-sm">
-                        <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
-                        <span className="text-sm font-medium text-slate-700">System Ready</span>
-                      </div>
+                      <span className="hidden md:inline-flex items-center gap-2 px-3 py-1 rounded-full text-sm font-medium bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200">
+                        <span className="w-2 h-2 rounded-full bg-emerald-500" />
+                        System Ready
+                      </span>
                     </div>
                     <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-4">
                       <div className="flex items-center gap-3 p-3 bg-white/50 rounded-lg border border-slate-200">
-                        <div className="w-8 h-8 bg-emerald-100 rounded-lg flex items-center justify-center">
+                        <div className="w-8 h-8 bg-emerald-100 rounded-lg -> p-2 rounded-lg bg-emerald-100 text-emerald-700">
                           <svg className="w-4 h-4 text-emerald-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
                           </svg>
@@ -1766,8 +1826,8 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                           <p className="text-xs text-slate-600">Bank-grade encryption</p>
                         </div>
                       </div>
-                      <div className="flex items-center gap-3 p-3 bg-white/50 rounded-lg border border-slate-200">
-                        <div className="w-8 h-8 bg-blue-100 rounded-lg flex items-center justify-center">
+                      <div className="flex items-center gap-3 p-4 rounded-xl border border-slate-200 bg-slate-50">
+                        <div className="w-8 h-8 bg-blue-100 rounded-lg -> p-2 rounded-lg bg-indigo-100 text-indigo-700">
                           <svg className="w-4 h-4 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
                           </svg>
@@ -1778,7 +1838,7 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                         </div>
                       </div>
                       <div className="flex items-center gap-3 p-3 bg-white/50 rounded-lg border border-slate-200">
-                        <div className="w-8 h-8 bg-purple-100 rounded-lg flex items-center justify-center">
+                        <div className="w-8 h-8 bg-purple-100 rounded-lg -> p-2 rounded-lg bg-fuchsia-100 text-fuchsia-700">
                           <svg className="w-4 h-4 text-purple-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
                           </svg>
@@ -3318,44 +3378,51 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                   {/* Next month reminder removed per request */}
 
                   {/* Upload Dropzone (enhanced) */}
-                  <UploadDropzone
-                    isDragOver={isDragOver}
-                    batchProcessing={batchProcessing}
-                    disabled={(
-                      submitting ||
-                      batchProcessing ||
-                      isFinancialOverviewUpdating ||
-                      isAnalysisInProgress ||
-                      hasRecentDocsMissingFinancialData ||
-                      // partial-processing: some processed but not all uploaded
-                      ((Array.isArray(dbDocs) ? dbDocs.length : 0) > (Array.isArray(mcaSummaryRows) ? mcaSummaryRows.length : 0))
-                    )}
-                    onDragOver={handleDragOver}
-                    onDragLeave={handleDragLeave}
-                    onDrop={handleDrop}
-                    onChooseFiles={addFilesToBucket}
-                  />
-                  {/* Local Bucket Preview and Submit All */}
-                  <FilesBucketList
-                    files={fileBucket}
-                    bucketSubmitting={bucketSubmitting}
-                    batchProcessing={batchProcessing}
-                    onSubmitAll={submitAllBucketFiles}
-                    onRemoveAt={removeFromBucket}
-                  />
+                  {activeTab !== 'mtd' && (
+                    <>
+                      <UploadDropzone
+                        isDragOver={isDragOver}
+                        batchProcessing={batchProcessing}
+                        disabled={(
+                          submitting ||
+                          batchProcessing ||
+                          isFinancialOverviewUpdating ||
+                          isAnalysisInProgress ||
+                          hasRecentDocsMissingFinancialData ||
+                          // partial-processing: some processed but not all uploaded
+                          ((Array.isArray(dbDocs) ? dbDocs.length : 0) > (Array.isArray(mcaSummaryRows) ? mcaSummaryRows.length : 0))
+                        )}
+                        onDragOver={handleDragOver}
+                        onDragLeave={handleDragLeave}
+                        onDrop={handleDrop}
+                        onChooseFiles={addFilesToBucket}
+                      />
+                      {/* Local Bucket Preview and Submit All */}
+                      <FilesBucketList
+                        files={fileBucket}
+                        bucketSubmitting={bucketSubmitting}
+                        batchProcessing={batchProcessing}
+                        onSubmitAll={submitAllBucketFiles}
+                        onRemoveAt={removeFromBucket}
+                      />
+                    </>
+                  )}
               </div>
 
               {/* Global Financial Details section removed; details now expand inline under a clicked completed document */}
 
-              {/* Legal & Compliance Section */}
-              <LegalComplianceSection
-                hasBankruptcies={Boolean(details.hasBankruptcies)}
-                hasOpenJudgments={Boolean(details.hasOpenJudgments)}
-                onToggleBankruptcies={(checked) => set('hasBankruptcies', checked)}
-                onToggleOpenJudgments={(checked) => set('hasOpenJudgments', checked)}
-              />
+              {/* Legal & Compliance Section (Monthly only) */}
+              {activeTab !== 'mtd' && (
+                <LegalComplianceSection
+                  hasBankruptcies={Boolean(details.hasBankruptcies)}
+                  hasOpenJudgments={Boolean(details.hasOpenJudgments)}
+                  onToggleBankruptcies={(checked) => set('hasBankruptcies', checked)}
+                  onToggleOpenJudgments={(checked) => set('hasOpenJudgments', checked)}
+                />
+              )}
 
-              {/* Footer Actions */}
+              {/* Footer Actions (Monthly only) */}
+              {activeTab !== 'mtd' && (
               <div className="flex items-center justify-between pt-8 mt-8 border-t border-gray-100">
                 <div className="flex items-center gap-4">
                   {onBack && (
@@ -3441,6 +3508,7 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                   </button>
                 </div>
               </div>
+              )}
 
               {/* Confirmation Modal removed: uploads auto-assign to the next available month */}
 

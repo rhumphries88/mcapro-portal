@@ -292,6 +292,145 @@ export const getApplicationDocuments = async (applicationId: string) => {
   return data as ApplicationDocument[]
 }
 
+// ===================== MTD Uploads =====================
+export interface ApplicationMTD {
+  id: string
+  application_id: string
+  file_name: string
+  file_size?: number
+  file_type?: string
+  upload_date?: string
+  created_at?: string
+  statement_date?: string
+  file_url?: string
+  upload_status?: 'pending' | 'processing' | 'completed' | 'failed'
+}
+
+export const insertApplicationMTD = async (row: {
+  application_id: string
+  file_name: string
+  file_size?: number
+  file_type?: string
+  statement_date?: string
+  file_url?: string
+  upload_status?: ApplicationMTD['upload_status']
+}): Promise<ApplicationMTD> => {
+  const payload = {
+    application_id: row.application_id,
+    file_name: row.file_name,
+    file_size: row.file_size ?? null,
+    file_type: row.file_type ?? null,
+    statement_date: row.statement_date ?? null,
+    file_url: row.file_url ?? null,
+    upload_status: row.upload_status ?? 'pending',
+  }
+  const { data, error } = await supabase
+    .from('application_mtd')
+    .insert([payload])
+    .select()
+    .single()
+
+  if (error) throw error
+  return data as unknown as ApplicationMTD
+}
+
+export const updateApplicationMTDStatus = async (
+  id: string,
+  upload_status: ApplicationMTD['upload_status']
+): Promise<ApplicationMTD> => {
+  const { data, error } = await supabase
+    .from('application_mtd')
+    .update({ upload_status })
+    .eq('id', id)
+    .select()
+    .single()
+
+  if (error) throw error
+  return data as unknown as ApplicationMTD
+}
+
+export const updateApplicationMTDFileUrl = async (
+  id: string,
+  file_url: string
+): Promise<ApplicationMTD> => {
+  const { data, error } = await supabase
+    .from('application_mtd')
+    .update({ file_url })
+    .eq('id', id)
+    .select()
+    .single()
+
+  if (error) throw error
+  return data as unknown as ApplicationMTD
+}
+
+export const getApplicationMTDByApplicationId = async (
+  applicationId: string
+): Promise<ApplicationMTD[]> => {
+  const { data, error } = await supabase
+    .from('application_mtd')
+    .select('*')
+    .eq('application_id', applicationId)
+    .order('created_at', { ascending: false })
+
+  if (error) throw error
+  return (data as unknown as ApplicationMTD[]) || []
+}
+
+export const deleteApplicationMTD = async (id: string) => {
+  const { error } = await supabase
+    .from('application_mtd')
+    .delete()
+    .eq('id', id)
+
+  if (error) throw error
+}
+
+export const deleteApplicationMTDByAppAndName = async (
+  applicationId: string,
+  file_name: string,
+  file_size?: number
+) => {
+  let query = supabase
+    .from('application_mtd')
+    .delete()
+    .eq('application_id', applicationId)
+    .eq('file_name', file_name)
+
+  if (typeof file_size === 'number') {
+    query = query.eq('file_size', file_size)
+  }
+
+  const { error } = await query
+  if (error) throw error
+}
+
+export const resolveAndDeleteApplicationMTD = async (
+  applicationId: string,
+  file_name: string,
+  file_size?: number
+) => {
+  // Look up id safely first
+  let sel = supabase
+    .from('application_mtd')
+    .select('id, file_size')
+    .eq('application_id', applicationId)
+    .eq('file_name', file_name)
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  const { data, error } = await sel;
+  if (error) throw error
+  const id = (data as any)?.id as string | undefined
+  if (id) {
+    await deleteApplicationMTD(id)
+    return
+  }
+  // Fallback to direct conditional delete
+  await deleteApplicationMTDByAppAndName(applicationId, file_name, file_size)
+}
+
 export const deleteApplicationDocument = async (id: string) => {
   const { error } = await supabase
     .from('application_documents')
