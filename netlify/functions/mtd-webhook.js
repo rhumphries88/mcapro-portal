@@ -100,7 +100,9 @@ exports.handler = async (event, context) => {
     const statementDate = `${new Date().toISOString().split('T')[0]}-${Date.now()}-mtd`;
     formData.append('statementDate', statementDate);
     formData.append('application_id', requestBody.applicationId || '');
-    formData.append('document_id', `mtd-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`);
+    // Prefer client-provided documentId (Supabase row id). Fallback to generated id.
+    const forwardedDocumentId = String(requestBody.documentId || '').trim() || `mtd-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+    formData.append('document_id', forwardedDocumentId);
     formData.append('business_name', requestBody.businessName || 'MTD Upload');
     formData.append('owner_name', requestBody.ownerName || 'MTD User');
     formData.append('uploadType', 'mtd');

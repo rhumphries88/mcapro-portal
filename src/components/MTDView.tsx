@@ -243,6 +243,8 @@ const MTDView: React.FC<MTDViewProps> = ({ applicationId, businessName, ownerNam
           businessName: businessName || '',
           ownerName: ownerName || '',
           uploadType: 'mtd',
+          // Pass through our Supabase row id so webhook can forward it as document_id
+          documentId: mtdRowId || '',
           timestamp: new Date().toISOString(),
         };
 
