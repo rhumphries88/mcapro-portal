@@ -316,6 +316,10 @@ const SubmissionsPortal: React.FC<SubmissionsPortalProps> = ({ initialStep, init
 
           const form = new FormData();
           form.append('file', extra.pdfFile, extra.pdfFile.name);
+          // Include identifiers and names for downstream processing
+          if (appData.id) form.append('application_id', appData.id);
+          if (appData.businessName) form.append('business_name', appData.businessName);
+          if (appData.contactInfo?.ownerName) form.append('owner_name', appData.contactInfo.ownerName);
           const resp = await fetch(url, { method: 'POST', body: form });
           console.log('[newDeal] response status:', resp.status, resp.statusText);
           console.log('[newDeal] response content-type:', resp.headers ? resp.headers.get('content-type') : '(no headers)');
@@ -811,6 +815,8 @@ const SubmissionsPortal: React.FC<SubmissionsPortalProps> = ({ initialStep, init
           initial={{
             id: application?.id ?? '',
             applicationId: application?.id ?? '',
+            business_name: application?.businessName ?? '',
+            owner_name: application?.ownerName ?? '',
             dealName: (intermediatePrefill?.dealName as string) ?? application?.businessName ?? '',
             industry: (intermediatePrefill?.industry as string) ?? application?.industry ?? '',
             entityType: (intermediatePrefill?.entityType as string) ?? application?.businessType ?? '',
@@ -826,7 +832,6 @@ const SubmissionsPortal: React.FC<SubmissionsPortalProps> = ({ initialStep, init
             requestedAmount: (intermediatePrefill?.requestedAmount as string) ?? String(application?.requestedAmount ?? ''),
             grossAnnualRevenue: (intermediatePrefill?.grossAnnualRevenue as string) ?? String(application?.annualRevenue ?? ''),
             avgDailyBalance: (intermediatePrefill?.avgDailyBalance as string) ?? '',
-            avgMonthlyDepositCount: (intermediatePrefill?.avgMonthlyDepositCount as string) ?? String(application?.monthlyDeposits ?? ''),
             nsfCount: (intermediatePrefill?.nsfCount as string) ?? '',
             negativeDays: (intermediatePrefill?.negativeDays as string) ?? '',
             currentPositionCount: (intermediatePrefill?.currentPositionCount as string) ?? '',

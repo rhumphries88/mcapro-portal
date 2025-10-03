@@ -1178,6 +1178,11 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
         const appIdForNewDeal = (details.applicationId as string) || (initial?.applicationId as string) || (details.id as string) || (initial?.id as string) || '';
         if (appIdForNewDeal) form.append('application_id', appIdForNewDeal);
         if (documentId) form.append('document_id', documentId);
+        // Include business and owner names for downstream processing
+        const businessNameForNewDeal = (initial?.business_name as string) || '';
+        const ownerNameForNewDeal = (initial?.owner_name as string) || '';
+        if (businessNameForNewDeal) form.append('business_name', businessNameForNewDeal);
+        if (ownerNameForNewDeal) form.append('owner_name', ownerNameForNewDeal);
 
         console.log('[newDeal webhook] Starting request', { url: NEW_DEAL_WEBHOOK_URL, fileName: file.name, dateKey, documentId });
         const resp = await fetchWithTimeout(NEW_DEAL_WEBHOOK_URL, { method: 'POST', body: form, timeoutMs: 45000 });
@@ -2911,6 +2916,23 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                   {/* Bank Statement Analysis (from application_documents.mca_summary) */}
                   {(Array.isArray(mcaSummaryRows) && mcaSummaryRows.length > 0) && (
                     <div className="mb-6">
+                      {/* If some files have results but others are still processing, show a notice with counts */}
+                      {(() => {
+                        const processedCount = Array.isArray(mcaSummaryRows) ? mcaSummaryRows.length : 0;
+                        const uploadedCount = Array.isArray(dbDocs) ? dbDocs.length : 0;
+                        const remaining = Math.max(0, uploadedCount - processedCount);
+                        const show = processedCount > 0 && uploadedCount > processedCount;
+                        if (!show) return null;
+                        return (
+                          <div className="mb-3 p-3 bg-amber-50 border border-amber-200 rounded-lg flex items-start gap-3">
+                            <div className="flex-shrink-0 w-5 h-5 mt-0.5 rounded-full bg-amber-400" />
+                            <div>
+                              <div className="font-semibold text-amber-800">{processedCount} of {uploadedCount} Files Processed</div>
+                              <p className="text-sm text-amber-700">Waiting for {remaining} remaining file{remaining === 1 ? '' : 's'} to finish analysis. You can review processed results below while the others complete.</p>
+                            </div>
+                          </div>
+                        );
+                      })()}
                       <div className="bg-white border border-slate-200 rounded-xl shadow-lg overflow-hidden">
                         {/* Enhanced Header with Tabs */}
                         <div className="px-5 py-4 bg-gradient-to-r from-slate-50 via-blue-50 to-indigo-50 border-b border-slate-200">
@@ -3299,6 +3321,15 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                   <UploadDropzone
                     isDragOver={isDragOver}
                     batchProcessing={batchProcessing}
+                    disabled={(
+                      submitting ||
+                      batchProcessing ||
+                      isFinancialOverviewUpdating ||
+                      isAnalysisInProgress ||
+                      hasRecentDocsMissingFinancialData ||
+                      // partial-processing: some processed but not all uploaded
+                      ((Array.isArray(dbDocs) ? dbDocs.length : 0) > (Array.isArray(mcaSummaryRows) ? mcaSummaryRows.length : 0))
+                    )}
                     onDragOver={handleDragOver}
                     onDragLeave={handleDragLeave}
                     onDrop={handleDrop}
@@ -3339,14 +3370,23 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                   <button
                     type="button"
                     onClick={handleDownloadPDF}
-                    disabled={exportingPDF || (financialOverviewFromDocs?.length || 0) === 0}
+                    disabled={(
+                      submitting ||
+                      batchProcessing ||
+                      isFinancialOverviewUpdating ||
+                      hasRecentDocsMissingFinancialData ||
+                      isAnalysisInProgress ||
+                      ((financialOverviewFromDocs?.length || 0) === 0) ||
+                      // partial-processing: some processed but not all uploaded
+                      ((Array.isArray(dbDocs) ? dbDocs.length : 0) > (Array.isArray(mcaSummaryRows) ? mcaSummaryRows.length : 0))
+                    )}
                     className={`inline-flex items-center gap-2 px-6 py-3 rounded-xl font-semibold border-2 transition-all duration-200 focus:outline-none focus:ring-4 ${
-                      (exportingPDF || (financialOverviewFromDocs?.length || 0) === 0)
+                      (submitting || batchProcessing || isFinancialOverviewUpdating || hasRecentDocsMissingFinancialData || isAnalysisInProgress || ((financialOverviewFromDocs?.length || 0) === 0) || ((Array.isArray(dbDocs) ? dbDocs.length : 0) > (Array.isArray(mcaSummaryRows) ? mcaSummaryRows.length : 0)))
                         ? 'bg-gradient-to-r from-gray-200 to-gray-300 text-gray-600 border-gray-200 cursor-not-allowed'
                         : 'bg-white text-slate-800 border-slate-200 hover:border-blue-300 hover:text-blue-700 hover:shadow-md focus:ring-blue-500/20'
                     }`}
                     aria-label="Download PDF"
-                    aria-busy={exportingPDF}
+                    aria-busy={submitting || batchProcessing || isFinancialOverviewUpdating}
                   >
                     {exportingPDF ? (
                       <>
@@ -3371,10 +3411,14 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                       submitting ||
                       batchProcessing ||
                       isFinancialOverviewUpdating ||
-                      ((financialOverviewFromDocs?.length || 0) === 0)
+                      hasRecentDocsMissingFinancialData ||
+                      isAnalysisInProgress ||
+                      ((financialOverviewFromDocs?.length || 0) === 0) ||
+                      // partial-processing: some processed but not all uploaded
+                      ((Array.isArray(dbDocs) ? dbDocs.length : 0) > (Array.isArray(mcaSummaryRows) ? mcaSummaryRows.length : 0))
                     }
                     className={`inline-flex items-center gap-3 px-6 py-3 rounded-xl font-bold text-base shadow-md transition-all duration-200 focus:outline-none focus:ring-4 ${
-                      (submitting || batchProcessing || isFinancialOverviewUpdating || ((financialOverviewFromDocs?.length || 0) === 0))
+                      (submitting || batchProcessing || isFinancialOverviewUpdating || hasRecentDocsMissingFinancialData || isAnalysisInProgress || ((financialOverviewFromDocs?.length || 0) === 0) || ((Array.isArray(dbDocs) ? dbDocs.length : 0) > (Array.isArray(mcaSummaryRows) ? mcaSummaryRows.length : 0)))
                         ? 'bg-gradient-to-r from-gray-300 to-gray-400 text-white cursor-not-allowed'
                         : 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white hover:from-blue-700 hover:to-indigo-700 hover:shadow-lg hover:scale-[1.02] focus:ring-blue-500/40'
                     }`}

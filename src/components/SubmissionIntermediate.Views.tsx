@@ -6,6 +6,7 @@ import { fmtCurrency, fmtCurrency2, isBusinessNameAndOwner, isFunderList, format
 export type UploadDropzoneProps = {
   isDragOver: boolean;
   batchProcessing: boolean;
+  disabled?: boolean;
   onDragOver: (e: React.DragEvent<HTMLDivElement>) => void;
   onDragLeave: (e: React.DragEvent<HTMLDivElement>) => void;
   onDrop: (e: React.DragEvent<HTMLDivElement>) => void;
@@ -14,6 +15,7 @@ export type UploadDropzoneProps = {
 export const UploadDropzone: React.FC<UploadDropzoneProps> = ({
   isDragOver,
   batchProcessing,
+  disabled,
   onDragOver,
   onDragLeave,
   onDrop,
@@ -21,10 +23,10 @@ export const UploadDropzone: React.FC<UploadDropzoneProps> = ({
 }) => (
   <div 
     className={`relative p-10 border-2 border-dashed rounded-3xl text-center transition-all duration-300 ${
-      isDragOver 
-        ? 'border-blue-400 bg-gradient-to-br from-blue-50 to-indigo-50 shadow-xl scale-[1.02]' 
-        : 'border-gray-300 bg-gradient-to-br from-gray-50/50 via-white to-blue-50/30 hover:border-blue-400 hover:bg-gradient-to-br hover:from-blue-50/50 hover:to-indigo-50/50 hover:shadow-lg hover:scale-[1.01]'
-    }`}
+      isDragOver && !disabled
+        ? 'border-blue-400 bg-gradient-to-br from-blue-50 to-indigo-50 shadow-xl scale-[1.02]'
+        : 'border-gray-300 bg-gradient-to-br from-gray-50/50 via-white to-blue-50/30 ' + (!disabled ? 'hover:border-blue-400 hover:bg-gradient-to-br hover:from-blue-50/50 hover:to-indigo-50/50 hover:shadow-lg hover:scale-[1.01]' : 'opacity-60')
+    } ${disabled ? 'pointer-events-none' : ''}`}
     onDragOver={onDragOver}
     onDragLeave={onDragLeave}
     onDrop={onDrop}
@@ -39,7 +41,7 @@ export const UploadDropzone: React.FC<UploadDropzoneProps> = ({
       <p className="text-sm text-gray-600 mb-8 max-w-md mx-auto leading-relaxed">
         Drag & drop PDF files here or click to browse.
       </p>
-      <label className={`cursor-pointer inline-flex items-center gap-3 px-8 py-4 rounded-2xl font-bold focus:outline-none focus:ring-4 focus:ring-blue-500/40 transition-all duration-200 shadow-lg ${batchProcessing ? 'pointer-events-none opacity-60 bg-gray-400 text-white' : 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white hover:from-blue-700 hover:to-indigo-700 hover:shadow-xl hover:scale-105'}`}>
+      <label className={`cursor-pointer inline-flex items-center gap-3 px-8 py-4 rounded-2xl font-bold focus:outline-none focus:ring-4 focus:ring-blue-500/40 transition-all duration-200 shadow-lg ${(batchProcessing || disabled) ? 'pointer-events-none opacity-60 bg-gray-400 text-white' : 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white hover:from-blue-700 hover:to-indigo-700 hover:shadow-xl hover:scale-105'}`}>
         <Upload className="w-5 h-5" />
         Choose Files
         <input
@@ -47,7 +49,8 @@ export const UploadDropzone: React.FC<UploadDropzoneProps> = ({
           className="sr-only"
           accept=".pdf"
           multiple
-          onChange={(e) => !batchProcessing && onChooseFiles(e.target.files)}
+          disabled={batchProcessing || Boolean(disabled)}
+          onChange={(e) => !(batchProcessing || disabled) && onChooseFiles(e.target.files)}
         />
       </label>
       <p className="text-xs text-gray-500 mt-4 font-medium">PDF files only, max 10MB each</p>
@@ -475,7 +478,7 @@ export const TransactionSummarySection: React.FC<{
       } else {
         subEffective = s.amount || rows.reduce((sum, r) => sum + (r.amount || 0), 0);
       }
-      if (!isBusinessNameAndOwner(s.name)) mainSum += subEffective;
+      if (!isBusinessNameAndOwner(s.name) && !isFunderList(s.name)) mainSum += subEffective;
     });
     effectiveMainTotals[mainName] = mainSum;
     selectedTotalFromCategories += mainSum;
@@ -585,14 +588,15 @@ export const TransactionSummarySection: React.FC<{
               {/* Enhanced Category Cards (no internal scroll) */}
               <div className="p-8 space-y-6">
                 {Object.entries(mainTotals)
-                  .filter(([, amt]) => amt > 0)
+                  .filter(([mainName, amt]) => amt > 0 && !isBusinessNameAndOwner(mainName) && !isFunderList(mainName))
                   .sort(([, a], [, b]) => b - a)
                   .map(([mainName, mainAmt]) => {
                     // Compute subcategory counts and how many are currently included (based on selection)
                     const subs = mainToSubs[mainName] || [];
-                    const totalSubs = subs.length;
+                    const visibleSubs = subs.filter(s => s.amount > 0 && !isBusinessNameAndOwner(s.name) && !isFunderList(s.name));
+                    const totalSubs = visibleSubs.length;
                     let includedSubs = 0;
-                    subs.forEach((s) => {
+                    visibleSubs.forEach((s) => {
                       const key = `${mainName}::${s.name}`;
                       const rows = subToRows[key] || [];
                       const sel = selectedMap[key];
@@ -629,7 +633,7 @@ export const TransactionSummarySection: React.FC<{
                           {/* Subcategory Chips */}
                           <div className="flex flex-wrap gap-2">
                             {mainToSubs[mainName]
-                              .filter(s => s.amount > 0)
+                              .filter(s => s.amount > 0 && !isBusinessNameAndOwner(s.name) && !isFunderList(s.name))
                               .sort((a,b)=> b.amount - a.amount)
                               .slice(0, 6)
                               .map(s => {
