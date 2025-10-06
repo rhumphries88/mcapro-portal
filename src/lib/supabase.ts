@@ -304,6 +304,9 @@ export interface ApplicationMTD {
   statement_date?: string
   file_url?: string
   upload_status?: 'pending' | 'processing' | 'completed' | 'failed'
+  // Analysis result columns
+  mtd_summary?: unknown
+  total_amount?: number | null
 }
 
 export const insertApplicationMTD = async (row: {
@@ -375,6 +378,20 @@ export const getApplicationMTDByApplicationId = async (
 
   if (error) throw error
   return (data as unknown as ApplicationMTD[]) || []
+}
+
+// Fetch only mtd_summary and total_amount for a specific MTD row
+export const getApplicationMTDAnalysisById = async (
+  id: string
+) => {
+  const { data, error } = await supabase
+    .from('application_mtd')
+    .select('id, mtd_summary, total_amount')
+    .eq('id', id)
+    .single()
+
+  if (error) throw error
+  return data as Pick<ApplicationMTD, 'id'> & { mtd_summary?: unknown; total_amount?: number | null }
 }
 
 export const deleteApplicationMTD = async (id: string) => {

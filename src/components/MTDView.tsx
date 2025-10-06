@@ -1,6 +1,7 @@
 import React from 'react';
 import { FileText, RefreshCw, Trash2, CheckCircle } from 'lucide-react';
-import { insertApplicationMTD, updateApplicationMTDStatus, getApplicationMTDByApplicationId, supabase } from '../lib/supabase';
+import { insertApplicationMTD, updateApplicationMTDStatus, getApplicationMTDByApplicationId, getApplicationMTDAnalysisById, supabase } from '../lib/supabase';
+import { fmtCurrency2, formatDateHuman } from './SubmissionIntermediate.helpers';
 
 export type MTDViewProps = {
   applicationId?: string;
@@ -36,6 +37,90 @@ const MTDView: React.FC<MTDViewProps> = ({ applicationId, businessName, ownerNam
     } catch {}
     return [];
   });
+
+  // Modal state for viewing analysis (pulled only from application_mtd.mtd_summary & total_amount)
+  const [detailsModal, setDetailsModal] = React.useState<null | {
+    id: string;
+    name: string;
+    loading: boolean;
+    mtd_summary?: any;
+    total_amount?: number | null;
+  }>(null);
+
+  const openDetails = async (row: { id?: string; name: string }) => {
+    if (!row?.id) return;
+    setDetailsModal({ id: row.id, name: row.name, loading: true });
+    try {
+      const data = await getApplicationMTDAnalysisById(row.id);
+      setDetailsModal({ id: row.id, name: row.name, loading: false, mtd_summary: data?.mtd_summary, total_amount: (data as any)?.total_amount ?? null });
+    } catch (e) {
+      console.warn('Failed to load MTD analysis:', e);
+      setDetailsModal({ id: row.id, name: row.name, loading: false });
+    }
+  };
+  const closeDetails = () => setDetailsModal(null);
+
+  // Normalize MTD summary to: Array<{ category: string; rows: { date?: string; description?: string; amount?: number }[] }>
+  const normalizedSummary = React.useMemo(() => {
+    const src: any = detailsModal?.mtd_summary;
+    if (!src) return [] as Array<{ category: string; rows: any[] }>;
+
+    const toNum = (v: any) => {
+      const n = typeof v === 'number' ? v : parseFloat(String(v ?? '').replace(/[^0-9.-]/g, ''));
+      return Number.isFinite(n) ? n : 0;
+    };
+
+    const pushRow = (map: Map<string, any[]>, cat: string, r: any) => {
+      const date = r?.date || r?.Date || r?.transaction_date || r?.posted_at || r?.txn_date || '';
+      const description = r?.description || r?.Description || r?.memo || r?.details || r?.desc || '';
+      const amount = toNum(r?.amount ?? r?.Amount ?? r?.value ?? r?.amt ?? r?.debit_amount ?? r?.credit_amount ?? r?.daily_amount);
+      const rawType = r?.type || r?.Type || r?.txn_type || r?.transaction_type || r?.debit_credit || '';
+      // Derive type if missing
+      const type = String(rawType || (amount < 0 ? 'DEBIT' : 'CREDIT')).toUpperCase();
+      const balance = toNum(
+        r?.balance ?? r?.Balance ?? r?.running_balance ?? r?.current_balance ?? r?.ending_balance
+      );
+      const arr = map.get(cat) || [];
+      arr.push({ date: String(date || ''), description: String(description || ''), type, amount, balance: Number.isFinite(balance) ? balance : undefined });
+      map.set(cat, arr);
+    };
+
+    const groups = new Map<string, any[]>();
+
+    // Case 1: Object with category keys -> array of tx
+    if (src && typeof src === 'object' && !Array.isArray(src)) {
+      Object.entries(src).forEach(([k, v]) => {
+        if (Array.isArray(v)) {
+          v.forEach((it) => pushRow(groups, k, it));
+        } else if (v && typeof v === 'object') {
+          // nested object possibly has transactions array
+          const arr = (v as any).transactions;
+          if (Array.isArray(arr)) arr.forEach((it: any) => pushRow(groups, k, it));
+        }
+      });
+    }
+
+    // Case 2: Array of items with category/name and transactions
+    if (Array.isArray(src)) {
+      src.forEach((item) => {
+        const cat = item?.category || item?.name || item?.main || 'Transactions';
+        const tx = Array.isArray(item?.transactions) ? item.transactions : (Array.isArray(item) ? item : []);
+        if (Array.isArray(tx) && tx.length) {
+          const parentDate = item?.date || item?.Date || '';
+          tx.forEach((it: any) => pushRow(groups, cat, { ...it, date: (it?.date ?? parentDate) }));
+        } else if (item?.date || item?.amount || item?.description) {
+          pushRow(groups, cat, item);
+        }
+      });
+    }
+
+    const normalized = Array.from(groups.entries()).map(([category, rows]) => ({
+      category,
+      rows: (rows || []).filter((r: any) => Number(r?.amount) > 0),
+    }));
+    // Remove categories with no positive rows
+    return normalized.filter((s) => s.rows.length > 0);
+  }, [detailsModal?.mtd_summary]);
 
   // Local cache key for instant hydration per application
   const cacheKey = React.useMemo(() => (applicationId ? `mtd_recent_${applicationId}` : undefined), [applicationId]);
@@ -423,7 +508,7 @@ const MTDView: React.FC<MTDViewProps> = ({ applicationId, businessName, ownerNam
                     </span>
                   </div>
                   <div className="col-span-1 flex justify-end gap-3 text-slate-500">
-                    <button className="p-2 rounded-lg hover:bg-slate-100" title="View details" onClick={() => { if (u.url) window.open(u.url, '_blank'); }}>
+                    <button className="p-2 rounded-lg hover:bg-slate-100" title="View details" onClick={() => openDetails({ id: u.id!, name: u.name })}>
                       <FileText className="w-4 h-4" />
                     </button>
                     <button className="p-2 rounded-lg hover:bg-slate-100" title="Refresh">
@@ -499,6 +584,134 @@ const MTDView: React.FC<MTDViewProps> = ({ applicationId, businessName, ownerNam
           )}
         </div>
       </div>
+      
+      {/* Analysis Modal (Bank Statement Analysis style) */}
+      {detailsModal && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/40 backdrop-blur-sm">
+          <div className="absolute inset-0" onClick={closeDetails} aria-hidden />
+          <div role="dialog" aria-modal="true" className="relative bg-white rounded-3xl shadow-2xl border border-slate-200/60 w-full max-w-5xl overflow-hidden">
+            {/* Header */}
+            <div className="px-8 py-6 bg-gradient-to-r from-slate-50 via-white to-blue-50/30 border-b border-slate-200/60">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-4">
+                  <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center shadow-lg">
+                    <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                    </svg>
+                  </div>
+                  <div>
+                    <h4 className="text-xl font-bold text-slate-900 tracking-tight">Bank Statement Analysis</h4>
+                    <p className="text-sm text-slate-600">Transaction Categories & Details</p>
+                    <div className="text-xs text-slate-500 mt-1 truncate max-w-[48ch]">{detailsModal.name}</div>
+                  </div>
+                </div>
+                <button onClick={closeDetails} className="px-3 py-1.5 rounded-lg text-sm font-semibold text-slate-700 hover:bg-slate-100 border border-slate-200">Close</button>
+              </div>
+            </div>
+
+            {/* Body */}
+            <div className="p-8 space-y-6 max-h-[75vh] overflow-y-auto">
+              {detailsModal.loading ? (
+                <div className="p-6 border border-amber-200 bg-amber-50 rounded-xl text-amber-800 flex items-center gap-3">
+                  <div className="w-5 h-5 border-2 border-amber-600 border-t-transparent rounded-full animate-spin" />
+                  <div>
+                    <div className="font-semibold">Preparing Bank Statement Analysis</div>
+                    <p className="text-sm">Please wait while we load the Month-To-Date analysis.</p>
+                  </div>
+                </div>
+              ) : (
+                <>
+                  {/* Summary Cards */}
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <div className="bg-gradient-to-br from-emerald-50 to-green-50 border-2 border-emerald-200 rounded-xl p-6">
+                      <div className="text-emerald-700 text-sm font-semibold">Total Amount</div>
+                      <div className="text-2xl font-bold text-emerald-900 mt-1">
+                        {typeof detailsModal.total_amount === 'number'
+                          ? `$${detailsModal.total_amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                          : '—'}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* MTD Summary - formatted like categories/transactions */}
+                  <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+                    {normalizedSummary.length === 0 ? (
+                      <div className="p-10 text-center text-slate-500 text-sm">No transaction data available</div>
+                    ) : (
+                      <div className="p-0">
+                        {normalizedSummary.map((section, idx) => {
+                          const total = section.rows.reduce((s, r) => s + (Number(r?.amount) || 0), 0);
+                          return (
+                            <div key={`${section.category}-${idx}`} className="mb-6 last:mb-0">
+                              {/* Category header */}
+                              <div className="px-6 py-3 bg-blue-600 text-white font-bold uppercase tracking-wide flex items-center gap-3">
+                                <span className="w-2 h-2 rounded-full bg-white/90" />
+                                {String(section.category || 'Category').toUpperCase()}
+                              </div>
+                              {/* Column headers (with Balance) */}
+                              <div className="px-6 py-3 bg-slate-50 border-b border-slate-200 grid grid-cols-12 gap-x-6 text-[11px] font-semibold text-slate-600 uppercase tracking-wider">
+                                <div className="col-span-3">Date</div>
+                                <div className="col-span-5">Description</div>
+                                <div className="col-span-2">Type</div>
+                                <div className="col-span-1 text-right pr-6">Amount</div>
+                                <div className="col-span-1 text-right pl-6">Balance</div>
+                              </div>
+                              {/* Rows grouped by date (date printed once, multiple entries separated with dotted rule) */}
+                              <div className="">
+                                {section.rows.length === 0 ? (
+                                  <div className="px-6 py-6 text-sm text-slate-500">No transactions</div>
+                                ) : (
+                                  (() => {
+                                    const groups = new Map<string, any[]>();
+                                    section.rows.forEach((row) => {
+                                      const key = formatDateHuman(row.date);
+                                      const arr = groups.get(key) || [];
+                                      arr.push(row);
+                                      groups.set(key, arr);
+                                    });
+                                    return Array.from(groups.entries()).map(([d, rows], gi) => (
+                                      <div key={`${d}-${gi}`} className="px-6">
+                                        {rows.map((r, ri) => (
+                                          <div key={ri} className="py-4 grid grid-cols-12 items-start gap-x-6">
+                                            {ri === 0 ? (
+                                              <div className="col-span-3 text-slate-700 text-sm font-semibold">{d}</div>
+                                            ) : (
+                                              <div className="col-span-3" />
+                                            )}
+                                            <div className={`col-span-5 text-slate-700 text-sm leading-relaxed pr-4 whitespace-pre-wrap break-words ${ri > 0 ? 'border-t border-dotted border-slate-300 pt-3' : ''}`}>{r.description || '—'}</div>
+                                            <div className={`col-span-2 text-slate-700 text-sm font-medium tracking-wide ${ri > 0 ? 'border-t border-dotted border-slate-300 pt-3' : ''}`}>{String(r.type || '').toUpperCase() || '—'}</div>
+                                            <div className={`col-span-1 text-right font-bold text-slate-900 tabular-nums font-mono whitespace-nowrap pr-6 ${ri > 0 ? 'border-t border-dotted border-slate-300 pt-3' : ''}`}>{fmtCurrency2(Number(r.amount || 0))}</div>
+                                            <div className={`col-span-1 text-right font-semibold text-slate-900 tabular-nums font-mono whitespace-nowrap pl-6 ${ri > 0 ? 'border-t border-dotted border-slate-300 pt-3' : ''}`}>{typeof r.balance === 'number' ? fmtCurrency2(Number(r.balance)) : (r.balance ? String(r.balance) : '—')}</div>
+                                          </div>
+                                        ))}
+                                      </div>
+                                    ));
+                                  })()
+                                )}
+                              </div>
+                              {/* Total footer */}
+                              <div className="px-6 py-4 bg-slate-50 border-t border-slate-200 flex items-center justify-between">
+                                <div className="text-slate-600 font-semibold uppercase text-xs">Total</div>
+                                <div className="text-slate-900 font-black">{fmtCurrency2(total)}</div>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                </>
+              )}
+            </div>
+
+            {/* Footer */}
+            <div className="px-8 py-6 bg-slate-50 border-t border-slate-200 flex justify-between items-center">
+              <div className="text-xs font-semibold text-slate-600 uppercase tracking-widest">BANK STATEMENT ANALYSIS • CONFIDENTIAL</div>
+              <button onClick={closeDetails} className="px-6 py-2.5 rounded-xl text-sm font-bold bg-gradient-to-r from-blue-600 to-indigo-600 text-white hover:from-blue-700 hover:to-indigo-700 shadow-lg">Close Analysis</button>
+            </div>
+          </div>
+        </div>
+      )}
       
     </div>
   );
