@@ -45,6 +45,7 @@ const MTDView: React.FC<MTDViewProps> = ({ applicationId, businessName, ownerNam
     loading: boolean;
     mtd_summary?: any;
     total_amount?: number | null;
+    available_balance?: number | null;
   }>(null);
 
   const openDetails = async (row: { id?: string; name: string }) => {
@@ -52,7 +53,7 @@ const MTDView: React.FC<MTDViewProps> = ({ applicationId, businessName, ownerNam
     setDetailsModal({ id: row.id, name: row.name, loading: true });
     try {
       const data = await getApplicationMTDAnalysisById(row.id);
-      setDetailsModal({ id: row.id, name: row.name, loading: false, mtd_summary: data?.mtd_summary, total_amount: (data as any)?.total_amount ?? null });
+      setDetailsModal({ id: row.id, name: row.name, loading: false, mtd_summary: data?.mtd_summary, total_amount: (data as any)?.total_amount ?? null, available_balance: (data as any)?.available_balance ?? null });
     } catch (e) {
       console.warn('Failed to load MTD analysis:', e);
       setDetailsModal({ id: row.id, name: row.name, loading: false });
@@ -121,6 +122,7 @@ const MTDView: React.FC<MTDViewProps> = ({ applicationId, businessName, ownerNam
     // Remove categories with no positive rows
     return normalized.filter((s) => s.rows.length > 0);
   }, [detailsModal?.mtd_summary]);
+
 
   // Local cache key for instant hydration per application
   const cacheKey = React.useMemo(() => (applicationId ? `mtd_recent_${applicationId}` : undefined), [applicationId]);
@@ -631,6 +633,12 @@ const MTDView: React.FC<MTDViewProps> = ({ applicationId, businessName, ownerNam
                           : '—'}
                       </div>
                     </div>
+                    <div className="bg-gradient-to-br from-cyan-50 to-teal-50 border-2 border-cyan-200 rounded-xl p-6">
+                      <div className="text-cyan-700 text-sm font-semibold">Available Balance</div>
+                      <div className="text-2xl font-bold text-cyan-900 mt-1">
+                        {typeof detailsModal?.available_balance === 'number' ? detailsModal.available_balance.toLocaleString('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '—'}
+                      </div>
+                    </div>
                   </div>
 
                   {/* MTD Summary - formatted like categories/transactions */}
@@ -651,10 +659,10 @@ const MTDView: React.FC<MTDViewProps> = ({ applicationId, businessName, ownerNam
                               {/* Column headers (with Balance) */}
                               <div className="px-6 py-3 bg-slate-50 border-b border-slate-200 grid grid-cols-12 gap-x-6 text-[11px] font-semibold text-slate-600 uppercase tracking-wider">
                                 <div className="col-span-3">Date</div>
-                                <div className="col-span-5">Description</div>
-                                <div className="col-span-2">Type</div>
-                                <div className="col-span-1 text-right pr-6">Amount</div>
-                                <div className="col-span-1 text-right pl-6">Balance</div>
+                                <div className="col-span-4">Description</div>
+                                <div className="col-span-1">Type</div>
+                                <div className="col-span-2 text-right">Amount</div>
+                                <div className="col-span-2 text-right">Balance</div>
                               </div>
                               {/* Rows grouped by date (date printed once, multiple entries separated with dotted rule) */}
                               <div className="">
@@ -678,10 +686,10 @@ const MTDView: React.FC<MTDViewProps> = ({ applicationId, businessName, ownerNam
                                             ) : (
                                               <div className="col-span-3" />
                                             )}
-                                            <div className={`col-span-5 text-slate-700 text-sm leading-relaxed pr-4 whitespace-pre-wrap break-words ${ri > 0 ? 'border-t border-dotted border-slate-300 pt-3' : ''}`}>{r.description || '—'}</div>
-                                            <div className={`col-span-2 text-slate-700 text-sm font-medium tracking-wide ${ri > 0 ? 'border-t border-dotted border-slate-300 pt-3' : ''}`}>{String(r.type || '').toUpperCase() || '—'}</div>
-                                            <div className={`col-span-1 text-right font-bold text-slate-900 tabular-nums font-mono whitespace-nowrap pr-6 ${ri > 0 ? 'border-t border-dotted border-slate-300 pt-3' : ''}`}>{fmtCurrency2(Number(r.amount || 0))}</div>
-                                            <div className={`col-span-1 text-right font-semibold text-slate-900 tabular-nums font-mono whitespace-nowrap pl-6 ${ri > 0 ? 'border-t border-dotted border-slate-300 pt-3' : ''}`}>{typeof r.balance === 'number' ? fmtCurrency2(Number(r.balance)) : (r.balance ? String(r.balance) : '—')}</div>
+                                            <div className={`col-span-4 text-slate-700 text-sm leading-relaxed pr-4 whitespace-pre-wrap break-words ${ri > 0 ? 'border-t border-dotted border-slate-300 pt-3' : ''}`}>{r.description || '—'}</div>
+                                            <div className={`col-span-1 text-slate-700 text-sm font-medium tracking-wide whitespace-pre-wrap break-words ${ri > 0 ? 'border-t border-dotted border-slate-300 pt-3' : ''}`}>{String(r.type || '').toUpperCase() || '—'}</div>
+                                            <div className={`col-span-2 text-right font-bold text-slate-900 tabular-nums font-mono whitespace-nowrap ${ri > 0 ? 'border-t border-dotted border-slate-300 pt-3' : ''}`}>{fmtCurrency2(Number(r.amount || 0))}</div>
+                                            <div className={`col-span-2 text-right font-semibold text-slate-900 tabular-nums font-mono whitespace-nowrap ${ri > 0 ? 'border-t border-dotted border-slate-300 pt-3' : ''}`}>{typeof r.balance === 'number' ? fmtCurrency2(Number(r.balance)) : (r.balance ? String(r.balance) : '—')}</div>
                                           </div>
                                         ))}
                                       </div>

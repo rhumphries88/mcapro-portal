@@ -671,7 +671,7 @@ export const TransactionSummarySection: React.FC<{
                                         const rowsSorted = (subToRows[key] || []).slice().sort((a,b) => String(a.date||'').localeCompare(String(b.date||'')));
                                         setModal({ key, title: s.name, amount: s.amount, rows: rowsSorted });
                                       }}
-                                      className={`inline-flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold border-2 transition-all duration-200 hover:scale-105 ${isBusinessNameAndOwner(s.name) ? 'bg-gradient-to-r from-amber-50 to-orange-50 text-amber-800 border-amber-300 hover:from-amber-100 hover:to-orange-100 hover:border-amber-400' : 'bg-gradient-to-r from-blue-50 to-indigo-50 text-blue-800 border-blue-300 hover:from-blue-100 hover:to-indigo-100 hover:border-blue-400'}`}
+                                      className={`inline-flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold border-2 transition-all duration-200 hover:scale-105 ${(isBusinessNameAndOwner(s.name) || isFunderList(s.name)) ? 'bg-gradient-to-r from-amber-50 to-orange-50 text-amber-800 border-amber-300 hover:from-amber-100 hover:to-orange-100 hover:border-amber-400' : 'bg-gradient-to-r from-blue-50 to-indigo-50 text-blue-800 border-blue-300 hover:from-blue-100 hover:to-indigo-100 hover:border-blue-400'}`}
                                       title={`View transactions for ${s.name}`}
                                     >
                                       <span className="font-semibold truncate max-w-[180px]">{s.name}</span>

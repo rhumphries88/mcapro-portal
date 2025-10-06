@@ -307,6 +307,7 @@ export interface ApplicationMTD {
   // Analysis result columns
   mtd_summary?: unknown
   total_amount?: number | null
+  available_balance?: number | null
 }
 
 export const insertApplicationMTD = async (row: {
@@ -386,12 +387,12 @@ export const getApplicationMTDAnalysisById = async (
 ) => {
   const { data, error } = await supabase
     .from('application_mtd')
-    .select('id, mtd_summary, total_amount')
+    .select('id, mtd_summary, total_amount, available_balance')
     .eq('id', id)
     .single()
 
   if (error) throw error
-  return data as Pick<ApplicationMTD, 'id'> & { mtd_summary?: unknown; total_amount?: number | null }
+  return data as Pick<ApplicationMTD, 'id'> & { mtd_summary?: unknown; total_amount?: number | null; available_balance?: number | null }
 }
 
 export const deleteApplicationMTD = async (id: string) => {
