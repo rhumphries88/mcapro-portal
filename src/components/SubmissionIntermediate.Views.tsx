@@ -71,6 +71,8 @@ export type DocumentDetailsControlsProps = {
   categorySearch: string;
   onCategorySearchChange: (v: string) => void;
   onCategorySearchEnter: () => void;
+  // Optional: called when user clicks Apply inside the dropdown
+  onApplyCategories?: () => void;
 };
 export const DocumentDetailsControls: React.FC<DocumentDetailsControlsProps> = ({
   categoryDropdownOpen,
@@ -84,6 +86,7 @@ export const DocumentDetailsControls: React.FC<DocumentDetailsControlsProps> = (
   categorySearch,
   onCategorySearchChange,
   onCategorySearchEnter,
+  onApplyCategories,
 }) => (
   <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6 mb-6">
     <div className="flex flex-col lg:flex-row items-stretch lg:items-center justify-between gap-4">
@@ -109,8 +112,8 @@ export const DocumentDetailsControls: React.FC<DocumentDetailsControlsProps> = (
               </svg>
             </button>
             {categoryDropdownOpen && (
-              <div className="absolute z-10 mt-1 w-[360px] min-w-[320px] max-w-[420px] bg-white border border-slate-300 rounded-lg shadow-lg max-h-60 overflow-y-auto">
-                <div className="p-2">
+              <div className="absolute z-10 mt-1 w-[360px] min-w-[320px] max-w-[420px] bg-white border border-slate-300 rounded-lg shadow-lg max-h-72 overflow-hidden">
+                <div className="p-2 max-h-60 overflow-y-auto">
                   <button
                     type="button"
                     onClick={onClearAll}
@@ -137,6 +140,7 @@ export const DocumentDetailsControls: React.FC<DocumentDetailsControlsProps> = (
                           type="checkbox"
                           checked={selectedCategories.has(category)}
                           onChange={(e) => onToggleCategory(category, e.target.checked)}
+                          onClick={(e) => e.stopPropagation()}
                           className="mr-3 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
                         />
                         <span className="text-slate-700 font-medium flex-1 truncate">{category}</span>
@@ -153,6 +157,28 @@ export const DocumentDetailsControls: React.FC<DocumentDetailsControlsProps> = (
                       </label>
                     );
                   })}
+                </div>
+                <div className="p-2 border-t border-slate-200 bg-white sticky bottom-0">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (onApplyCategories) onApplyCategories();
+                      // Always close dropdown afterward
+                      onToggleDropdown();
+                      // Smooth scroll down to the categories summary if present
+                      try {
+                        const el = document.getElementById('categories-summary');
+                        if (el) {
+                          el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                        } else if (typeof window !== 'undefined') {
+                          window.scrollBy({ top: 600, behavior: 'smooth' });
+                        }
+                      } catch {}
+                    }}
+                    className="w-full px-4 py-2 text-sm font-semibold rounded-md bg-blue-600 text-white hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  >
+                    Apply
+                  </button>
                 </div>
               </div>
             )}
@@ -577,7 +603,7 @@ export const TransactionSummarySection: React.FC<{
           </div>
 
           {Object.keys(mainToSubs).length > 0 && (
-            <div className="bg-gradient-to-br from-white via-slate-50/30 to-blue-50/20 rounded-2xl border border-slate-200/60 overflow-hidden">
+            <div id="categories-summary" className="bg-gradient-to-br from-white via-slate-50/30 to-blue-50/20 rounded-2xl border border-slate-200/60 overflow-hidden">
               {/* Enhanced Header */}
               <div className="px-8 py-6 bg-gradient-to-r from-slate-800 via-slate-700 to-blue-900 border-b border-slate-600/20">
                 <div className="flex items-center gap-4">

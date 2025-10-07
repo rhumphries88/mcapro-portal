@@ -2379,13 +2379,15 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                                                     const newSelected = new Set(selectedCategories);
                                                     if (checked) newSelected.add(category); else newSelected.delete(category);
                                                     setSelectedCategories(newSelected);
-                                                    if (checked) setTimeout(() => { tablesStartRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }, 50);
                                                   }}
                                                   categorySearch={categorySearch}
                                                   onCategorySearchChange={setCategorySearch}
                                                   onCategorySearchEnter={() => {
                                                     const q = categorySearch.trim().toLowerCase();
                                                     if (!q) return;
+                                                  }}
+                                                  onApplyCategories={() => {
+                                                    // Scroll to tables/summary only when Apply is clicked
                                                     setTimeout(() => { tablesStartRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }, 50);
                                                   }}
                                                 />
