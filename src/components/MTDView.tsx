@@ -48,6 +48,69 @@ const MTDView: React.FC<MTDViewProps> = ({ applicationId, businessName, ownerNam
     available_balance?: number | null;
   }>(null);
 
+  // Track which transaction rows are selected (unchecked by default)
+  const [selectedKeys, setSelectedKeys] = React.useState<Set<string>>(() => new Set());
+  React.useEffect(() => {
+    // Reset selections when opening/closing or switching document
+    setSelectedKeys(new Set());
+  }, [detailsModal?.id]);
+
+  // Compute grand total of only selected rows across all categories
+  const { selectedGrandTotal, selectedCount } = React.useMemo(() => {
+    let total = 0;
+    let count = 0;
+    if (!detailsModal?.mtd_summary) return { selectedGrandTotal: 0, selectedCount: 0 };
+    // Reconstruct the same keys used in the rows for consistency
+    const toNum = (v: any) => {
+      const n = typeof v === 'number' ? v : parseFloat(String(v ?? '').replace(/[^0-9.-]/g, ''));
+      return Number.isFinite(n) ? n : 0;
+    };
+    const src: any = detailsModal?.mtd_summary;
+    const groups = new Map<string, any[]>();
+    const pushRow = (map: Map<string, any[]>, cat: string, r: any) => {
+      const date = r?.date || r?.Date || r?.transaction_date || r?.posted_at || r?.txn_date || '';
+      const description = r?.description || r?.Description || r?.memo || r?.details || r?.desc || '';
+      const amount = toNum(r?.amount ?? r?.Amount ?? r?.value ?? r?.amt ?? r?.debit_amount ?? r?.credit_amount ?? r?.daily_amount);
+      const rawType = r?.type || r?.Type || r?.txn_type || r?.transaction_type || r?.debit_credit || '';
+      const type = String(rawType || (amount < 0 ? 'DEBIT' : 'CREDIT')).toUpperCase();
+      const arr = map.get(cat) || [];
+      arr.push({ date: String(date || ''), description: String(description || ''), type, amount });
+      map.set(cat, arr);
+    };
+    if (src && typeof src === 'object' && !Array.isArray(src)) {
+      Object.entries(src).forEach(([k, v]) => {
+        if (Array.isArray(v)) {
+          v.forEach((it) => pushRow(groups, k, it));
+        } else if (v && typeof v === 'object') {
+          const arr = (v as any).transactions;
+          if (Array.isArray(arr)) arr.forEach((it: any) => pushRow(groups, k, it));
+        }
+      });
+    }
+    if (Array.isArray(src)) {
+      src.forEach((item) => {
+        const cat = item?.category || item?.name || item?.main || 'Transactions';
+        const tx = Array.isArray(item?.transactions) ? item.transactions : (Array.isArray(item) ? item : []);
+        if (Array.isArray(tx) && tx.length) {
+          const parentDate = item?.date || item?.Date || '';
+          tx.forEach((it: any) => pushRow(groups, cat, { ...it, date: (it?.date ?? parentDate) }));
+        } else if (item?.date || item?.amount || item?.description) {
+          pushRow(groups, cat, item);
+        }
+      });
+    }
+    Array.from(groups.entries()).forEach(([category, rows]) => {
+      rows.forEach((r) => {
+        const key = `${category}|${String(r.date || '')}|${String(r.description || '')}|${String(r.type || '')}|${Number(r.amount || 0)}`;
+        if (selectedKeys.has(key)) {
+          total += Number(r.amount || 0);
+          count += 1;
+        }
+      });
+    });
+    return { selectedGrandTotal: total, selectedCount: count };
+  }, [detailsModal?.mtd_summary, selectedKeys]);
+
   const openDetails = async (row: { id?: string; name: string }) => {
     if (!row?.id) return;
     setDetailsModal({ id: row.id, name: row.name, loading: true });
@@ -75,11 +138,11 @@ const MTDView: React.FC<MTDViewProps> = ({ applicationId, businessName, ownerNam
       const date = r?.date || r?.Date || r?.transaction_date || r?.posted_at || r?.txn_date || '';
       const description = r?.description || r?.Description || r?.memo || r?.details || r?.desc || '';
       const amount = toNum(r?.amount ?? r?.Amount ?? r?.value ?? r?.amt ?? r?.debit_amount ?? r?.credit_amount ?? r?.daily_amount);
-      const rawType = r?.type || r?.Type || r?.txn_type || r?.transaction_type || r?.debit_credit || '';
+      const rawType = r?.type || r?.Type || r?.txn_type || r?.transaction_type || r?.debit_credit || r?.status || '';
       // Derive type if missing
       const type = String(rawType || (amount < 0 ? 'DEBIT' : 'CREDIT')).toUpperCase();
       const balance = toNum(
-        r?.balance ?? r?.Balance ?? r?.running_balance ?? r?.current_balance ?? r?.ending_balance
+        r?.balance ?? r?.Balance ?? r?.running_balance ?? r?.current_balance ?? r?.ending_balance ?? r?.available_balance
       );
       const arr = map.get(cat) || [];
       arr.push({ date: String(date || ''), description: String(description || ''), type, amount, balance: Number.isFinite(balance) ? balance : undefined });
@@ -117,10 +180,10 @@ const MTDView: React.FC<MTDViewProps> = ({ applicationId, businessName, ownerNam
 
     const normalized = Array.from(groups.entries()).map(([category, rows]) => ({
       category,
-      rows: (rows || []).filter((r: any) => Number(r?.amount) > 0),
+      rows: (rows || []),
     }));
-    // Remove categories with no positive rows
-    return normalized.filter((s) => s.rows.length > 0);
+    // Return all categories as-is so we show everything present in mtd_summary
+    return normalized;
   }, [detailsModal?.mtd_summary]);
 
 
@@ -626,11 +689,13 @@ const MTDView: React.FC<MTDViewProps> = ({ applicationId, businessName, ownerNam
                   {/* Summary Cards */}
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                     <div className="bg-gradient-to-br from-emerald-50 to-green-50 border-2 border-emerald-200 rounded-xl p-6">
-                      <div className="text-emerald-700 text-sm font-semibold">Total Amount</div>
+                      <div className="text-emerald-700 text-sm font-semibold">Total Amount{selectedCount > 0 ? ' (Selected)' : ''}</div>
                       <div className="text-2xl font-bold text-emerald-900 mt-1">
-                        {typeof detailsModal.total_amount === 'number'
-                          ? `$${detailsModal.total_amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
-                          : '—'}
+                        {selectedCount > 0
+                          ? `$${selectedGrandTotal.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                          : (typeof detailsModal?.total_amount === 'number'
+                              ? `$${detailsModal.total_amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                              : '—')}
                       </div>
                     </div>
                     <div className="bg-gradient-to-br from-cyan-50 to-teal-50 border-2 border-cyan-200 rounded-xl p-6">
@@ -648,7 +713,6 @@ const MTDView: React.FC<MTDViewProps> = ({ applicationId, businessName, ownerNam
                     ) : (
                       <div className="p-0">
                         {normalizedSummary.map((section, idx) => {
-                          const total = section.rows.reduce((s, r) => s + (Number(r?.amount) || 0), 0);
                           return (
                             <div key={`${section.category}-${idx}`} className="mb-6 last:mb-0">
                               {/* Category header */}
@@ -656,9 +720,10 @@ const MTDView: React.FC<MTDViewProps> = ({ applicationId, businessName, ownerNam
                                 <span className="w-2 h-2 rounded-full bg-white/90" />
                                 {String(section.category || 'Category').toUpperCase()}
                               </div>
-                              {/* Column headers (with Balance) */}
+                              {/* Column headers with Select before Date (1+2+4+1+2+2 = 12) */}
                               <div className="px-6 py-3 bg-slate-50 border-b border-slate-200 grid grid-cols-12 gap-x-6 text-[11px] font-semibold text-slate-600 uppercase tracking-wider">
-                                <div className="col-span-3">Date</div>
+                                <div className="col-span-1">Select</div>
+                                <div className="col-span-2">Date</div>
                                 <div className="col-span-4">Description</div>
                                 <div className="col-span-1">Type</div>
                                 <div className="col-span-2 text-right">Amount</div>
@@ -679,35 +744,74 @@ const MTDView: React.FC<MTDViewProps> = ({ applicationId, businessName, ownerNam
                                     });
                                     return Array.from(groups.entries()).map(([d, rows], gi) => (
                                       <div key={`${d}-${gi}`} className="px-6">
-                                        {rows.map((r, ri) => (
-                                          <div key={ri} className="py-4 grid grid-cols-12 items-start gap-x-6">
-                                            {ri === 0 ? (
-                                              <div className="col-span-3 text-slate-700 text-sm font-semibold">{d}</div>
-                                            ) : (
-                                              <div className="col-span-3" />
-                                            )}
-                                            <div className={`col-span-4 text-slate-700 text-sm leading-relaxed pr-4 whitespace-pre-wrap break-words ${ri > 0 ? 'border-t border-dotted border-slate-300 pt-3' : ''}`}>{r.description || '—'}</div>
-                                            <div className={`col-span-1 text-slate-700 text-sm font-medium tracking-wide whitespace-pre-wrap break-words ${ri > 0 ? 'border-t border-dotted border-slate-300 pt-3' : ''}`}>{String(r.type || '').toUpperCase() || '—'}</div>
-                                            <div className={`col-span-2 text-right font-bold text-slate-900 tabular-nums font-mono whitespace-nowrap ${ri > 0 ? 'border-t border-dotted border-slate-300 pt-3' : ''}`}>{fmtCurrency2(Number(r.amount || 0))}</div>
-                                            <div className={`col-span-2 text-right font-semibold text-slate-900 tabular-nums font-mono whitespace-nowrap ${ri > 0 ? 'border-t border-dotted border-slate-300 pt-3' : ''}`}>{typeof r.balance === 'number' ? fmtCurrency2(Number(r.balance)) : (r.balance ? String(r.balance) : '—')}</div>
-                                          </div>
-                                        ))}
+                                        {rows.map((r, ri) => {
+                                          const key = `${section.category}|${String(r.date || '')}|${String(r.description || '')}|${String(r.type || '')}|${Number(r.amount || 0)}`;
+                                          const checked = selectedKeys.has(key);
+                                          const commonRowClasses = `${ri > 0 ? 'border-t border-dotted border-slate-300 pt-3' : ''}`;
+                                          return (
+                                            <div key={ri} className="py-4 grid grid-cols-12 items-start gap-x-6">
+                                              {/* Select */}
+                                              <div className={`col-span-1 ${commonRowClasses}`}>
+                                                <input
+                                                  type="checkbox"
+                                                  checked={checked}
+                                                  onChange={() => {
+                                                    setSelectedKeys((prev) => {
+                                                      const next = new Set(prev);
+                                                      if (next.has(key)) next.delete(key); else next.add(key);
+                                                      return next;
+                                                    });
+                                                  }}
+                                                  className="w-4 h-4 cursor-pointer accent-blue-600"
+                                                />
+                                              </div>
+                                              {/* Date */}
+                                              {ri === 0 ? (
+                                                <div className="col-span-2 text-slate-700 text-sm font-semibold">{d}</div>
+                                              ) : (
+                                                <div className="col-span-2" />
+                                              )}
+                                              {/* Description */}
+                                              <div className={`col-span-4 text-slate-700 text-sm leading-relaxed pr-4 whitespace-pre-wrap break-words ${commonRowClasses}`}>{r.description || '—'}</div>
+                                              {/* Type */}
+                                              <div className={`col-span-1 text-slate-700 text-sm font-medium tracking-wide whitespace-pre-wrap break-words ${commonRowClasses}`}>{String(r.type || '').toUpperCase() || '—'}</div>
+                                              {/* Amount */}
+                                              <div className={`col-span-2 text-right font-bold text-slate-900 tabular-nums font-mono whitespace-nowrap ${commonRowClasses}`}>{fmtCurrency2(Number(r.amount || 0))}</div>
+                                              {/* Balance */}
+                                              <div className={`col-span-2 text-right font-semibold text-slate-900 tabular-nums font-mono whitespace-nowrap ${commonRowClasses}`}>{typeof r.balance === 'number' ? fmtCurrency2(Number(r.balance)) : (r.balance ? String(r.balance) : '—')}</div>
+                                            </div>
+                                          );
+                                        })}
                                       </div>
                                     ));
                                   })()
                                 )}
                               </div>
-                              {/* Total footer */}
-                              <div className="px-6 py-4 bg-slate-50 border-t border-slate-200 flex items-center justify-between">
-                                <div className="text-slate-600 font-semibold uppercase text-xs">Total</div>
-                                <div className="text-slate-900 font-black">{fmtCurrency2(total)}</div>
-                              </div>
+                              {/* Total footer aligned to Amount column, summing only checked rows */}
+                              {(() => {
+                                const selectedTotal = section.rows.reduce((s, r) => {
+                                  const key = `${section.category}|${String(r.date || '')}|${String(r.description || '')}|${String(r.type || '')}|${Number(r.amount || 0)}`;
+                                  return s + (selectedKeys.has(key) ? (Number(r?.amount) || 0) : 0);
+                                }, 0);
+                                return (
+                                  <div className="px-6 py-4 bg-slate-50 border-t border-slate-200 grid grid-cols-12 gap-x-6 items-center">
+                                    {/* Left side spanning Select+Date+Description+Type (1+2+4+1=8) */}
+                                    <div className="col-span-8 text-slate-600 font-semibold uppercase text-xs">Total</div>
+                                    {/* Amount column (col-span-2) */}
+                                    <div className="col-span-2 text-right text-slate-900 font-black">{fmtCurrency2(selectedTotal)}</div>
+                                    {/* Balance column left empty */}
+                                    <div className="col-span-2" />
+                                  </div>
+                                );
+                              })()}
                             </div>
                           );
                         })}
                       </div>
                     )}
                   </div>
+
+                  
                 </>
               )}
             </div>
