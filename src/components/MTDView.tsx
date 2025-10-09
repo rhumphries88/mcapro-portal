@@ -1,6 +1,6 @@
 import React from 'react';
 import { FileText, RefreshCw, Trash2, CheckCircle } from 'lucide-react';
-import { insertApplicationMTD, updateApplicationMTDStatus, getApplicationMTDByApplicationId, getApplicationMTDAnalysisById, supabase } from '../lib/supabase';
+import { insertApplicationMTD, updateApplicationMTDStatus, getApplicationMTDByApplicationId, getApplicationMTDAnalysisById, updateApplicationMTDTotalMTD, updateApplicationMTDTotalAmount, supabase } from '../lib/supabase';
 import { fmtCurrency2, formatDateHuman } from './SubmissionIntermediate.helpers';
 
 export type MTDViewProps = {
@@ -13,6 +13,16 @@ export type MTDViewProps = {
 const MTD_WEBHOOK_URL = '/.netlify/functions/mtd-webhook';
 
 const MTDView: React.FC<MTDViewProps> = ({ applicationId, businessName, ownerName, onChooseFiles }) => {
+  // Local helper to render dates in a long, human-friendly form (e.g., 24 September 2025)
+  const formatDateLong = React.useCallback((dateStr: any) => {
+    try {
+      const d = new Date(String(dateStr || '').replace(/\//g, '-'));
+      if (isNaN(d.getTime())) return String(dateStr || '');
+      return d.toLocaleDateString('en-GB', { day: '2-digit', month: 'long', year: 'numeric' });
+    } catch {
+      return String(dateStr || '');
+    }
+  }, []);
   // Keep wired to parent without rendering it
   const [isDragOver, setIsDragOver] = React.useState(false);
   const [uploading, setUploading] = React.useState(false);
@@ -46,6 +56,9 @@ const MTDView: React.FC<MTDViewProps> = ({ applicationId, businessName, ownerNam
     mtd_summary?: any;
     total_amount?: number | null;
     available_balance?: number | null;
+    negative?: number | null;
+    funder_mtd?: any | null;
+    total_mtd?: number | null;
   }>(null);
 
   // Track which transaction rows are selected (unchecked by default)
@@ -55,74 +68,64 @@ const MTDView: React.FC<MTDViewProps> = ({ applicationId, businessName, ownerNam
     setSelectedKeys(new Set());
   }, [detailsModal?.id]);
 
-  // Compute grand total of only selected rows across all categories
-  const { selectedGrandTotal, selectedCount } = React.useMemo(() => {
-    let total = 0;
-    let count = 0;
-    if (!detailsModal?.mtd_summary) return { selectedGrandTotal: 0, selectedCount: 0 };
-    // Reconstruct the same keys used in the rows for consistency
-    const toNum = (v: any) => {
-      const n = typeof v === 'number' ? v : parseFloat(String(v ?? '').replace(/[^0-9.-]/g, ''));
-      return Number.isFinite(n) ? n : 0;
-    };
-    const src: any = detailsModal?.mtd_summary;
-    const groups = new Map<string, any[]>();
-    const pushRow = (map: Map<string, any[]>, cat: string, r: any) => {
-      const date = r?.date || r?.Date || r?.transaction_date || r?.posted_at || r?.txn_date || '';
-      const description = r?.description || r?.Description || r?.memo || r?.details || r?.desc || '';
-      const amount = toNum(r?.amount ?? r?.Amount ?? r?.value ?? r?.amt ?? r?.debit_amount ?? r?.credit_amount ?? r?.daily_amount);
-      const rawType = r?.type || r?.Type || r?.txn_type || r?.transaction_type || r?.debit_credit || '';
-      const type = String(rawType || (amount < 0 ? 'DEBIT' : 'CREDIT')).toUpperCase();
-      const arr = map.get(cat) || [];
-      arr.push({ date: String(date || ''), description: String(description || ''), type, amount });
-      map.set(cat, arr);
-    };
-    if (src && typeof src === 'object' && !Array.isArray(src)) {
-      Object.entries(src).forEach(([k, v]) => {
-        if (Array.isArray(v)) {
-          v.forEach((it) => pushRow(groups, k, it));
-        } else if (v && typeof v === 'object') {
-          const arr = (v as any).transactions;
-          if (Array.isArray(arr)) arr.forEach((it: any) => pushRow(groups, k, it));
-        }
-      });
-    }
-    if (Array.isArray(src)) {
-      src.forEach((item) => {
-        const cat = item?.category || item?.name || item?.main || 'Transactions';
-        const tx = Array.isArray(item?.transactions) ? item.transactions : (Array.isArray(item) ? item : []);
-        if (Array.isArray(tx) && tx.length) {
-          const parentDate = item?.date || item?.Date || '';
-          tx.forEach((it: any) => pushRow(groups, cat, { ...it, date: (it?.date ?? parentDate) }));
-        } else if (item?.date || item?.amount || item?.description) {
-          pushRow(groups, cat, item);
-        }
-      });
-    }
-    Array.from(groups.entries()).forEach(([category, rows]) => {
-      rows.forEach((r) => {
-        const key = `${category}|${String(r.date || '')}|${String(r.description || '')}|${String(r.type || '')}|${Number(r.amount || 0)}`;
-        if (selectedKeys.has(key)) {
-          total += Number(r.amount || 0);
-          count += 1;
-        }
-      });
-    });
-    return { selectedGrandTotal: total, selectedCount: count };
-  }, [detailsModal?.mtd_summary, selectedKeys]);
+  // Saving state for Funder MTD total
+  const [savingFunderTotal, setSavingFunderTotal] = React.useState(false);
+  // Saving state for Transactions total
+  const [savingTxnTotal, setSavingTxnTotal] = React.useState(false);
+
+  // Mini success popup state
+  const [saveSuccess, setSaveSuccess] = React.useState<{ open: boolean; message: string }>({ open: false, message: '' });
+  const showSuccess = React.useCallback((message: string) => {
+    setSaveSuccess({ open: true, message });
+    window.setTimeout(() => setSaveSuccess({ open: false, message: '' }), 2000);
+  }, []);
+
+  // Tab state inside the Analysis modal
+  const [activeTab, setActiveTab] = React.useState<'transactions' | 'funder'>('transactions');
+
 
   const openDetails = async (row: { id?: string; name: string }) => {
     if (!row?.id) return;
     setDetailsModal({ id: row.id, name: row.name, loading: true });
+    setActiveTab('transactions');
     try {
       const data = await getApplicationMTDAnalysisById(row.id);
-      setDetailsModal({ id: row.id, name: row.name, loading: false, mtd_summary: data?.mtd_summary, total_amount: (data as any)?.total_amount ?? null, available_balance: (data as any)?.available_balance ?? null });
+      setDetailsModal({
+        id: row.id,
+        name: row.name,
+        loading: false,
+        mtd_summary: data?.mtd_summary,
+        total_amount: (data as any)?.total_amount ?? null,
+        available_balance: (data as any)?.available_balance ?? null,
+        negative: (data as any)?.negative ?? null,
+        funder_mtd: (data as any)?.funder_mtd ?? null,
+        total_mtd: (data as any)?.total_mtd ?? null,
+      });
     } catch (e) {
       console.warn('Failed to load MTD analysis:', e);
       setDetailsModal({ id: row.id, name: row.name, loading: false });
     }
   };
+
   const closeDetails = () => setDetailsModal(null);
+
+  // Save selected rows total into application_mtd.total_mtd
+  const handleSaveFunderSelected = async () => {
+    if (!detailsModal?.id) return;
+    try {
+      setSavingFunderTotal(true);
+      // Recalculate selected total for Funder MTD
+      const total = normalizedFunder.reduce((s, r) => {
+        const key = `FUNDER_MTD|${String(r.date || '')}|${String(r.description || '')}|${String(r.funder || '')}|${String(r.type || '')}|${Number(r.amount || 0)}`;
+        return s + (selectedKeys.has(key) ? (Number(r?.amount) || 0) : 0);
+      }, 0);
+      await updateApplicationMTDTotalMTD(detailsModal.id, total);
+      setDetailsModal((prev) => prev ? { ...prev, total_mtd: total } : prev);
+      showSuccess('Funder MTD selection saved');
+    } finally {
+      setSavingFunderTotal(false);
+    }
+  };
 
   // Normalize MTD summary to: Array<{ category: string; rows: { date?: string; description?: string; amount?: number }[] }>
   const normalizedSummary = React.useMemo(() => {
@@ -185,6 +188,56 @@ const MTDView: React.FC<MTDViewProps> = ({ applicationId, businessName, ownerNam
     // Return all categories as-is so we show everything present in mtd_summary
     return normalized;
   }, [detailsModal?.mtd_summary]);
+
+  // Compute selected total across ALL transactions (all categories)
+  const computeTransactionsSelectedTotal = React.useCallback(() => {
+    let total = 0;
+    normalizedSummary.forEach((section) => {
+      section.rows.forEach((r) => {
+        const key = `${section.category}|${String(r.date || '')}|${String(r.description || '')}|${String(r.type || '')}|${Number(r.amount || 0)}`;
+        if (selectedKeys.has(key)) total += (Number(r?.amount) || 0);
+      });
+    });
+    return total;
+  }, [normalizedSummary, selectedKeys]);
+
+  // Save selected transactions total into application_mtd.total_amount
+  const handleSaveTransactionsSelected = async () => {
+    if (!detailsModal?.id) return;
+    try {
+      setSavingTxnTotal(true);
+      const total = computeTransactionsSelectedTotal();
+      await updateApplicationMTDTotalAmount(detailsModal.id, total);
+      setDetailsModal((prev) => prev ? { ...prev, total_amount: total } : prev);
+      showSuccess('Transactions selection saved');
+    } finally {
+      setSavingTxnTotal(false);
+    }
+  };
+
+  // Normalize Funder MTD JSON array to same row shape so we can render a table
+  const normalizedFunder = React.useMemo(() => {
+    const src: any = detailsModal?.funder_mtd;
+    const toNum = (v: any) => {
+      const n = typeof v === 'number' ? v : parseFloat(String(v ?? '').replace(/[^0-9.-]/g, ''));
+      return Number.isFinite(n) ? n : 0;
+    };
+    const rows: any[] = [];
+    if (Array.isArray(src)) {
+      src.forEach((r: any) => {
+        const date = r?.date || r?.Date || '';
+        const description = r?.description || r?.Description || '';
+        const amount = toNum(r?.amount ?? r?.Amount);
+        const type = String(r?.status || r?.Type || (amount < 0 ? 'DEBIT' : 'CREDIT')).toUpperCase();
+        const balance = toNum(r?.available_balance ?? r?.balance ?? r?.Balance);
+        const funder = String(r?.FUNDER || r?.funder || r?.Funder || '').trim();
+        rows.push({ date: String(date || ''), description: String(description || ''), type, amount, balance: Number.isFinite(balance) ? balance : undefined, funder });
+      });
+    }
+    return rows;
+  }, [detailsModal?.funder_mtd]);
+
+  // removed unused funderTotal (card now uses persisted total_mtd)
 
 
   // Local cache key for instant hydration per application
@@ -532,6 +585,7 @@ const MTDView: React.FC<MTDViewProps> = ({ applicationId, businessName, ownerNam
                       <div className={`flex items-center justify-center w-12 h-12 rounded-xl shadow-sm border bg-gradient-to-br from-emerald-100 to-green-100 border-emerald-200`}>
                         <FileText className="w-6 h-6 text-emerald-700" />
                       </div>
+                      
                       <div>
                         <div className="text-sm font-semibold text-slate-900 truncate max-w-[460px]" title={u.name}>{u.name}</div>
                         <div className="text-xs text-slate-500">PDF Document</div>
@@ -687,15 +741,13 @@ const MTDView: React.FC<MTDViewProps> = ({ applicationId, businessName, ownerNam
               ) : (
                 <>
                   {/* Summary Cards */}
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
                     <div className="bg-gradient-to-br from-emerald-50 to-green-50 border-2 border-emerald-200 rounded-xl p-6">
-                      <div className="text-emerald-700 text-sm font-semibold">Total Amount{selectedCount > 0 ? ' (Selected)' : ''}</div>
+                      <div className="text-emerald-700 text-sm font-semibold">Total Amount</div>
                       <div className="text-2xl font-bold text-emerald-900 mt-1">
-                        {selectedCount > 0
-                          ? `$${selectedGrandTotal.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
-                          : (typeof detailsModal?.total_amount === 'number'
-                              ? `$${detailsModal.total_amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
-                              : '—')}
+                        {typeof detailsModal?.total_amount === 'number'
+                          ? `$${detailsModal.total_amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                          : '—'}
                       </div>
                     </div>
                     <div className="bg-gradient-to-br from-cyan-50 to-teal-50 border-2 border-cyan-200 rounded-xl p-6">
@@ -704,9 +756,44 @@ const MTDView: React.FC<MTDViewProps> = ({ applicationId, businessName, ownerNam
                         {typeof detailsModal?.available_balance === 'number' ? detailsModal.available_balance.toLocaleString('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '—'}
                       </div>
                     </div>
+                    <div className="bg-gradient-to-br from-rose-50 to-red-50 border-2 border-rose-200 rounded-xl p-6">
+                      <div className="text-rose-700 text-sm font-semibold">Negative Count</div>
+                      <div className="text-2xl font-bold text-rose-900 mt-1">
+                        {typeof detailsModal?.negative === 'number'
+                          ? detailsModal.negative.toLocaleString('en-US')
+                          : '—'}
+                      </div>
+                    </div>
+                    <div className="bg-gradient-to-br from-violet-50 to-fuchsia-50 border-2 border-violet-200 rounded-xl p-6">
+                      <div className="text-violet-700 text-sm font-semibold">Funder MTD</div>
+                      <div className="text-2xl font-bold text-violet-900 mt-1">
+                        {typeof detailsModal?.total_mtd === 'number'
+                          ? detailsModal.total_mtd.toLocaleString('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2 })
+                          : '—'}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Tabs */}
+                  <div className="flex items-center gap-2 mt-2">
+                    <button
+                      type="button"
+                      onClick={() => setActiveTab('transactions')}
+                      className={`px-4 py-2 rounded-lg text-sm font-semibold border transition ${activeTab === 'transactions' ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'}`}
+                    >
+                      Transactions
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setActiveTab('funder')}
+                      className={`px-4 py-2 rounded-lg text-sm font-semibold border transition ${activeTab === 'funder' ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'}`}
+                    >
+                      Funder MTD
+                    </button>
                   </div>
 
                   {/* MTD Summary - formatted like categories/transactions */}
+                  {activeTab === 'transactions' && (
                   <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
                     {normalizedSummary.length === 0 ? (
                       <div className="p-10 text-center text-slate-500 text-sm">No transaction data available</div>
@@ -720,13 +807,13 @@ const MTDView: React.FC<MTDViewProps> = ({ applicationId, businessName, ownerNam
                                 <span className="w-2 h-2 rounded-full bg-white/90" />
                                 {String(section.category || 'Category').toUpperCase()}
                               </div>
-                              {/* Column headers with Select before Date (1+2+4+1+2+2 = 12) */}
-                              <div className="px-6 py-3 bg-slate-50 border-b border-slate-200 grid grid-cols-12 gap-x-6 text-[11px] font-semibold text-slate-600 uppercase tracking-wider">
+                              {/* Column headers with Select before Date (1+1+5+1+2+2 = 12) */}
+                              <div className="px-4 py-2 bg-slate-50 border-b border-slate-200 grid grid-cols-12 gap-x-3 text-[10px] font-semibold text-slate-600 uppercase tracking-wider">
                                 <div className="col-span-1">Select</div>
-                                <div className="col-span-2">Date</div>
-                                <div className="col-span-4">Description</div>
+                                <div className="col-span-1">Date</div>
+                                <div className="col-span-5">Description</div>
                                 <div className="col-span-1">Type</div>
-                                <div className="col-span-2 text-right">Amount</div>
+                                <div className="col-span-2 text-center">Amount</div>
                                 <div className="col-span-2 text-right">Balance</div>
                               </div>
                               {/* Rows grouped by date (date printed once, multiple entries separated with dotted rule) */}
@@ -737,19 +824,19 @@ const MTDView: React.FC<MTDViewProps> = ({ applicationId, businessName, ownerNam
                                   (() => {
                                     const groups = new Map<string, any[]>();
                                     section.rows.forEach((row) => {
-                                      const key = formatDateHuman(row.date);
+                                      const key = formatDateLong(row.date);
                                       const arr = groups.get(key) || [];
                                       arr.push(row);
                                       groups.set(key, arr);
                                     });
                                     return Array.from(groups.entries()).map(([d, rows], gi) => (
-                                      <div key={`${d}-${gi}`} className="px-6">
+                                      <div key={`${d}-${gi}`} className="px-4">
                                         {rows.map((r, ri) => {
                                           const key = `${section.category}|${String(r.date || '')}|${String(r.description || '')}|${String(r.type || '')}|${Number(r.amount || 0)}`;
                                           const checked = selectedKeys.has(key);
                                           const commonRowClasses = `${ri > 0 ? 'border-t border-dotted border-slate-300 pt-3' : ''}`;
                                           return (
-                                            <div key={ri} className="py-4 grid grid-cols-12 items-start gap-x-6">
+                                            <div key={ri} className="py-3 grid grid-cols-12 items-start gap-x-3">
                                               {/* Select */}
                                               <div className={`col-span-1 ${commonRowClasses}`}>
                                                 <input
@@ -767,18 +854,18 @@ const MTDView: React.FC<MTDViewProps> = ({ applicationId, businessName, ownerNam
                                               </div>
                                               {/* Date */}
                                               {ri === 0 ? (
-                                                <div className="col-span-2 text-slate-700 text-sm font-semibold">{d}</div>
+                                                <div className="col-span-1 text-slate-700 text-xs font-semibold">{d}</div>
                                               ) : (
-                                                <div className="col-span-2" />
+                                                <div className="col-span-1" />
                                               )}
                                               {/* Description */}
-                                              <div className={`col-span-4 text-slate-700 text-sm leading-relaxed pr-4 whitespace-pre-wrap break-words ${commonRowClasses}`}>{r.description || '—'}</div>
+                                              <div className={`col-span-5 text-slate-700 text-xs leading-relaxed pr-2 whitespace-pre-wrap break-words ${commonRowClasses}`}>{r.description || '—'}</div>
                                               {/* Type */}
-                                              <div className={`col-span-1 text-slate-700 text-sm font-medium tracking-wide whitespace-pre-wrap break-words ${commonRowClasses}`}>{String(r.type || '').toUpperCase() || '—'}</div>
+                                              <div className={`col-span-1 text-slate-700 text-xs font-semibold tracking-wide whitespace-pre-wrap break-words ${commonRowClasses}`}>{String(r.type || '').toUpperCase() || '—'}</div>
                                               {/* Amount */}
-                                              <div className={`col-span-2 text-right font-bold text-slate-900 tabular-nums font-mono whitespace-nowrap ${commonRowClasses}`}>{fmtCurrency2(Number(r.amount || 0))}</div>
+                                              <div className={`col-span-2 text-center font-bold text-slate-900 tabular-nums font-mono text-[12px] whitespace-nowrap ${commonRowClasses}`}>{fmtCurrency2(Number(r.amount || 0))}</div>
                                               {/* Balance */}
-                                              <div className={`col-span-2 text-right font-semibold text-slate-900 tabular-nums font-mono whitespace-nowrap ${commonRowClasses}`}>{typeof r.balance === 'number' ? fmtCurrency2(Number(r.balance)) : (r.balance ? String(r.balance) : '—')}</div>
+                                              <div className={`col-span-2 text-right font-semibold text-slate-900 tabular-nums font-mono text-[12px] whitespace-nowrap ${commonRowClasses}`}>{typeof r.balance === 'number' ? fmtCurrency2(Number(r.balance)) : (r.balance ? String(r.balance) : '—')}</div>
                                             </div>
                                           );
                                         })}
@@ -795,12 +882,21 @@ const MTDView: React.FC<MTDViewProps> = ({ applicationId, businessName, ownerNam
                                 }, 0);
                                 return (
                                   <div className="px-6 py-4 bg-slate-50 border-t border-slate-200 grid grid-cols-12 gap-x-6 items-center">
-                                    {/* Left side spanning Select+Date+Description+Type (1+2+4+1=8) */}
+                                    {/* Left side spanning Select+Date+Description+Type (1+1+5+1=8) */}
                                     <div className="col-span-8 text-slate-600 font-semibold uppercase text-xs">Total</div>
                                     {/* Amount column (col-span-2) */}
-                                    <div className="col-span-2 text-right text-slate-900 font-black">{fmtCurrency2(selectedTotal)}</div>
-                                    {/* Balance column left empty */}
-                                    <div className="col-span-2" />
+                                    <div className="col-span-2 text-center text-slate-900 font-black">{fmtCurrency2(selectedTotal)}</div>
+                                    {/* Save Selection button (saves global selected total across all categories) */}
+                                    <div className="col-span-2 flex justify-end">
+                                      <button
+                                        type="button"
+                                        onClick={handleSaveTransactionsSelected}
+                                        disabled={savingTxnTotal}
+                                        className={`px-3 py-1.5 rounded-lg text-xs font-bold border transition ${savingTxnTotal ? 'bg-slate-200 text-slate-500 border-slate-300 cursor-not-allowed' : 'bg-blue-600 text-white border-blue-600 hover:bg-blue-700'}`}
+                                      >
+                                        {savingTxnTotal ? 'Saving…' : 'Save Selection'}
+                                      </button>
+                                    </div>
                                   </div>
                                 );
                               })()}
@@ -810,11 +906,116 @@ const MTDView: React.FC<MTDViewProps> = ({ applicationId, businessName, ownerNam
                       </div>
                     )}
                   </div>
+                  )}
 
-                  
+                  {/* Funder MTD - same layout as transactions */}
+                  {activeTab === 'funder' && (
+                  <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+                    <div className="px-6 py-3 bg-blue-600 text-white font-bold uppercase tracking-wide flex items-center gap-3">
+                      <span className="w-2 h-2 rounded-full bg-white/90" />
+                      FUNDER MTD
+                    </div>
+                    <div className="px-4 py-2 bg-slate-50 border-b border-slate-200 grid grid-cols-12 gap-x-3 text-[10px] font-semibold text-slate-600 uppercase tracking-wider">
+                      <div className="col-span-1">Select</div>
+                      <div className="col-span-1">Date</div>
+                      <div className="col-span-4">Description</div>
+                      <div className="col-span-2">Funder</div>
+                      <div className="col-span-1">Type</div>
+                      <div className="col-span-2 text-center">Amount</div>
+                      <div className="col-span-1 text-right">Balance</div>
+                    </div>
+                    {normalizedFunder.length === 0 ? (
+                      <div className="p-10 text-center text-slate-500 text-sm">No Funder MTD entries</div>
+                    ) : (
+                      (() => {
+                        const groups = new Map<string, any[]>();
+                        normalizedFunder.forEach((row) => {
+                          const key = formatDateHuman(row.date);
+                          const arr = groups.get(key) || [];
+                          arr.push(row);
+                          groups.set(key, arr);
+                        });
+                        return (
+                          <div className="">
+                            {Array.from(groups.entries()).map(([d, rows], gi) => (
+                              <div key={`${d}-${gi}`} className="px-4">
+                                {rows.map((r, ri) => {
+                                  const key = `FUNDER_MTD|${String(r.date || '')}|${String(r.description || '')}|${String(r.funder || '')}|${String(r.type || '')}|${Number(r.amount || 0)}`;
+                                  const checked = selectedKeys.has(key);
+                                  const commonRowClasses = `${ri > 0 ? 'border-t border-dotted border-slate-300 pt-3' : ''}`;
+                                  return (
+                                    <div key={ri} className="py-3 grid grid-cols-12 items-start gap-x-3">
+                                      <div className={`col-span-1 ${commonRowClasses}`}>
+                                        <input
+                                          type="checkbox"
+                                          checked={checked}
+                                          onChange={() => {
+                                            setSelectedKeys((prev) => {
+                                              const next = new Set(prev);
+                                              if (next.has(key)) next.delete(key); else next.add(key);
+                                              return next;
+                                            });
+                                          }}
+                                          className="w-4 h-4 cursor-pointer accent-blue-600"
+                                        />
+                                      </div>
+                                      {ri === 0 ? (
+                                        <div className="col-span-1 text-slate-700 text-xs font-semibold">{d}</div>
+                                      ) : (
+                                        <div className="col-span-1" />
+                                      )}
+                                      <div className={`col-span-4 text-slate-700 text-xs leading-relaxed pr-2 whitespace-pre-wrap break-words ${commonRowClasses}`}>{r.description || '—'}</div>
+                                      <div className={`col-span-2 text-slate-700 text-xs font-semibold tracking-wide whitespace-pre-wrap break-words ${commonRowClasses}`}>{r.funder || '—'}</div>
+                                      <div className={`col-span-1 text-slate-700 text-xs font-semibold tracking-wide whitespace-pre-wrap break-words ${commonRowClasses}`}>{String(r.type || '').toUpperCase() || '—'}</div>
+                                      <div className={`col-span-2 text-center font-bold text-slate-900 tabular-nums font-mono text-[12px] whitespace-nowrap ${commonRowClasses}`}>{fmtCurrency2(Number(r.amount || 0))}</div>
+                                      <div className={`col-span-1 text-right font-semibold text-slate-900 tabular-nums font-mono text-[12px] whitespace-nowrap ${commonRowClasses}`}>{typeof r.balance === 'number' ? fmtCurrency2(Number(r.balance)) : (r.balance ? String(r.balance) : '—')}</div>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            ))}
+                          </div>
+                        );
+                      })()
+                    )}
+                    {(() => {
+                      const selectedTotal = normalizedFunder.reduce((s, r) => {
+                        const key = `FUNDER_MTD|${String(r.date || '')}|${String(r.description || '')}|${String(r.funder || '')}|${String(r.type || '')}|${Number(r.amount || 0)}`;
+                        return s + (selectedKeys.has(key) ? (Number(r?.amount) || 0) : 0);
+                      }, 0);
+                      return (
+                        <div className="px-6 py-4 bg-slate-50 border-t border-slate-200 grid grid-cols-12 gap-x-6 items-center">
+                          <div className="col-span-8 text-slate-600 font-semibold uppercase text-xs">Total</div>
+                          <div className="col-span-2 text-center text-slate-900 font-black">{fmtCurrency2(selectedTotal)}</div>
+                          <div className="col-span-2 flex justify-end">
+                            <button
+                              type="button"
+                              onClick={handleSaveFunderSelected}
+                              disabled={savingFunderTotal}
+                              className={`px-3 py-1.5 rounded-lg text-xs font-bold border transition ${savingFunderTotal ? 'bg-slate-200 text-slate-500 border-slate-300 cursor-not-allowed' : 'bg-blue-600 text-white border-blue-600 hover:bg-blue-700'}`}
+                            >
+                              {savingFunderTotal ? 'Saving…' : 'Save Selection'}
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })()}
+                  </div>
+                  )}
+
                 </>
               )}
             </div>
+
+            {/* Mini success popup */}
+            {saveSuccess.open && (
+              <div className="pointer-events-none absolute inset-x-0 bottom-20 flex justify-center">
+                <div className="pointer-events-auto inline-flex items-center gap-2 px-4 py-2 rounded-xl shadow-lg border border-emerald-200 bg-white text-emerald-700 text-sm font-semibold">
+                  <CheckCircle className="w-4 h-4" />
+                  <span>{saveSuccess.message}</span>
+                </div>
+              </div>
+            )}
 
             {/* Footer */}
             <div className="px-8 py-6 bg-slate-50 border-t border-slate-200 flex justify-between items-center">

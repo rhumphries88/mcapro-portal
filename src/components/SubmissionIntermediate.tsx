@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Upload, FileText, CheckCircle, RefreshCw, Trash2, RotateCcw, TrendingUp } from 'lucide-react';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
-import { getApplicationDocuments, deleteApplicationDocument, deleteApplicationDocumentByAppAndDate, updateApplicationDocumentMonthlyRevenue, type ApplicationDocument, supabase } from '../lib/supabase';
+import { getApplicationDocuments, deleteApplicationDocument, deleteApplicationDocumentByAppAndDate, updateApplicationDocumentMonthlyRevenue, type ApplicationDocument, supabase, getApplicationMTDByApplicationId, type ApplicationMTD } from '../lib/supabase';
 
 import { fmtCurrency2, parseAmount, getUniqueDateKey, fetchWithTimeout, formatFullDate, formatDateHuman, slugify } from './SubmissionIntermediate.helpers';
 import { UploadDropzone, FilesBucketList, LegalComplianceSection, DocumentDetailsControls, TransactionSummarySection } from './SubmissionIntermediate.Views';
@@ -495,6 +495,24 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
     return () => { cancelled = true; };
   }, [details.id, details.applicationId, initial?.id, initial?.applicationId]);
 
+  // Fetch application_mtd rows for this application to show total_mtd values
+  useEffect(() => {
+    const appId = (details.id as string) || (details.applicationId as string) || (initial?.id as string) || (initial?.applicationId as string) || '';
+    if (!appId) return;
+    let cancelled = false;
+    const run = async () => {
+      try {
+        const rows = await getApplicationMTDByApplicationId(appId);
+        if (!cancelled) setMtdRows(rows || []);
+      } catch (e) {
+        console.warn('Failed to load application_mtd rows:', e);
+      } finally {
+      }
+    };
+    run();
+    return () => { cancelled = true; };
+  }, [details.id, details.applicationId, initial?.id, initial?.applicationId]);
+
   
 
   // Financial summary loading/aggregation removed per request
@@ -592,6 +610,8 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
   // Persisted documents fetched from DB
   const [dbDocs, setDbDocs] = useState<ApplicationDocument[]>([]);
   const [dbDocsLoading, setDbDocsLoading] = useState(false);
+  // MTD rows for Funder MTD totals display
+  const [mtdRows, setMtdRows] = useState<ApplicationMTD[]>([]);
   // Prevent duplicate document-file webhook calls for same file signature
   const inFlightDocSigsRef = useRef<Set<string>>(new Set());
   // Removed: pending summary tracking
@@ -623,6 +643,35 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
       }
     }
   }, [dbDocs]);
+
+  // Realtime: listen for changes on application_mtd to keep Funder MTD Totals in sync
+  useEffect(() => {
+    const appId = (details.applicationId as string) || (initial?.applicationId as string) || (details.id as string) || (initial?.id as string) || '';
+    if (!appId) return;
+    const channel = supabase
+      .channel(`rt-application_mtd-${appId}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'application_mtd', filter: `application_id=eq.${appId}` }, async () => {
+        try {
+          const rows = await getApplicationMTDByApplicationId(appId);
+          setMtdRows(rows || []);
+        } catch {}
+      })
+      .subscribe();
+    return () => { try { supabase.removeChannel(channel); } catch {} };
+  }, [details.applicationId, details.id, initial?.applicationId, initial?.id]);
+
+  // Polling fallback: refresh MTD rows periodically if Realtime is disabled or misses events
+  useEffect(() => {
+    const appId = (details.applicationId as string) || (initial?.applicationId as string) || (details.id as string) || (initial?.id as string) || '';
+    if (!appId) return;
+    const id = setInterval(async () => {
+      try {
+        const rows = await getApplicationMTDByApplicationId(appId);
+        setMtdRows(rows || []);
+      } catch {}
+    }, 7000); // every 7s
+    return () => clearInterval(id);
+  }, [details.applicationId, details.id, initial?.applicationId, initial?.id]);
   
   // Track which item is being replaced (db/local)
   const [replaceTarget, setReplaceTarget] = useState<null | { source: 'db' | 'local'; dateKey: string; docId?: string }>(null);
@@ -990,12 +1039,7 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
   }, [dbDocs]);
   
   // Initialize all items as selected when the component loads or when mcaItems changes
-  useEffect(() => {
-    if (mcaItems.length > 0) {
-      // Select all items by default
-      setSelectedMcaItems(new Set(mcaItems.map((_, i) => i)));
-    }
-  }, [mcaItems.length]);
+  // Do not auto-select MCA items by default
 
   // Derive MCA summary rows from application_documents.mca_summary (fallback to extracted_json.mca_summary)
   const mcaSummaryRows = React.useMemo(() => {
@@ -2177,63 +2221,14 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                                               if (!monthlyData[BUSINESS_OWNER_MAIN][BUSINESS_OWNER_MAIN]) monthlyData[BUSINESS_OWNER_MAIN][BUSINESS_OWNER_MAIN] = [];
                                               monthlyData[BUSINESS_OWNER_MAIN][BUSINESS_OWNER_MAIN].push(...rows);
                                             }
-                                            // Merge all funder_list rows under a single category as well, with explicit amounts
+                                            // Merge all funder_list rows under a single category as-is (no fabrication/inference)
                                             if (funderListData) {
                                               const FUNDERS_MAIN = 'Funder List';
                                               const rows = normalizeToRows(funderListData);
-                                              
-                                              // Extract real amounts from the descriptions
-                                              const processedRows = rows.map((row: any) => {
-                                                // Start with a copy of the original row
-                                                const newRow = { ...row };
-                                                
-                                                // Try to find the amount in the description
-                                                const desc = String(row?.description || '');
-                                                
-                                                // Look for patterns like "Orig ID: 53167846 Desc Date: Aug 28 CO Entry Descr: The Phillitec CCD Trace#: 067015092417219 Eid: 250828 Ind ID: The Phillips Gr Ind Name: The Phillips Group Inc Trn: 2402417219Tc"
-                                                // We need to extract the amount from elsewhere
-                                                
-                                                // Try to get real amount from the row's entry_id or ind_id fields
-                                                if (desc.includes('Ind ID:') || desc.includes('Entry Descr:')) {
-                                                  // Check if we have a separate amount field in the parent data
-                                                  const parentData = documentDetails?.mca_summary?.funders || [];
-                                                  
-                                                  // Try to find a matching entry by description or date
-                                                  const matchingEntry = Array.isArray(parentData) ? 
-                                                    parentData.find((entry: any) => {
-                                                      // Match by description substring
-                                                      if (entry?.description && desc.includes(entry.description)) return true;
-                                                      // Match by date if available
-                                                      if (entry?.date && row?.date && entry.date === row.date) return true;
-                                                      return false;
-                                                    }) : null;
-                                                  
-                                                  if (matchingEntry && typeof matchingEntry.amount !== 'undefined') {
-                                                    // Use the amount from the matching entry
-                                                    newRow.amount = parseFloat(String(matchingEntry.amount).replace(/[^0-9.-]/g, ''));
-                                                  } else {
-                                                    // If no match, try to extract from the description
-                                                    // For funder entries, we'll use a fixed amount based on the image
-                                                    // This is a fallback when we can't find the real amount
-                                                    if (desc.includes('Phillips Group')) {
-                                                      if (desc.includes('04 August 2025')) newRow.amount = 2947.12;
-                                                      else if (desc.includes('11 August 2025')) newRow.amount = 11768.00;
-                                                      else if (desc.includes('19 August 2025')) newRow.amount = 3700.00;
-                                                      else if (desc.includes('28 August 2025')) newRow.amount = 25000.00;
-                                                      else if (desc.includes('29 August 2025')) newRow.amount = 45028.63;
-                                                      else newRow.amount = 17500.00; // Default amount
-                                                    } else {
-                                                      newRow.amount = 17500.00; // Default amount for other funders
-                                                    }
-                                                  }
-                                                }
-                                                
-                                                return newRow;
-                                              });
-                                              
                                               if (!monthlyData[FUNDERS_MAIN]) monthlyData[FUNDERS_MAIN] = {};
                                               if (!monthlyData[FUNDERS_MAIN][FUNDERS_MAIN]) monthlyData[FUNDERS_MAIN][FUNDERS_MAIN] = [];
-                                              monthlyData[FUNDERS_MAIN][FUNDERS_MAIN].push(...processedRows);
+                                              // Push exact records from DB; amounts/descriptions/dates are preserved
+                                              monthlyData[FUNDERS_MAIN][FUNDERS_MAIN].push(...rows);
                                             }
                                             
                                             // Build filter list using ONLY MAIN CATEGORIES (top-level groups)
@@ -2959,6 +2954,36 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                       )}
                     </div>
                   </div>
+                  ) : null}
+                  {/* Funder MTD Totals (from application_mtd.total_mtd) */}
+                  {Array.isArray(mtdRows) && mtdRows.some(r => typeof (r as any)?.total_mtd === 'number') ? (
+                    <div className="mb-6">
+                      <div className="bg-white border border-slate-200/60 rounded-xl shadow-lg overflow-hidden">
+                        <div className="px-4 py-3 bg-slate-800 text-white flex items-center justify-between">
+                          <div className="flex items-center gap-3">
+                            <TrendingUp className="w-5 h-5 text-violet-300" />
+                            <div>
+                              <h4 className="text-lg font-bold">Funder MTD Totals</h4>
+                              <p className="text-xs text-slate-300">Saved totals from analysis (application_mtd.total_mtd)</p>
+                            </div>
+                          </div>
+                        </div>
+                        <div className="divide-y divide-slate-200">
+                          {(mtdRows || []).filter(r => typeof (r as any)?.total_mtd === 'number').map((r, idx) => (
+                            <div key={r.id || idx} className="px-6 py-3 grid grid-cols-12 gap-4 items-center">
+                              <div className="col-span-8 truncate text-slate-700 text-sm">{r.file_name || 'MTD Document'}</div>
+                              <div className="col-span-4 text-right font-mono font-bold text-slate-900">{fmtCurrency2(Number((r as any).total_mtd || 0))}</div>
+                            </div>
+                          ))}
+                        </div>
+                        <div className="px-6 py-3 bg-slate-50 border-t border-slate-200 grid grid-cols-12 items-center">
+                          <div className="col-span-8 text-slate-600 uppercase text-xs font-semibold">Total</div>
+                          <div className="col-span-4 text-right font-black text-slate-900">{
+                            fmtCurrency2((mtdRows || []).reduce((s, r) => s + (Number((r as any).total_mtd) || 0), 0))
+                          }</div>
+                        </div>
+                      </div>
+                    </div>
                   ) : null}
                   {/* Notification banner for Bank Statement Analysis - shows when there's Financial Overview but no Bank Statement Analysis */}
                   {(Array.isArray(financialOverviewFromDocs) && financialOverviewFromDocs.length > 0 && (!Array.isArray(mcaSummaryRows) || mcaSummaryRows.length === 0)) && (

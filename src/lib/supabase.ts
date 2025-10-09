@@ -139,6 +139,22 @@ export const updateApplication = async (id: string, updates: Partial<Application
   return data
 }
 
+// Update total_amount (sum of selected Transactions rows) for a specific MTD record
+export const updateApplicationMTDTotalAmount = async (
+  id: string,
+  total_amount: number
+) => {
+  const { data, error } = await supabase
+    .from('application_mtd')
+    .update({ total_amount })
+    .eq('id', id)
+    .select()
+    .single()
+
+  if (error) throw error
+  return data as ApplicationMTD
+}
+
 // Optional type for rows in application_financials (kept loose to avoid coupling to migrations)
 export interface ApplicationFinancialRow {
   id: string
@@ -308,6 +324,9 @@ export interface ApplicationMTD {
   mtd_summary?: unknown
   total_amount?: number | null
   available_balance?: number | null
+  negative?: number | null
+  funder_mtd?: unknown
+  total_mtd?: number | null
 }
 
 export const insertApplicationMTD = async (row: {
@@ -387,12 +406,28 @@ export const getApplicationMTDAnalysisById = async (
 ) => {
   const { data, error } = await supabase
     .from('application_mtd')
-    .select('id, mtd_summary, total_amount, available_balance')
+    .select('id, mtd_summary, total_amount, available_balance, negative, funder_mtd, total_mtd')
     .eq('id', id)
     .single()
 
   if (error) throw error
-  return data as Pick<ApplicationMTD, 'id'> & { mtd_summary?: unknown; total_amount?: number | null; available_balance?: number | null }
+  return data as Pick<ApplicationMTD, 'id'> & { mtd_summary?: unknown; total_amount?: number | null; available_balance?: number | null; negative?: number | null; funder_mtd?: unknown; total_mtd?: number | null }
+}
+
+// Update total_mtd (sum of selected Funder MTD rows) for a specific MTD record
+export const updateApplicationMTDTotalMTD = async (
+  id: string,
+  total_mtd: number
+) => {
+  const { data, error } = await supabase
+    .from('application_mtd')
+    .update({ total_mtd })
+    .eq('id', id)
+    .select()
+    .single()
+
+  if (error) throw error
+  return data as ApplicationMTD
 }
 
 export const deleteApplicationMTD = async (id: string) => {
