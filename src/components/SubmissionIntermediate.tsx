@@ -317,27 +317,19 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
         pdf.text('MCA SUMMARY', marginX, cursorY + 6);
         cursorY += 28;
         
-        // Compute Financial Analysis metrics from actual system data (previous month only)
-        let totalFunders = 0;
-        try {
-          (mcaSummaryRows || []).forEach((row: any) => {
-            const raw = row && row.__mca_raw;
-            const arr = Array.isArray(raw) ? raw : (!Array.isArray(raw) && raw && typeof raw === 'object' ? (Object.values(raw).flat().filter(Boolean) as any[]) : []);
-            const items: any[] = (Array.isArray(arr) ? arr : []).filter((it: any) => it && typeof it === 'object');
-            for (const it of items) {
-              // No longer filtering by month
-              const freq = String(it?.dailyweekly ?? it?.debit_frequency ?? '');
-              const amountVal = it?.amount;
-              const amountNum = (typeof amountVal === 'number') ? amountVal : parseAmount(String(amountVal ?? ''));
-              const isWeekly = /weekly/i.test(freq);
-              const displayAmount = isWeekly ? (Number(amountNum) / 5) : Number(amountNum);
-              totalFunders += Number.isFinite(displayAmount) ? Number(displayAmount) : 0;
-            }
-          });
-        } catch { /* ignore */ }
+        // Compute Financial Analysis metrics from actual system data using SAME selection as UI
+        const totalFunders = mcaItems.reduce((sum: number, it: any, index: number) => {
+          if (!selectedMcaItems.has(index)) return sum; // include only selected items
+          const val = Number(it?.displayAmount);
+          return sum + (Number.isFinite(val) ? val : 0);
+        }, 0);
         
+        // Pull Funder MTD saved totals (application_mtd.total_mtd)
+        const mtdSumPdf = (mtdRows || []).reduce((s, r) => s + (Number((r as any)?.total_mtd) || 0), 0);
         const multiplier = 20;
-        const subtotal = totalFunders * multiplier;
+        // Subtotal now uses combined total of Funders (selected) + Funder MTD Totals (saved)
+        const combinedTotal = totalFunders + mtdSumPdf;
+        const subtotal = combinedTotal * multiplier;
         const ratio = avgRevenue > 0 ? (subtotal / avgRevenue) : 0;
         const holdbackPct = (() => {
           const decimals = 1;
@@ -369,11 +361,14 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
         }
         
         // Risk assessment (only if we have transaction data)
-        if (totalFunders > 0) {
+        if (totalFunders > 0 || mtdSumPdf > 0) {
           summaryData.push(['RISK ASSESSMENT', '']);
           summaryData.push(['Total Amount of Funders', fmtCurrency2(totalFunders)]);
+          if (mtdSumPdf > 0) {
+            summaryData.push(['Funder MTD Totals', fmtCurrency2(mtdSumPdf)]);
+          }
           summaryData.push(['Calculation Multiplier', `× ${multiplier}`]);
-          summaryData.push(['Amount of Funders x Multiplier', fmtCurrency2(subtotal)]);
+          summaryData.push(['SUBTOTAL', fmtCurrency2(subtotal)]);
           if (ratio > 0) summaryData.push(['Ratio (Total ÷ Revenue)', ratio.toFixed(2)]);
           summaryData.push(['', '']); // Spacer
           
@@ -3195,7 +3190,7 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                             {(() => {
                               // Always show the receipt-style summary
                               try {
-                                // Compute total only from selected items
+                                // Compute total only from selected items (Bank Statement selections)
                                 const total = mcaItems.reduce((sum: number, it: any, index: number) => {
                                   // Only include this item if it's selected
                                   if (!selectedMcaItems.has(index)) return sum;
@@ -3203,7 +3198,12 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                                   const val = Number(it?.displayAmount);
                                   return sum + (Number.isFinite(val) ? val : 0);
                                 }, 0);
-                                const totalTimes20 = total * 20;
+                                // Compute saved Funder MTD totals from application_mtd.total_mtd
+                                const mtdCount = (mtdRows || []).filter(r => typeof (r as any)?.total_mtd === 'number').length;
+                                const mtdSum = (mtdRows || []).reduce((s, r) => s + (Number((r as any)?.total_mtd) || 0), 0);
+                                // Subtotal (CALCULATION MULTIPLIER) uses combined total
+                                const combined = total + mtdSum;
+                                const totalTimes20 = combined * 20;
                                 // Calculate Total Revenue to match Financial Overview footer (average across documents)
                                 const totalDocsForRevenue = Array.isArray(financialOverviewFromDocs) ? financialOverviewFromDocs.length : 1;
                                 const revenueSum = (financialOverviewFromDocs || []).reduce((sum: number, r: any) => sum + (Number(r.monthly_revenue) || 0), 0);
@@ -3279,6 +3279,23 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                                             </div>
                                           </div>
                                         </div>
+
+                                        {/* Funder MTD Totals (sum of saved application_mtd.total_mtd) */}
+                                        {mtdCount > 0 && (
+                                          <div className="flex justify-between items-center py-3 border-b border-slate-200">
+                                            <div className="flex-1">
+                                              <div className="text-sm font-bold text-slate-900 uppercase tracking-wide">FUNDER MTD TOTALS</div>
+                                              <div className="text-xs text-slate-500 mt-1">
+                                                <span className="font-medium text-violet-600">{mtdCount}</span> item{mtdCount !== 1 ? 's' : ''} saved from analysis
+                                              </div>
+                                            </div>
+                                            <div className="text-right min-w-[120px]">
+                                              <div className="font-mono text-lg font-black text-slate-900 tabular-nums">
+                                                {fmtCurrency2(mtdSum)}
+                                              </div>
+                                            </div>
+                                          </div>
+                                        )}
 
                                         <div className="flex justify-between items-center py-3 border-b border-slate-200">
                                           <div className="flex-1">

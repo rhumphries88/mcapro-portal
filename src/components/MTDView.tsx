@@ -189,6 +189,38 @@ const MTDView: React.FC<MTDViewProps> = ({ applicationId, businessName, ownerNam
     return normalized;
   }, [detailsModal?.mtd_summary]);
 
+  // Build a canonical list of selection keys for Transactions and Funder tables
+  const allTxnKeys = React.useMemo(() => {
+    const keys: string[] = [];
+    normalizedSummary.forEach((section) => {
+      section.rows.forEach((r) => {
+        const key = `${section.category}|${String(r.date || '')}|${String(r.description || '')}|${String(r.type || '')}|${Number(r.amount || 0)}`;
+        keys.push(key);
+      });
+    });
+    return keys;
+  }, [normalizedSummary]);
+
+  // Select-all state and handlers for Transactions
+  const allTxnSelected = allTxnKeys.length > 0 && allTxnKeys.every(k => selectedKeys.has(k));
+  const someTxnSelected = allTxnKeys.some(k => selectedKeys.has(k)) && !allTxnSelected;
+  const txnSelectAllRef = React.useRef<HTMLInputElement>(null);
+  React.useEffect(() => {
+    if (txnSelectAllRef.current) txnSelectAllRef.current.indeterminate = someTxnSelected;
+  }, [someTxnSelected, allTxnSelected]);
+  const toggleAllTxn = React.useCallback(() => {
+    setSelectedKeys((prev) => {
+      const next = new Set(prev);
+      if (allTxnSelected) {
+        allTxnKeys.forEach(k => next.delete(k));
+      } else {
+        allTxnKeys.forEach(k => next.add(k));
+      }
+      return next;
+    });
+  }, [allTxnSelected, allTxnKeys]);
+
+
   // Compute selected total across ALL transactions (all categories)
   const computeTransactionsSelectedTotal = React.useCallback(() => {
     let total = 0;
@@ -236,6 +268,29 @@ const MTDView: React.FC<MTDViewProps> = ({ applicationId, businessName, ownerNam
     }
     return rows;
   }, [detailsModal?.funder_mtd]);
+
+  // Funder MTD Select-All logic (placed after normalizedFunder to avoid TS ordering error)
+  const allFunderKeys = React.useMemo(() => {
+    return normalizedFunder.map((r) => `FUNDER_MTD|${String(r.date || '')}|${String(r.description || '')}|${String(r.funder || '')}|${String(r.type || '')}|${Number(r.amount || 0)}`);
+  }, [normalizedFunder]);
+
+  const allFunderSelected = allFunderKeys.length > 0 && allFunderKeys.every(k => selectedKeys.has(k));
+  const someFunderSelected = allFunderKeys.some(k => selectedKeys.has(k)) && !allFunderSelected;
+  const funderSelectAllRef = React.useRef<HTMLInputElement>(null);
+  React.useEffect(() => {
+    if (funderSelectAllRef.current) funderSelectAllRef.current.indeterminate = someFunderSelected;
+  }, [someFunderSelected, allFunderSelected]);
+  const toggleAllFunder = React.useCallback(() => {
+    setSelectedKeys((prev) => {
+      const next = new Set(prev);
+      if (allFunderSelected) {
+        allFunderKeys.forEach(k => next.delete(k));
+      } else {
+        allFunderKeys.forEach(k => next.add(k));
+      }
+      return next;
+    });
+  }, [allFunderSelected, allFunderKeys]);
 
   // removed unused funderTotal (card now uses persisted total_mtd)
 
@@ -809,7 +864,19 @@ const MTDView: React.FC<MTDViewProps> = ({ applicationId, businessName, ownerNam
                               </div>
                               {/* Column headers with Select before Date (1+1+5+1+2+2 = 12) */}
                               <div className="px-4 py-2 bg-slate-50 border-b border-slate-200 grid grid-cols-12 gap-x-3 text-[10px] font-semibold text-slate-600 uppercase tracking-wider">
-                                <div className="col-span-1">Select</div>
+                                <div className="col-span-1">
+                                  <div className="flex items-center gap-1">
+                                    <input
+                                      ref={txnSelectAllRef}
+                                      type="checkbox"
+                                      checked={allTxnSelected}
+                                      onChange={toggleAllTxn}
+                                      className="w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
+                                      title="Select all transactions"
+                                    />
+                                    <span>Select</span>
+                                  </div>
+                                </div>
                                 <div className="col-span-1">Date</div>
                                 <div className="col-span-5">Description</div>
                                 <div className="col-span-1">Type</div>
@@ -916,7 +983,19 @@ const MTDView: React.FC<MTDViewProps> = ({ applicationId, businessName, ownerNam
                       FUNDER MTD
                     </div>
                     <div className="px-4 py-2 bg-slate-50 border-b border-slate-200 grid grid-cols-12 gap-x-3 text-[10px] font-semibold text-slate-600 uppercase tracking-wider">
-                      <div className="col-span-1">Select</div>
+                      <div className="col-span-1">
+                        <div className="flex items-center gap-1">
+                          <input
+                            ref={funderSelectAllRef}
+                            type="checkbox"
+                            checked={allFunderSelected}
+                            onChange={toggleAllFunder}
+                            className="w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
+                            title="Select all funder rows"
+                          />
+                          <span>Select</span>
+                        </div>
+                      </div>
                       <div className="col-span-1">Date</div>
                       <div className="col-span-4">Description</div>
                       <div className="col-span-2">Funder</div>
