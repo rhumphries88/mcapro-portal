@@ -34,6 +34,7 @@ export interface Application {
   owner_name: string
   email: string
   phone: string
+  dateBirth?: string
   address: string
   ein: string
   business_type: string
@@ -327,6 +328,8 @@ export interface ApplicationMTD {
   negative?: number | null
   funder_mtd?: unknown
   total_mtd?: number | null
+  // Persisted selection of funder rows (jsonb)
+  mtd_selected?: unknown
 }
 
 export const insertApplicationMTD = async (row: {
@@ -406,12 +409,12 @@ export const getApplicationMTDAnalysisById = async (
 ) => {
   const { data, error } = await supabase
     .from('application_mtd')
-    .select('id, mtd_summary, total_amount, available_balance, negative, funder_mtd, total_mtd')
+    .select('id, mtd_summary, total_amount, available_balance, negative, funder_mtd, total_mtd, mtd_selected')
     .eq('id', id)
     .single()
 
   if (error) throw error
-  return data as Pick<ApplicationMTD, 'id'> & { mtd_summary?: unknown; total_amount?: number | null; available_balance?: number | null; negative?: number | null; funder_mtd?: unknown; total_mtd?: number | null }
+  return data as Pick<ApplicationMTD, 'id'> & { mtd_summary?: unknown; total_amount?: number | null; available_balance?: number | null; negative?: number | null; funder_mtd?: unknown; total_mtd?: number | null; mtd_selected?: unknown }
 }
 
 // Update total_mtd (sum of selected Funder MTD rows) for a specific MTD record
@@ -422,6 +425,22 @@ export const updateApplicationMTDTotalMTD = async (
   const { data, error } = await supabase
     .from('application_mtd')
     .update({ total_mtd })
+    .eq('id', id)
+    .select()
+    .single()
+
+  if (error) throw error
+  return data as ApplicationMTD
+}
+
+// Update mtd_selected (jsonb of selected funder rows)
+export const updateApplicationMTDMtdSelected = async (
+  id: string,
+  mtd_selected: unknown
+) => {
+  const { data, error } = await supabase
+    .from('application_mtd')
+    .update({ mtd_selected })
     .eq('id', id)
     .select()
     .single()

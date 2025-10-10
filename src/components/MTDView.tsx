@@ -1,6 +1,6 @@
 import React from 'react';
 import { FileText, RefreshCw, Trash2, CheckCircle } from 'lucide-react';
-import { insertApplicationMTD, updateApplicationMTDStatus, getApplicationMTDByApplicationId, getApplicationMTDAnalysisById, updateApplicationMTDTotalMTD, updateApplicationMTDTotalAmount, supabase } from '../lib/supabase';
+import { insertApplicationMTD, updateApplicationMTDStatus, getApplicationMTDByApplicationId, getApplicationMTDAnalysisById, updateApplicationMTDTotalMTD, updateApplicationMTDTotalAmount, updateApplicationMTDMtdSelected, supabase } from '../lib/supabase';
 import { fmtCurrency2, formatDateHuman } from './SubmissionIntermediate.helpers';
 
 export type MTDViewProps = {
@@ -59,6 +59,7 @@ const MTDView: React.FC<MTDViewProps> = ({ applicationId, businessName, ownerNam
     negative?: number | null;
     funder_mtd?: any | null;
     total_mtd?: number | null;
+    mtd_selected?: any | null;
   }>(null);
 
   // Track which transaction rows are selected (unchecked by default)
@@ -100,6 +101,9 @@ const MTDView: React.FC<MTDViewProps> = ({ applicationId, businessName, ownerNam
         negative: (data as any)?.negative ?? null,
         funder_mtd: (data as any)?.funder_mtd ?? null,
         total_mtd: (data as any)?.total_mtd ?? null,
+        // transient field kept in modal state for hydration of selections
+        // Supabase returns parsed JSON already for jsonb columns
+        mtd_selected: (data as any)?.mtd_selected ?? null,
       });
     } catch (e) {
       console.warn('Failed to load MTD analysis:', e);
@@ -269,6 +273,43 @@ const MTDView: React.FC<MTDViewProps> = ({ applicationId, businessName, ownerNam
     return rows;
   }, [detailsModal?.funder_mtd]);
 
+  // Build payload rows for persistence given a Set of keys
+  const buildFunderSelectedPayload = React.useCallback((keys: Set<string>) => {
+    const rows = normalizedFunder.filter((r) => {
+      const k = `FUNDER_MTD|${String(r.date || '')}|${String(r.description || '')}|${String(r.funder || '')}|${String(r.type || '')}|${Number(r.amount || 0)}`;
+      return keys.has(k);
+    }).map((r) => ({
+      date: String(r.date || ''),
+      type: String(r.type || '').toLowerCase(),
+      FUNDER: String(r.funder || ''),
+      amount: (Number(r.amount || 0)).toFixed(2),
+      balance: (typeof r.balance === 'number' && isFinite(Number(r.balance))) ? (Number(r.balance)).toFixed(2) : 'NaN',
+      description: String(r.description || ''),
+    }));
+    return rows;
+  }, [normalizedFunder]);
+
+  // Hydrate checkboxes from previously saved mtd_selected
+  React.useEffect(() => {
+    const sel: any = (detailsModal as any)?.mtd_selected;
+    if (!sel || !Array.isArray(sel) || !normalizedFunder.length) return;
+    const next = new Set<string>();
+    normalizedFunder.forEach((r) => {
+      const match = sel.find((s: any) =>
+        String(s?.date || '') === String(r.date || '') &&
+        String(s?.description || '') === String(r.description || '') &&
+        String((s?.FUNDER || s?.funder) || '') === String(r.funder || '') &&
+        String(s?.type || '').toLowerCase() === String(r.type || '').toLowerCase() &&
+        Number(s?.amount) === Number(r.amount)
+      );
+      if (match) {
+        const k = `FUNDER_MTD|${String(r.date || '')}|${String(r.description || '')}|${String(r.funder || '')}|${String(r.type || '')}|${Number(r.amount || 0)}`;
+        next.add(k);
+      }
+    });
+    if (next.size) setSelectedKeys(next);
+  }, [normalizedFunder, (detailsModal as any)?.mtd_selected, detailsModal?.id]);
+
   // Funder MTD Select-All logic (placed after normalizedFunder to avoid TS ordering error)
   const allFunderKeys = React.useMemo(() => {
     return normalizedFunder.map((r) => `FUNDER_MTD|${String(r.date || '')}|${String(r.description || '')}|${String(r.funder || '')}|${String(r.type || '')}|${Number(r.amount || 0)}`);
@@ -287,6 +328,11 @@ const MTDView: React.FC<MTDViewProps> = ({ applicationId, businessName, ownerNam
         allFunderKeys.forEach(k => next.delete(k));
       } else {
         allFunderKeys.forEach(k => next.add(k));
+      }
+      // Persist selection to DB (mtd_selected)
+      if (detailsModal?.id) {
+        const payload = buildFunderSelectedPayload(next);
+        void updateApplicationMTDMtdSelected(detailsModal.id, payload).catch(() => {});
       }
       return next;
     });
@@ -1032,6 +1078,11 @@ const MTDView: React.FC<MTDViewProps> = ({ applicationId, businessName, ownerNam
                                             setSelectedKeys((prev) => {
                                               const next = new Set(prev);
                                               if (next.has(key)) next.delete(key); else next.add(key);
+                                              // Persist immediately on toggle
+                                              if (detailsModal?.id) {
+                                                const payload = buildFunderSelectedPayload(next);
+                                                void updateApplicationMTDMtdSelected(detailsModal.id, payload).catch(() => {});
+                                              }
                                               return next;
                                             });
                                           }}

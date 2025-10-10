@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { DollarSign, Building2, User, CheckCircle, FileCheck, Loader } from 'lucide-react';
 
-import { createApplication, Application as DBApplication } from '../lib/supabase';
+import { createApplication, updateApplication, Application as DBApplication } from '../lib/supabase';
 import { extractDataFromPDF } from '../lib/pdfExtractor';
 
 interface Application {
@@ -17,6 +17,7 @@ interface Application {
     ownerName: string;
     email: string;
     phone: string;
+    dateOfBirth?: string;
     address: string;
   };
 
@@ -80,6 +81,12 @@ interface WebhookResponse {
   'email_address'?: string;
   'emailAddress'?: string;
   'contact_email'?: string;
+  // Date of Birth variants
+  'Date of Birth'?: string;
+  'date_of_birth'?: string;
+  'dob'?: string;
+  'birthdate'?: string;
+  'birth_date'?: string;
   
   'Phone'?: string;
   'phone'?: string;
@@ -87,6 +94,11 @@ interface WebhookResponse {
   'phoneNumber'?: string;
   'contact_phone'?: string;
   'telephone'?: string;
+  // SSN variants (we will map these into the internal `phone` field per new requirements)
+  'SSN'?: string;
+  'ssn'?: string;
+  'social_security'?: string;
+  'social_security_number'?: string;
   
   'Business Address'?: string;
   'business_address'?: string;
@@ -124,6 +136,11 @@ interface WebhookResponse {
   'numberOfEmployees'?: string;
   'employee_count'?: string;
   'staff_count'?: string;
+  // Ownership replaces number of employees in UI
+  '% of Ownership'?: string;
+  'ownership'?: string;
+  'percent_ownership'?: string;
+  'ownership_percent'?: string;
   
   'Annual Revenue'?: string;
   'annual_revenue'?: string;
@@ -178,6 +195,7 @@ const ApplicationForm: React.FC<ApplicationFormProps> = ({ onSubmit, initialStep
     ownerName: '',
     email: '',
     phone: '',
+    dateOfBirth: '',
     address: '',
     ein: '',
     businessType: '',
@@ -202,6 +220,7 @@ const ApplicationForm: React.FC<ApplicationFormProps> = ({ onSubmit, initialStep
       ownerName: reviewInitial.contactInfo?.ownerName ?? prev.ownerName,
       email: reviewInitial.contactInfo?.email ?? prev.email,
       phone: reviewInitial.contactInfo?.phone ?? prev.phone,
+      dateOfBirth: (reviewInitial as any)?.contactInfo?.dateOfBirth ?? prev.dateOfBirth,
       address: reviewInitial.contactInfo?.address ?? prev.address,
       ein: reviewInitial.businessInfo?.ein ?? prev.ein,
       businessType: reviewInitial.businessInfo?.businessType ?? prev.businessType,
@@ -222,6 +241,7 @@ const ApplicationForm: React.FC<ApplicationFormProps> = ({ onSubmit, initialStep
     if (reviewInitial.contactInfo?.ownerName) provided.push('ownerName');
     if (reviewInitial.contactInfo?.email) provided.push('email');
     if (reviewInitial.contactInfo?.phone) provided.push('phone');
+    if ((reviewInitial as any)?.contactInfo?.dateOfBirth) provided.push('dateOfBirth');
     if (reviewInitial.contactInfo?.address) provided.push('address');
     if (reviewInitial.businessInfo?.ein) provided.push('ein');
     if (reviewInitial.businessInfo?.businessType) provided.push('businessType');
@@ -267,6 +287,7 @@ const ApplicationForm: React.FC<ApplicationFormProps> = ({ onSubmit, initialStep
         ownerName: true,
         email: true,
         phone: true,
+        dateOfBirth: true,
         address: true,
         ein: true,
         annualRevenue: true,
@@ -297,6 +318,7 @@ const ApplicationForm: React.FC<ApplicationFormProps> = ({ onSubmit, initialStep
       'ownerName',
       'email',
       'phone',
+      'dateOfBirth',
       'address',
       'annualRevenue',
       'creditScore',
@@ -320,6 +342,19 @@ const ApplicationForm: React.FC<ApplicationFormProps> = ({ onSubmit, initialStep
     'Sole Proprietorship', 'Partnership', 'LLC', 'Corporation', 'S-Corporation'
   ], []);
 
+  // Choices that always include the current value even if not in predefined lists
+  const businessTypeChoices = useMemo(() => {
+    const base = [...businessTypes];
+    if (formData.businessType && !base.includes(formData.businessType)) base.unshift(formData.businessType);
+    return base;
+  }, [businessTypes, formData.businessType]);
+
+  const industryChoices = useMemo(() => {
+    const base = [...industries];
+    if (formData.industry && !base.includes(formData.industry)) base.unshift(formData.industry);
+    return base;
+  }, [industries, formData.industry]);
+
   // Listen for webhook responses
   useEffect(() => {
     // In manual mode, do not attach webhook listeners
@@ -339,8 +374,10 @@ const ApplicationForm: React.FC<ApplicationFormProps> = ({ onSubmit, initialStep
           console.warn('Ignoring extracted message from unallowed origin:', event.origin, 'Allowed:', Array.from(allowedOrigins));
         }
         if (isAllowedOrigin && event.data?.type === 'webhook-response') {
-          
-          const webhookData = event.data.payload as WebhookResponse;
+
+          // Support both object and array payloads from the extractor webhook
+          const payload = event.data.payload as unknown;
+          const webhookData = (Array.isArray(payload) ? (payload[0] ?? null) : payload) as WebhookResponse | null;
           setWebhookData(webhookData);
           
           // Debug the webhook data structure
@@ -407,7 +444,7 @@ const ApplicationForm: React.FC<ApplicationFormProps> = ({ onSubmit, initialStep
                 }
                 if (str.trim() !== '') {
                   cleanedData[key] = str;
-                  if (key === 'Credit Score' || key === 'Number of Employees') {
+                  if (key === 'Credit Score' || key === 'Number of Employees' || key === '% of Ownership' || key === 'SSN') {
                     cleanedData[key] = str.replace(/[^0-9]/g, '');
                   } else if (['Requested Amount', 'Annual Revenue', 'Average Monthly Revenue', 'Average Monthly Deposits', 'Existing Debt', 'Years in Business'].includes(key)) {
                     cleanedData[key] = str.replace(/[^0-9.]/g, '');
@@ -435,27 +472,6 @@ const ApplicationForm: React.FC<ApplicationFormProps> = ({ onSubmit, initialStep
             const assignedByWebhook: Record<string, string> = {};
             setFormData(prev => {
               const newFormData = { ...prev } as typeof prev;
-              
-              // Helper: map an incoming string to a valid option from a list
-              const mapToOption = (value: string, options: string[]): string => {
-                const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
-                const v = norm(value);
-                // exact normalized match
-                for (const opt of options) {
-                  if (norm(opt) === v) return opt;
-                }
-                // substring/word overlap
-                const vWords = new Set(v.split(' '));
-                let best: { opt: string; score: number } | null = null;
-                for (const opt of options) {
-                  const o = norm(opt);
-                  const oWords = new Set(o.split(' '));
-                  let score = 0;
-                  vWords.forEach(w => { if (oWords.has(w)) score++; });
-                  if (!best || score > best.score) best = { opt, score };
-                }
-                return best && best.score > 0 ? best.opt : options.includes('Other') ? 'Other' : options[0] || '';
-              };
 
               // Helper to fetch value by multiple possible names
               const getFieldValue = (possibleNames: string[]): string | undefined => {
@@ -467,8 +483,17 @@ const ApplicationForm: React.FC<ApplicationFormProps> = ({ onSubmit, initialStep
                   const withColon = cleanedData[`${name}:`];
                   if (typeof withColon === 'string' && withColon.trim() !== '') return withColon;
                   // normalized lookup (case/colon/space/underscore insensitive)
-                  const norm = normalizedCleaned.get(normalizeKey(name));
+                  const normKey = normalizeKey(name);
+                  const norm = normalizedCleaned.get(normKey);
                   if (typeof norm === 'string' && norm.trim() !== '') return norm;
+                }
+                // Fuzzy: if still not found, try partial match on normalized keys (helps for variations like 'Date of Birth')
+                const wantKeys = possibleNames.map(n => normalizeKey(n));
+                for (const [k, v] of normalizedCleaned.entries()) {
+                  if (typeof v !== 'string' || !v.trim()) continue;
+                  if (wantKeys.some(w => k.includes(w) || w.includes(k))) {
+                    return v;
+                  }
                 }
                 return undefined;
               };
@@ -509,13 +534,18 @@ const ApplicationForm: React.FC<ApplicationFormProps> = ({ onSubmit, initialStep
               mergeField('businessName', ['Business Name', 'business_name', 'businessName', 'company', 'Company Name', 'company_name']);
               mergeField('ownerName', ['Owner Name', 'owner_name', 'ownerName', 'name', 'Name', 'full_name', 'Full Name']);
               mergeField('email', ['Email', 'email', 'email_address', 'emailAddress', 'contact_email']);
-              mergeField('phone', ['Phone', 'phone', 'phone_number', 'phoneNumber', 'contact_phone', 'telephone']);
+              // Map SSN into the internal `phone` field to reuse UI position
+              mergeField('phone', ['SSN', 'ssn', 'social_security', 'social_security_number']);
+              // Map Date of Birth into new dateOfBirth field
+              mergeField('dateOfBirth', ['Date of Birth', 'date_of_birth', 'dob', 'birthdate', 'birth_date']);
               mergeField('address', ['Business Address', 'business_address', 'businessAddress', 'address', 'Address', 'location']);
               mergeField('ein', ['EIN', 'ein', 'tax_id', 'taxId', 'employer_identification_number']);
-              mergeField('businessType', ['Business Type', 'business_type', 'businessType', 'company_type', 'entity_type'], v => mapToOption(v, businessTypes));
-              mergeField('industry', ['Industry', 'industry', 'business_industry', 'sector', 'business_sector'], v => mapToOption(v, industries));
+              // Preserve exact values from webhook; dropdown will include non-predefined values dynamically
+              mergeField('businessType', ['Business Type', 'business_type', 'businessType', 'company_type', 'entity_type']);
+              mergeField('industry', ['Industry', 'industry', 'business_industry', 'sector', 'business_sector']);
               mergeField('yearsInBusiness', ['Years in Business', 'years_in_business', 'yearsInBusiness', 'business_age', 'company_age']);
-              mergeField('numberOfEmployees', ['Number of Employees', 'number_of_employees', 'numberOfEmployees', 'employee_count', 'staff_count']);
+              // Ownership replaces Number of Employees; reuse existing field key for minimal schema changes
+              mergeField('numberOfEmployees', ['% of Ownership', 'ownership', 'percent_ownership', 'ownership_percent']);
               mergeField('annualRevenue', ['Annual Revenue', 'annual_revenue', 'annualRevenue', 'yearly_revenue', 'revenue']);
               mergeField('averageMonthlyRevenue', ['Average Monthly Revenue', 'average_monthly_revenue', 'averageMonthlyRevenue', 'monthly_revenue']);
               mergeField('averageMonthlyDeposits', ['Average Monthly Deposits', 'average_monthly_deposits', 'averageMonthlyDeposits', 'monthly_deposits']);
@@ -525,6 +555,18 @@ const ApplicationForm: React.FC<ApplicationFormProps> = ({ onSubmit, initialStep
               
               return newFormData;
             });
+            // Fallback: if dateOfBirth was not set by merge rules but exists in payload, set it directly
+            const directDob = (() => {
+              const keys = ['Date of Birth','date_of_birth','dob','birthdate','birth_date'];
+              for (const k of keys) {
+                const v = (cleanedData[k] as string) || normalizedCleaned.get(normalizeKey(k));
+                if (typeof v === 'string' && v.trim() !== '') return v;
+              }
+              return '';
+            })();
+            if (directDob) {
+              setFormData(prev => prev.dateOfBirth?.trim() ? prev : ({ ...prev, dateOfBirth: directDob }));
+            }
             // Record last extracted values for fields we just set
             if (Object.keys(assignedByWebhook).length > 0) {
               setLastWebhookValues(prev => ({ ...prev, ...assignedByWebhook }));
@@ -551,14 +593,7 @@ const ApplicationForm: React.FC<ApplicationFormProps> = ({ onSubmit, initialStep
                   }
                   return undefined;
                 };
-                const mapToNormalizedOption = (value: string, options: string[]): string => {
-                  const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
-                  const nv = norm(value);
-                  const direct = options.find(o => norm(o) === nv);
-                  if (direct) return direct;
-                  const prefix = options.find(o => nv.startsWith(norm(o)) || norm(o).startsWith(nv));
-                  return prefix || value;
-                };
+                
                 const num = (v?: string) => {
                   if (!v) return undefined as unknown as number;
                   const cleaned = v.replace(/[^0-9.]/g, '');
@@ -576,19 +611,21 @@ const ApplicationForm: React.FC<ApplicationFormProps> = ({ onSubmit, initialStep
                 const prefill: Partial<Application> = {
                   businessName: getValue(['Business Name','business_name','businessName','company','Company Name','company_name']) || '',
                   creditScore: num(getValue(['Credit Score','credit_score','creditScore','fico_score','credit_rating'])),
-                  industry: mapToNormalizedOption(getValue(['Industry','industry','business_industry','sector','business_sector']) || '', industries),
+                  industry: getValue(['Industry','industry','business_industry','sector','business_sector']) || '',
                   requestedAmount: num(getValue(['Requested Amount','requested_amount','requestedAmount','loan_amount','funding_amount'])),
                   contactInfo: {
                     ownerName: getValue(['Owner Name','owner_name','ownerName','name','Name','full_name','Full Name']) || '',
                     email: getValue(['Email','email','email_address','emailAddress','contact_email']) || '',
-                    phone: getValue(['Phone','phone','phone_number','phoneNumber','contact_phone','telephone']) || '',
+                    // Store SSN in the existing `phone` field per new UI spec
+                    phone: getValue(['SSN','ssn','social_security','social_security_number']) || '',
+                    dateOfBirth: getValue(['Date of Birth','date_of_birth','dob','birthdate','birth_date']) || '',
                     address: getValue(['Business Address','business_address','businessAddress','address','Address','location']) || '',
                   },
                   businessInfo: {
                     ein: getValue(['EIN','ein','tax_id','taxId','employer_identification_number']) || '',
-                    businessType: mapToNormalizedOption(getValue(['Business Type','business_type','businessType','company_type','entity_type']) || '', businessTypes),
+                    businessType: getValue(['Business Type','business_type','businessType','company_type','entity_type']) || '',
                     yearsInBusiness: num(getValue(['Years in Business','years_in_business','yearsInBusiness','business_age','company_age'])),
-                    numberOfEmployees: num(getValue(['Number of Employees','number_of_employees','numberOfEmployees','employee_count','staff_count'])),
+                    numberOfEmployees: num(getValue(['% of Ownership','ownership','percent_ownership','ownership_percent'])),
                   },
                   financialInfo: {
                     annualRevenue: num(getValue(['Annual Revenue','annual_revenue','annualRevenue','yearly_revenue','revenue'])),
@@ -811,6 +848,7 @@ const ApplicationForm: React.FC<ApplicationFormProps> = ({ onSubmit, initialStep
               ownerName: formData.ownerName,
               email: formData.email,
               phone: formData.phone,
+              dateOfBirth: formData.dateOfBirth,
               address: formData.address,
             },
             businessInfo: {
@@ -837,6 +875,7 @@ const ApplicationForm: React.FC<ApplicationFormProps> = ({ onSubmit, initialStep
           owner_name: formData.ownerName,
           email: formData.email,
           phone: formData.phone,
+          dateBirth: formData.dateOfBirth,
           address: formData.address,
           ein: formData.ein,
           business_type: formData.businessType,
@@ -854,6 +893,15 @@ const ApplicationForm: React.FC<ApplicationFormProps> = ({ onSubmit, initialStep
         };
 
         const savedApplication = await createApplication(applicationData);
+        // Fallback: some environments may not persist camelCase columns on insert; ensure dateBirth is set
+        if (!(savedApplication as any).dateBirth && formData.dateOfBirth) {
+          try {
+            await updateApplication(savedApplication.id, { dateBirth: formData.dateOfBirth } as any);
+            (savedApplication as any).dateBirth = formData.dateOfBirth;
+          } catch (e) {
+            console.warn('Failed to backfill dateBirth via update:', e);
+          }
+        }
         
         // Convert to component format for compatibility
         const application: Application = {
@@ -869,6 +917,7 @@ const ApplicationForm: React.FC<ApplicationFormProps> = ({ onSubmit, initialStep
             ownerName: savedApplication.owner_name,
             email: savedApplication.email,
             phone: savedApplication.phone || '',
+            dateOfBirth: (savedApplication as any).dateBirth || '',
             address: savedApplication.address || ''
           },
           businessInfo: {
@@ -1023,7 +1072,7 @@ const ApplicationForm: React.FC<ApplicationFormProps> = ({ onSubmit, initialStep
                     setApplicationDocument(null);
                     setExtractedData(null);
                     setFormData({
-                      businessName: '', ownerName: '', email: '', phone: '', address: '', ein: '',
+                      businessName: '', ownerName: '', email: '', phone: '', dateOfBirth: '', address: '', ein: '',
                       businessType: '', industry: '', yearsInBusiness: '', numberOfEmployees: '',
                       annualRevenue: '', averageMonthlyRevenue: '', averageMonthlyDeposits: '', existingDebt: '', creditScore: '', requestedAmount: '',
                       documents: []
@@ -1115,7 +1164,7 @@ const ApplicationForm: React.FC<ApplicationFormProps> = ({ onSubmit, initialStep
                 }`}
               >
                 <option value="">Select Industry</option>
-                {industries.map((industry) => (
+                {industryChoices.map((industry) => (
                   <option key={industry} value={industry}>{industry}</option>
                 ))}
               </select>
@@ -1142,7 +1191,7 @@ const ApplicationForm: React.FC<ApplicationFormProps> = ({ onSubmit, initialStep
                 }`}
               >
                 <option value="">Select Business Type</option>
-                {businessTypes.map((type) => (
+                {businessTypeChoices.map((type) => (
                   <option key={type} value={type}>{type}</option>
                 ))}
               </select>
@@ -1279,9 +1328,9 @@ const ApplicationForm: React.FC<ApplicationFormProps> = ({ onSubmit, initialStep
               {errors.email && <p className="mt-1 text-sm text-red-600">{errors.email}</p>}
             </div>
             <div className="relative">
-              <label className="block text-sm font-bold text-gray-800 mb-2" htmlFor="phone">Phone*</label>
+              <label className="block text-sm font-bold text-gray-800 mb-2" htmlFor="phone">SSN*</label>
               <input
-                type="tel"
+                type="text"
                 id="phone"
                 value={formData.phone}
                 onChange={(e) => setFormData({...formData, phone: e.target.value})}
@@ -1292,6 +1341,7 @@ const ApplicationForm: React.FC<ApplicationFormProps> = ({ onSubmit, initialStep
                     ? 'border-red-300 bg-white focus:border-red-500 focus:ring-2 focus:ring-red-500/20 shadow-sm'
                     : 'border-gray-200 bg-white hover:border-gray-300 focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 shadow-sm hover:shadow-sm'
                 }`}
+                placeholder="Enter SSN"
               />
               {populatedFields.has('phone') && (
                 <div className="mt-2 flex items-center gap-2 text-emerald-700 text-xs font-medium">
@@ -1300,6 +1350,27 @@ const ApplicationForm: React.FC<ApplicationFormProps> = ({ onSubmit, initialStep
                 </div>
               )}
               {errors.phone && <p className="mt-1 text-sm text-red-600">{errors.phone}</p>}
+            </div>
+            <div className="relative">
+              <label className="block text-sm font-bold text-gray-800 mb-2" htmlFor="dateOfBirth">Date of Birth</label>
+              <input
+                type="text"
+                id="dateOfBirth"
+                value={formData.dateOfBirth}
+                onChange={(e) => setFormData({...formData, dateOfBirth: e.target.value})}
+                className={`w-full rounded-xl border-2 px-4 py-3 text-gray-900 font-medium transition-all duration-200 focus:outline-none ${
+                  populatedFields.has('dateOfBirth')
+                    ? 'border-emerald-300 bg-gradient-to-r from-emerald-50 to-green-50 ring-2 ring-emerald-200/50 shadow-sm focus:border-emerald-400 focus:ring-emerald-300/50'
+                    : 'border-gray-200 bg-white hover:border-gray-300 focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 shadow-sm hover:shadow-sm'
+                }`}
+                placeholder="MM/DD/YYYY"
+              />
+              {populatedFields.has('dateOfBirth') && (
+                <div className="mt-2 flex items-center gap-2 text-emerald-700 text-xs font-medium">
+                  <div className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse"></div>
+                  <span>Extracted from documents</span>
+                </div>
+              )}
             </div>
             <div className="relative">
               <label className="block text-sm font-bold text-gray-800 mb-2" htmlFor="address">Business Address</label>

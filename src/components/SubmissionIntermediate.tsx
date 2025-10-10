@@ -19,7 +19,7 @@ const DISABLE_UPDATING_APPLICATIONS = false;
 type Props = {
   onContinue: (details: Record<string, string | boolean>) => void;
   onBack?: () => void;
-  // Optional prefill hooks if we want to seed values from application
+  // Optional prefill hooks if we want to seed values from applicationD
   initial?: Partial<Record<string, string | boolean>>;
   loading?: boolean;
 };
@@ -2950,8 +2950,13 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                     </div>
                   </div>
                   ) : null}
-                  {/* Funder MTD Totals (from application_mtd.total_mtd) */}
-                  {Array.isArray(mtdRows) && mtdRows.some(r => typeof (r as any)?.total_mtd === 'number') ? (
+                  {/* Funder MTD Totals (from application_mtd.total_mtd) + Selected rows (application_mtd.mtd_selected) */}
+                  {Array.isArray(mtdRows) && mtdRows.some(r => {
+                    const anyR: any = r as any;
+                    const hasTotal = typeof anyR?.total_mtd === 'number' && !Number.isNaN(anyR.total_mtd);
+                    const hasSelected = Array.isArray(anyR?.mtd_selected) && anyR.mtd_selected.length > 0;
+                    return hasTotal || hasSelected;
+                  }) ? (
                     <div className="mb-6">
                       <div className="bg-white border border-slate-200/60 rounded-xl shadow-lg overflow-hidden">
                         <div className="px-4 py-3 bg-slate-800 text-white flex items-center justify-between">
@@ -2964,12 +2969,73 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                           </div>
                         </div>
                         <div className="divide-y divide-slate-200">
-                          {(mtdRows || []).filter(r => typeof (r as any)?.total_mtd === 'number').map((r, idx) => (
-                            <div key={r.id || idx} className="px-6 py-3 grid grid-cols-12 gap-4 items-center">
-                              <div className="col-span-8 truncate text-slate-700 text-sm">{r.file_name || 'MTD Document'}</div>
-                              <div className="col-span-4 text-right font-mono font-bold text-slate-900">{fmtCurrency2(Number((r as any).total_mtd || 0))}</div>
-                            </div>
-                          ))}
+                          {(mtdRows || [])
+                            .filter(r => {
+                              const anyR: any = r as any;
+                              return (typeof anyR?.total_mtd === 'number' && !Number.isNaN(anyR.total_mtd)) || (Array.isArray(anyR?.mtd_selected) && anyR.mtd_selected.length > 0);
+                            })
+                            .map((r, idx) => {
+                              const anyR: any = r as any;
+                              const sel: any[] = Array.isArray(anyR?.mtd_selected) ? anyR.mtd_selected : [];
+                              return (
+                                <div key={r.id || idx} className="px-6 py-3">
+                                  <div className="grid grid-cols-12 gap-4 items-center">
+                                    <div className="col-span-12 truncate text-slate-700 text-sm">{r.file_name || 'MTD Document'}</div>
+                                  </div>
+                                  {sel.length > 0 && (
+                                    <div className="mt-4 rounded-xl border border-blue-200 bg-gradient-to-br from-blue-50 to-indigo-50 shadow-sm overflow-hidden">
+                                      <div className="px-4 py-3 bg-gradient-to-r from-blue-600 to-indigo-600 text-white">
+                                        <div className="flex items-center gap-2">
+                                          <div className="w-2 h-2 rounded-full bg-white/90" />
+                                          <span className="text-sm font-bold uppercase tracking-wide">Selected Rows (Application MTD Selected)</span>
+                                        </div>
+                                      </div>
+                                      <div className="bg-white border-b border-blue-200">
+                                        <div className="px-4 py-2 grid grid-cols-12 gap-3 text-[10px] font-semibold text-slate-600 uppercase tracking-wider bg-slate-50 border-b border-slate-200">
+                                          <div className="col-span-2">Date</div>
+                                          <div className="col-span-4">Description</div>
+                                          <div className="col-span-2">Funder</div>
+                                          <div className="col-span-2">Type</div>
+                                          <div className="col-span-2 text-right">Amount</div>
+                                        </div>
+                                        <div className="divide-y divide-slate-100">
+                                          {sel.map((it: any, i: number) => (
+                                            <div key={`mtdsel-${i}`} className="px-4 py-3 grid grid-cols-12 gap-3 text-xs hover:bg-blue-50/30 transition-colors">
+                                              <div className="col-span-2 whitespace-nowrap font-semibold text-slate-700">
+                                                {String(it?.date || '')}
+                                              </div>
+                                              <div className="col-span-4 truncate text-slate-700" title={String(it?.description || '')}>
+                                                {String(it?.description || '')}
+                                              </div>
+                                              <div className="col-span-2 truncate">
+                                                <span className="inline-flex items-center px-2 py-1 text-[10px] font-semibold bg-emerald-100 text-emerald-800 border border-emerald-200 rounded">
+                                                  {String(it?.FUNDER || it?.funder || '')}
+                                                </span>
+                                              </div>
+                                              <div className="col-span-2">
+                                                <span className="inline-flex items-center px-2 py-1 text-[10px] font-semibold bg-amber-100 text-amber-800 border border-amber-200 rounded uppercase">
+                                                  {String(it?.type || '')}
+                                                </span>
+                                              </div>
+                                              <div className="col-span-2 text-right">
+                                                <span className="inline-flex items-center px-2 py-1 text-xs font-bold bg-indigo-100 text-indigo-900 border border-indigo-200 rounded font-mono">
+                                                  {fmtCurrency2(Number(it?.amount || 0))}
+                                                </span>
+                                              </div>
+                                            </div>
+                                          ))}
+                                        </div>
+                                      </div>
+                                      <div className="px-4 py-2 bg-slate-50 border-t border-slate-200">
+                                        <div className="text-xs font-semibold text-slate-600 uppercase tracking-wide">
+                                          {sel.length} Selected Row{sel.length !== 1 ? 's' : ''}
+                                        </div>
+                                      </div>
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            })}
                         </div>
                         <div className="px-6 py-3 bg-slate-50 border-t border-slate-200 grid grid-cols-12 items-center">
                           <div className="col-span-8 text-slate-600 uppercase text-xs font-semibold">Total</div>
