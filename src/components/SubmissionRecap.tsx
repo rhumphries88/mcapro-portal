@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { ArrowLeft, Send, Settings, CheckCircle, FileText, Loader, Eye, EyeOff, Server, Hash, AtSign, KeyRound, ShieldCheck } from 'lucide-react';
-import { getLenders, createLenderSubmissions, Lender as DBLender, getApplicationDocuments, type ApplicationDocument, qualifyLenders, type Application as DBApplication } from '../lib/supabase';
+import { getLenders, createLenderSubmissions, Lender as DBLender, getApplicationDocuments, type ApplicationDocument, qualifyLenders, type Application as DBApplication, ApplicationMTD, getApplicationMTDByApplicationId } from '../lib/supabase';
 
 interface Application {
   id: string;
@@ -93,6 +93,9 @@ const SubmissionRecap: React.FC<SubmissionRecapProps> = ({
   // Application documents (from Supabase)
   const [appDocs, setAppDocs] = useState<ApplicationDocument[]>([]);
   const [appDocsLoading, setAppDocsLoading] = useState<boolean>(false);
+  // MTD documents (from Supabase)
+  const [mtdDocs, setMtdDocs] = useState<ApplicationMTD[]>([]);
+  const [mtdDocsLoading, setMtdDocsLoading] = useState<boolean>(false);
   // UI: show/hide password in Email Settings
   const [showPassword, setShowPassword] = useState<boolean>(false);
   // UI: simple validation state for SMTP form
@@ -184,6 +187,27 @@ const SubmissionRecap: React.FC<SubmissionRecapProps> = ({
       }
     };
     loadDocs();
+  }, [application?.id]);
+
+  // Load MTD documents from Supabase for this application
+  React.useEffect(() => {
+    const loadMtdDocs = async () => {
+      if (!application?.id) {
+        setMtdDocs([]);
+        return;
+      }
+      try {
+        setMtdDocsLoading(true);
+        const docs = await getApplicationMTDByApplicationId(application.id);
+        setMtdDocs(docs || []);
+      } catch (e) {
+        console.warn('Failed to load application_mtd for recap:', e);
+        setMtdDocs([]);
+      } finally {
+        setMtdDocsLoading(false);
+      }
+    };
+    loadMtdDocs();
   }, [application?.id]);
 
   const selectedLenders = lenders.filter(lender => selectedLenderIds.includes(lender.id));
@@ -377,13 +401,15 @@ const SubmissionRecap: React.FC<SubmissionRecapProps> = ({
 
     let template = savedTemplate || defaultTemplate;
 
-    // Build dynamic documents list combining application_documents (appDocs) and inline application documents (application.documents)
+    // Build dynamic documents list combining application_documents (appDocs), MTD documents (mtdDocs), and inline application documents (application.documents)
     const dbDocs = Array.isArray(appDocs) ? appDocs : [];
+    const mtdDbDocs = Array.isArray(mtdDocs) ? mtdDocs : [];
     const inlineDocsList: string[] = Array.isArray(inlineDocs) ? inlineDocs : [];
-    // Merge filenames: prefer explicit file_name from dbDocs, and also include inline doc names
+    // Merge filenames: prefer explicit file_name from dbDocs and mtdDocs, and also include inline doc names
     const mergedNames: string[] = [
-      ...dbDocs.map(d => d?.file_name || '').filter(Boolean),
-      ...inlineDocsList.filter(Boolean),
+      ...dbDocs.map(doc => doc.file_name),
+      ...mtdDbDocs.map(doc => doc.file_name),
+      ...inlineDocsList
     ];
     // Deduplicate while preserving order
     const seen = new Set<string>();
@@ -928,43 +954,58 @@ const SubmissionRecap: React.FC<SubmissionRecapProps> = ({
         <div className="flex items-center justify-between mb-4">
           <h4 className="text-lg font-bold text-gray-900">Documents to be Included</h4>
           <div className="text-xs text-gray-500">
-            {appDocsLoading ? 'Loading…' : `${((appDocs?.length || 0) + (inlineDocs?.length || 0))} file${(((appDocs?.length || 0) + (inlineDocs?.length || 0)) === 1) ? '' : 's'}`}
+            {(appDocsLoading || mtdDocsLoading) ? 'Loading…' : `${((appDocs?.length || 0) + (inlineDocs?.length || 0) + (mtdDocs?.length || 0))} file${(((appDocs?.length || 0) + (inlineDocs?.length || 0) + (mtdDocs?.length || 0)) === 1) ? '' : 's'}`}
           </div>
         </div>
-        {appDocsLoading ? (
+        {(appDocsLoading || mtdDocsLoading) ? (
           <div className="flex items-center gap-2 text-gray-600 text-sm">
             <Loader className="w-4 h-4 animate-spin" /> Fetching documents…
           </div>
-        ) : ((appDocs?.length || 0) + (inlineDocs?.length || 0)) === 0 ? (
+        ) : ((appDocs?.length || 0) + (inlineDocs?.length || 0) + (mtdDocs?.length || 0)) === 0 ? (
           <div className="text-sm text-gray-500">No documents uploaded yet.</div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             {inlineDocs.map((fileName, idx) => (
               <div key={`inline-${idx}`} className="flex items-center justify-between p-3 rounded-xl border bg-gradient-to-br from-gray-50 to-white hover:shadow-md transition-shadow border-gray-200">
-                <div className="flex items-center gap-3 min-w-0">
-                  <div className="w-9 h-9 rounded-lg bg-emerald-50 border border-emerald-200 flex items-center justify-center">
-                    <FileText className="w-4 h-4 text-emerald-700" />
-                  </div>
-                  <div className="min-w-0">
-                    <div className="text-sm font-semibold text-gray-900 truncate" title={fileName}>{fileName}</div>
+                <div className="flex items-center gap-2">
+                  <FileText className="w-5 h-5 text-blue-500" />
+                  <div>
+                    <div className="text-sm font-medium text-gray-900">{fileName}</div>
                     <div className="text-xs text-gray-500">Application Form</div>
                   </div>
                 </div>
               </div>
             ))}
             {appDocs
-              .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+              .sort((a, b) => {
+                const dateA = a.created_at ? new Date(a.created_at).getTime() : 0;
+                const dateB = b.created_at ? new Date(b.created_at).getTime() : 0;
+                return dateB - dateA;
+              })
               .map((doc) => (
                 <div key={doc.id} className="flex items-center justify-between p-3 rounded-xl border bg-gradient-to-br from-gray-50 to-white hover:shadow-md transition-shadow border-gray-200">
-                  <div className="flex items-center gap-3 min-w-0">
-                    <div className="w-9 h-9 rounded-lg bg-blue-50 border border-blue-200 flex items-center justify-center">
-                      <FileText className="w-4 h-4 text-blue-600" />
+                  <div className="flex items-center gap-2">
+                    <FileText className="w-5 h-5 text-blue-500" />
+                    <div>
+                      <div className="text-sm font-medium text-gray-900">{doc.file_name}</div>
+                      <div className="text-xs text-gray-500">Bank Statement</div>
                     </div>
-                    <div className="min-w-0">
-                      <div className="text-sm font-semibold text-gray-900 truncate" title={doc.file_name}>{doc.file_name}</div>
-                      <div className="text-xs text-gray-500">
-                        {` ${doc.file_size && doc.file_size > 0 ? '' : ''}Bank Statement`}
-                      </div>
+                  </div>
+                </div>
+              ))}
+            {mtdDocs
+              .sort((a, b) => {
+                const dateA = a.created_at ? new Date(a.created_at).getTime() : 0;
+                const dateB = b.created_at ? new Date(b.created_at).getTime() : 0;
+                return dateB - dateA;
+              })
+              .map((doc) => (
+                <div key={doc.id} className="flex items-center justify-between p-3 rounded-xl border bg-gradient-to-br from-gray-50 to-white hover:shadow-md transition-shadow border-gray-200">
+                  <div className="flex items-center gap-2">
+                    <FileText className="w-5 h-5 text-blue-500" />
+                    <div>
+                      <div className="text-sm font-medium text-gray-900">{doc.file_name}</div>
+                      <div className="text-xs text-gray-500">Funder MTD</div>
                     </div>
                   </div>
                 </div>
