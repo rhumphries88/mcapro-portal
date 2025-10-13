@@ -120,7 +120,8 @@ const MTDView: React.FC<MTDViewProps> = ({ applicationId, businessName, ownerNam
       setSavingFunderTotal(true);
       // Recalculate selected total for Funder MTD
       const total = normalizedFunder.reduce((s, r) => {
-        const key = `FUNDER_MTD|${String(r.date || '')}|${String(r.description || '')}|${String(r.funder || '')}|${String(r.type || '')}|${Number(r.amount || 0)}`;
+        const key = `FUNDER_MTD|${String(r.date || '')}|${String(r.description || '')}|${String(r.funder || '')}|${String(r.type || '')}|${Number(r.amount || 0)}|${String(r.frequency || '')}|${String(r.notes || '')}`;
+        // Use the displayed amount (which is already divided for weekly payments)
         return s + (selectedKeys.has(key) ? (Number(r?.amount) || 0) : 0);
       }, 0);
       await updateApplicationMTDTotalMTD(detailsModal.id, total);
@@ -263,11 +264,32 @@ const MTDView: React.FC<MTDViewProps> = ({ applicationId, businessName, ownerNam
       src.forEach((r: any) => {
         const date = r?.date || r?.Date || '';
         const description = r?.description || r?.Description || '';
-        const amount = toNum(r?.amount ?? r?.Amount);
+        // Get the original amount
+        let amount = toNum(r?.amount ?? r?.Amount);
         const type = String(r?.status || r?.Type || (amount < 0 ? 'DEBIT' : 'CREDIT')).toUpperCase();
         const balance = toNum(r?.available_balance ?? r?.balance ?? r?.Balance);
         const funder = String(r?.FUNDER || r?.funder || r?.Funder || '').trim();
-        rows.push({ date: String(date || ''), description: String(description || ''), type, amount, balance: Number.isFinite(balance) ? balance : undefined, funder });
+        // Handle both uppercase and lowercase field names for frequency and notes
+        const frequency = String(r?.FREQUENCY || r?.frequency || r?.Frequency || '').trim();
+        const notes = String(r?.NOTES || r?.notes || r?.Notes || '').trim();
+        
+        // Divide amount by 5 if frequency is Weekly
+        const originalAmount = amount;
+        if (frequency.toLowerCase() === 'weekly') {
+          amount = amount / 5;
+        }
+        
+        rows.push({ 
+          date: String(date || ''), 
+          description: String(description || ''), 
+          type, 
+          amount, 
+          originalAmount, // Keep the original amount for reference
+          balance: Number.isFinite(balance) ? balance : undefined, 
+          funder,
+          frequency,
+          notes
+        });
       });
     }
     return rows;
@@ -276,15 +298,18 @@ const MTDView: React.FC<MTDViewProps> = ({ applicationId, businessName, ownerNam
   // Build payload rows for persistence given a Set of keys
   const buildFunderSelectedPayload = React.useCallback((keys: Set<string>) => {
     const rows = normalizedFunder.filter((r) => {
-      const k = `FUNDER_MTD|${String(r.date || '')}|${String(r.description || '')}|${String(r.funder || '')}|${String(r.type || '')}|${Number(r.amount || 0)}`;
+      const k = `FUNDER_MTD|${String(r.date || '')}|${String(r.description || '')}|${String(r.funder || '')}|${String(r.type || '')}|${Number(r.amount || 0)}|${String(r.frequency || '')}|${String(r.notes || '')}`;
       return keys.has(k);
     }).map((r) => ({
       date: String(r.date || ''),
       type: String(r.type || '').toLowerCase(),
       FUNDER: String(r.funder || ''),
-      amount: (Number(r.amount || 0)).toFixed(2),
+      // Use originalAmount if available, otherwise use amount
+      amount: (Number(r.originalAmount || r.amount || 0)).toFixed(2),
       balance: (typeof r.balance === 'number' && isFinite(Number(r.balance))) ? (Number(r.balance)).toFixed(2) : 'NaN',
       description: String(r.description || ''),
+      FREQUENCY: String(r.frequency || ''),
+      NOTES: String(r.notes || ''),
     }));
     return rows;
   }, [normalizedFunder]);
@@ -300,10 +325,12 @@ const MTDView: React.FC<MTDViewProps> = ({ applicationId, businessName, ownerNam
         String(s?.description || '') === String(r.description || '') &&
         String((s?.FUNDER || s?.funder) || '') === String(r.funder || '') &&
         String(s?.type || '').toLowerCase() === String(r.type || '').toLowerCase() &&
-        Number(s?.amount) === Number(r.amount)
+        Number(s?.amount) === Number(r.amount) &&
+        String((s?.FREQUENCY || s?.frequency) || '') === String(r.frequency || '') &&
+        String((s?.NOTES || s?.notes) || '') === String(r.notes || '')
       );
       if (match) {
-        const k = `FUNDER_MTD|${String(r.date || '')}|${String(r.description || '')}|${String(r.funder || '')}|${String(r.type || '')}|${Number(r.amount || 0)}`;
+        const k = `FUNDER_MTD|${String(r.date || '')}|${String(r.description || '')}|${String(r.funder || '')}|${String(r.type || '')}|${Number(r.amount || 0)}|${String(r.frequency || '')}|${String(r.notes || '')}`;
         next.add(k);
       }
     });
@@ -312,7 +339,7 @@ const MTDView: React.FC<MTDViewProps> = ({ applicationId, businessName, ownerNam
 
   // Funder MTD Select-All logic (placed after normalizedFunder to avoid TS ordering error)
   const allFunderKeys = React.useMemo(() => {
-    return normalizedFunder.map((r) => `FUNDER_MTD|${String(r.date || '')}|${String(r.description || '')}|${String(r.funder || '')}|${String(r.type || '')}|${Number(r.amount || 0)}`);
+    return normalizedFunder.map((r) => `FUNDER_MTD|${String(r.date || '')}|${String(r.description || '')}|${String(r.funder || '')}|${String(r.type || '')}|${Number(r.amount || 0)}|${String(r.frequency || '')}|${String(r.notes || '')}`);
   }, [normalizedFunder]);
 
   const allFunderSelected = allFunderKeys.length > 0 && allFunderKeys.every(k => selectedKeys.has(k));
@@ -1043,10 +1070,12 @@ const MTDView: React.FC<MTDViewProps> = ({ applicationId, businessName, ownerNam
                         </div>
                       </div>
                       <div className="col-span-1">Date</div>
-                      <div className="col-span-4">Description</div>
+                      <div className="col-span-2">Description</div>
                       <div className="col-span-2">Funder</div>
                       <div className="col-span-1">Type</div>
-                      <div className="col-span-2 text-center">Amount</div>
+                      <div className="col-span-1">Frequency</div>
+                      <div className="col-span-2">Notes</div>
+                      <div className="col-span-1 text-center">Amount</div>
                       <div className="col-span-1 text-right">Balance</div>
                     </div>
                     {normalizedFunder.length === 0 ? (
@@ -1065,7 +1094,7 @@ const MTDView: React.FC<MTDViewProps> = ({ applicationId, businessName, ownerNam
                             {Array.from(groups.entries()).map(([d, rows], gi) => (
                               <div key={`${d}-${gi}`} className="px-4">
                                 {rows.map((r, ri) => {
-                                  const key = `FUNDER_MTD|${String(r.date || '')}|${String(r.description || '')}|${String(r.funder || '')}|${String(r.type || '')}|${Number(r.amount || 0)}`;
+                                  const key = `FUNDER_MTD|${String(r.date || '')}|${String(r.description || '')}|${String(r.funder || '')}|${String(r.type || '')}|${Number(r.amount || 0)}|${String(r.frequency || '')}|${String(r.notes || '')}`;
                                   const checked = selectedKeys.has(key);
                                   const commonRowClasses = `${ri > 0 ? 'border-t border-dotted border-slate-300 pt-3' : ''}`;
                                   return (
@@ -1094,10 +1123,22 @@ const MTDView: React.FC<MTDViewProps> = ({ applicationId, businessName, ownerNam
                                       ) : (
                                         <div className="col-span-1" />
                                       )}
-                                      <div className={`col-span-4 text-slate-700 text-xs leading-relaxed pr-2 whitespace-pre-wrap break-words ${commonRowClasses}`}>{r.description || '—'}</div>
+                                      <div className={`col-span-2 text-slate-700 text-xs leading-relaxed pr-2 whitespace-pre-wrap break-words ${commonRowClasses}`}>{r.description || '—'}</div>
                                       <div className={`col-span-2 text-slate-700 text-xs font-semibold tracking-wide whitespace-pre-wrap break-words ${commonRowClasses}`}>{r.funder || '—'}</div>
                                       <div className={`col-span-1 text-slate-700 text-xs font-semibold tracking-wide whitespace-pre-wrap break-words ${commonRowClasses}`}>{String(r.type || '').toUpperCase() || '—'}</div>
-                                      <div className={`col-span-2 text-center font-bold text-slate-900 tabular-nums font-mono text-[12px] whitespace-nowrap ${commonRowClasses}`}>{fmtCurrency2(Number(r.amount || 0))}</div>
+                                      <div className={`col-span-1 text-slate-700 text-xs font-semibold tracking-wide whitespace-pre-wrap break-words ${commonRowClasses}`}>{r.frequency || '—'}</div>
+                                      <div className={`col-span-2 text-slate-700 text-xs leading-relaxed pr-2 whitespace-pre-wrap break-words ${commonRowClasses}`}>{r.notes || '—'}</div>
+                                      <div className={`col-span-1 text-center font-bold text-slate-900 tabular-nums font-mono text-[12px] whitespace-nowrap ${commonRowClasses}`}>
+                                        {r.frequency?.toLowerCase() === 'weekly' ? (
+                                          <div className="flex flex-col">
+                                            <span className="text-[10px] text-slate-500">{fmtCurrency2(Number(r.originalAmount || 0))}</span>
+                                            <span className="text-[10px]">=</span>
+                                            <span>{fmtCurrency2(Number(r.amount || 0))}</span>
+                                          </div>
+                                        ) : (
+                                          fmtCurrency2(Number(r.amount || 0))
+                                        )}
+                                      </div>
                                       <div className={`col-span-1 text-right font-semibold text-slate-900 tabular-nums font-mono text-[12px] whitespace-nowrap ${commonRowClasses}`}>{typeof r.balance === 'number' ? fmtCurrency2(Number(r.balance)) : (r.balance ? String(r.balance) : '—')}</div>
                                     </div>
                                   );
@@ -1110,7 +1151,8 @@ const MTDView: React.FC<MTDViewProps> = ({ applicationId, businessName, ownerNam
                     )}
                     {(() => {
                       const selectedTotal = normalizedFunder.reduce((s, r) => {
-                        const key = `FUNDER_MTD|${String(r.date || '')}|${String(r.description || '')}|${String(r.funder || '')}|${String(r.type || '')}|${Number(r.amount || 0)}`;
+                        const key = `FUNDER_MTD|${String(r.date || '')}|${String(r.description || '')}|${String(r.funder || '')}|${String(r.type || '')}|${Number(r.amount || 0)}|${String(r.frequency || '')}|${String(r.notes || '')}`;
+                        // Use the displayed amount (which is already divided for weekly payments)
                         return s + (selectedKeys.has(key) ? (Number(r?.amount) || 0) : 0);
                       }, 0);
                       return (

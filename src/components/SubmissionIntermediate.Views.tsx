@@ -418,10 +418,10 @@ export const TransactionSummarySection: React.FC<{
       } else if (categories && typeof categories === 'object') {
         let mainSum = 0;
         if (!mainToSubs[mainName]) mainToSubs[mainName] = [];
-        Object.entries(categories as Record<string, any>).forEach(([subName, transactions]) => {
+        Object.entries(categories as Record<string, unknown>).forEach(([subName, transactions]) => {
           if (!subTotals[subName]) subTotals[subName] = 0;
 
-          const normalizeTransactions = (tx: any): any[] => {
+          const normalizeTransactions = (tx: unknown): unknown[] => {
             if (!tx) return [];
             if (Array.isArray(tx)) return tx.flat().filter(Boolean);
             if (typeof tx === 'object') {
