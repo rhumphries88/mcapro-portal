@@ -121,7 +121,8 @@ const MTDView: React.FC<MTDViewProps> = ({ applicationId, businessName, ownerNam
       // Recalculate selected total for Funder MTD
       const total = normalizedFunder.reduce((s, r) => {
         const key = `FUNDER_MTD|${String(r.date || '')}|${String(r.description || '')}|${String(r.funder || '')}|${String(r.type || '')}|${Number(r.amount || 0)}|${String(r.frequency || '')}|${String(r.notes || '')}`;
-        // Use the displayed amount (which is already divided for weekly payments)
+        // Always use the divided amount (which is already calculated for weekly payments)
+        // For non-weekly payments, amount is the same as originalAmount
         return s + (selectedKeys.has(key) ? (Number(r?.amount) || 0) : 0);
       }, 0);
       await updateApplicationMTDTotalMTD(detailsModal.id, total);
@@ -304,8 +305,8 @@ const MTDView: React.FC<MTDViewProps> = ({ applicationId, businessName, ownerNam
       date: String(r.date || ''),
       type: String(r.type || '').toLowerCase(),
       FUNDER: String(r.funder || ''),
-      // Use originalAmount if available, otherwise use amount
-      amount: (Number(r.originalAmount || r.amount || 0)).toFixed(2),
+      // Use the divided amount for weekly payments in mtd_selected
+      amount: (Number(r.amount || 0)).toFixed(2),
       balance: (typeof r.balance === 'number' && isFinite(Number(r.balance))) ? (Number(r.balance)).toFixed(2) : 'NaN',
       description: String(r.description || ''),
       FREQUENCY: String(r.frequency || ''),
@@ -320,15 +321,20 @@ const MTDView: React.FC<MTDViewProps> = ({ applicationId, businessName, ownerNam
     if (!sel || !Array.isArray(sel) || !normalizedFunder.length) return;
     const next = new Set<string>();
     normalizedFunder.forEach((r) => {
-      const match = sel.find((s: any) =>
-        String(s?.date || '') === String(r.date || '') &&
-        String(s?.description || '') === String(r.description || '') &&
-        String((s?.FUNDER || s?.funder) || '') === String(r.funder || '') &&
-        String(s?.type || '').toLowerCase() === String(r.type || '').toLowerCase() &&
-        Number(s?.amount) === Number(r.amount) &&
-        String((s?.FREQUENCY || s?.frequency) || '') === String(r.frequency || '') &&
-        String((s?.NOTES || s?.notes) || '') === String(r.notes || '')
-      );
+      // Find matching row from saved mtd_selected
+      // For weekly payments, the amount in mtd_selected will be the divided amount
+      const match = sel.find((s: any) => {
+        const savedAmount = Number(s?.amount || 0);
+        const currentAmount = Number(r.amount || 0);
+        
+        return String(s?.date || '') === String(r.date || '') &&
+          String(s?.description || '') === String(r.description || '') &&
+          String((s?.FUNDER || s?.funder) || '') === String(r.funder || '') &&
+          String(s?.type || '').toLowerCase() === String(r.type || '').toLowerCase() &&
+          Math.abs(savedAmount - currentAmount) < 0.01 && // Use approximate comparison for floating point
+          String((s?.FREQUENCY || s?.frequency) || '') === String(r.frequency || '') &&
+          String((s?.NOTES || s?.notes) || '') === String(r.notes || '');
+      });
       if (match) {
         const k = `FUNDER_MTD|${String(r.date || '')}|${String(r.description || '')}|${String(r.funder || '')}|${String(r.type || '')}|${Number(r.amount || 0)}|${String(r.frequency || '')}|${String(r.notes || '')}`;
         next.add(k);
@@ -1152,7 +1158,8 @@ const MTDView: React.FC<MTDViewProps> = ({ applicationId, businessName, ownerNam
                     {(() => {
                       const selectedTotal = normalizedFunder.reduce((s, r) => {
                         const key = `FUNDER_MTD|${String(r.date || '')}|${String(r.description || '')}|${String(r.funder || '')}|${String(r.type || '')}|${Number(r.amount || 0)}|${String(r.frequency || '')}|${String(r.notes || '')}`;
-                        // Use the displayed amount (which is already divided for weekly payments)
+                        // Always use the divided amount (which is already calculated for weekly payments)
+                        // For non-weekly payments, amount is the same as originalAmount
                         return s + (selectedKeys.has(key) ? (Number(r?.amount) || 0) : 0);
                       }, 0);
                       return (
