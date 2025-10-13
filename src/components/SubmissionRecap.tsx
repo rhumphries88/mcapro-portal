@@ -198,10 +198,13 @@ const SubmissionRecap: React.FC<SubmissionRecapProps> = ({
       }
       try {
         setMtdDocsLoading(true);
+        console.log('Loading MTD docs for application ID:', application.id);
         const docs = await getApplicationMTDByApplicationId(application.id);
+        console.log('MTD docs loaded:', docs);
+        console.log('MTD docs count:', docs?.length || 0);
         setMtdDocs(docs || []);
       } catch (e) {
-        console.warn('Failed to load application_mtd for recap:', e);
+        console.error('Failed to load application_mtd for recap:', e);
         setMtdDocs([]);
       } finally {
         setMtdDocsLoading(false);
@@ -210,9 +213,20 @@ const SubmissionRecap: React.FC<SubmissionRecapProps> = ({
     loadMtdDocs();
   }, [application?.id]);
 
-  const selectedLenders = lenders.filter(lender => selectedLenderIds.includes(lender.id));
   // Application form files stored on the application row (text[])
   const inlineDocs: string[] = Array.isArray(application?.documents) ? (application!.documents as string[]) : [];
+  
+  const selectedLenders = lenders.filter(lender => selectedLenderIds.includes(lender.id));
+  
+  // Debug useEffect to log document counts
+  React.useEffect(() => {
+    console.log('Document counts:', { 
+      appDocs: appDocs?.length || 0, 
+      inlineDocs: inlineDocs?.length || 0, 
+      mtdDocs: mtdDocs?.length || 0,
+      mtdDocsData: mtdDocs
+    });
+  }, [appDocs, inlineDocs, mtdDocs]);
 
   const generateEmailContent = (lender: DBLender) => {
     if (!application) return '';
@@ -957,6 +971,7 @@ const SubmissionRecap: React.FC<SubmissionRecapProps> = ({
             {(appDocsLoading || mtdDocsLoading) ? 'Loading…' : `${((appDocs?.length || 0) + (inlineDocs?.length || 0) + (mtdDocs?.length || 0))} file${(((appDocs?.length || 0) + (inlineDocs?.length || 0) + (mtdDocs?.length || 0)) === 1) ? '' : 's'}`}
           </div>
         </div>
+        {/* Debug info in console */}
         {(appDocsLoading || mtdDocsLoading) ? (
           <div className="flex items-center gap-2 text-gray-600 text-sm">
             <Loader className="w-4 h-4 animate-spin" /> Fetching documents…
