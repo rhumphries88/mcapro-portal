@@ -1,11 +1,25 @@
-import { createClient } from '@supabase/supabase-js'
+/**
+ * Enhanced Supabase Client Configuration
+ * 
+ * Features:
+ * - Full session persistence with localStorage
+ * - Automatic token refresh
+ * - URL-based session detection (OAuth callbacks)
+ * - Enhanced error handling
+ * - Session monitoring with retry logic
+ * - OAuth provider support
+ * - Password reset functionality
+ * 
+ * Compatible with Vite environment variables
+ */
 
+import { createClient, SupabaseClient, Session, AuthChangeEvent } from '@supabase/supabase-js'
+
+// Environment variables validation
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY
 
-// Validate required environment variables before initializing the client
 if (!supabaseUrl || !supabaseAnonKey) {
-  // Provide a clear, actionable message during development
   throw new Error(
     'Missing Supabase configuration. Ensure VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY are set in your environment.\n' +
       'Create a .env.local at the project root with:\n' +
@@ -14,6 +28,298 @@ if (!supabaseUrl || !supabaseAnonKey) {
   )
 }
 
+// Create Supabase client with enhanced configuration
+export const supabase: SupabaseClient = createClient(supabaseUrl, supabaseAnonKey, {
+  auth: {
+    // Enable automatic token refresh
+    autoRefreshToken: true,
+    // Persist session in localStorage
+    persistSession: true,
+    // Detect session from URL (for OAuth callbacks)
+    detectSessionInUrl: true,
+    // Storage key for session persistence
+    storageKey: 'mcapro-auth-token',
+    // Custom storage implementation (optional - uses localStorage by default)
+    storage: {
+      getItem: (key: string) => {
+        if (typeof window !== 'undefined') {
+          return window.localStorage.getItem(key)
+        }
+        return null
+      },
+      setItem: (key: string, value: string) => {
+        if (typeof window !== 'undefined') {
+          window.localStorage.setItem(key, value)
+        }
+      },
+      removeItem: (key: string) => {
+        if (typeof window !== 'undefined') {
+          window.localStorage.removeItem(key)
+        }
+      }
+    }
+  },
+  // Global configuration
+  global: {
+    headers: {
+      'X-Client-Info': 'mcapro-portal@1.0.0'
+    }
+  }
+})
+
+// ===================== AUTHENTICATION HELPERS =====================
+
+/**
+ * Enhanced logout function with cleanup
+ * Clears both Supabase session and local storage
+ */
+export const logoutUser = async (): Promise<void> => {
+  console.log('Starting Supabase signOut...');
+  
+  // Try Supabase signOut with timeout
+  try {
+    const timeoutId = setTimeout(() => {
+      console.warn('Supabase signOut taking too long, forcing logout...');
+    }, 2000);
+    
+    const { error } = await supabase.auth.signOut();
+    clearTimeout(timeoutId);
+    
+    if (error) {
+      console.error('Supabase signOut error:', error);
+    } else {
+      console.log('Supabase signOut successful');
+    }
+  } catch (error) {
+    console.error('Supabase signOut failed:', error);
+  }
+
+  // Always clear local storage items
+  if (typeof window !== 'undefined') {
+    localStorage.removeItem('mcapro_user');
+    localStorage.removeItem('mcapro-auth-token');
+    localStorage.removeItem('adminLoggedIn'); // Clear admin flag too
+    console.log('LocalStorage items cleared in supabase.ts');
+  }
+  
+  console.log('Logout process completed');
+}
+
+/**
+ * Get current authenticated user
+ */
+export const getCurrentUser = async () => {
+  const { data: { user }, error } = await supabase.auth.getUser()
+  if (error) throw error
+  return user
+}
+
+/**
+ * Get current session with automatic refresh
+ */
+export const getCurrentSession = async () => {
+  const { data: { session }, error } = await supabase.auth.getSession()
+  if (error) throw error
+  return session
+}
+
+/**
+ * Check if user is authenticated
+ */
+export const isAuthenticated = async (): Promise<boolean> => {
+  try {
+    const session = await getCurrentSession()
+    return !!session?.user
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Refresh the current session
+ */
+export const refreshSession = async () => {
+  const { data, error } = await supabase.auth.refreshSession()
+  if (error) throw error
+  return data
+}
+
+/**
+ * Sign in with OAuth provider (Google, GitHub, etc.)
+ */
+export const signInWithOAuth = async (provider: 'google' | 'github' | 'discord' | 'facebook') => {
+  const { data, error } = await supabase.auth.signInWithOAuth({
+    provider,
+    options: {
+      redirectTo: `${window.location.origin}/dashboard`
+    }
+  })
+  if (error) throw error
+  return data
+}
+
+/**
+ * Handle OAuth callback and session detection
+ * Call this on app initialization to detect OAuth sessions from URL
+ */
+export const handleOAuthCallback = async () => {
+  try {
+    const { data, error } = await supabase.auth.getSession()
+    if (error) throw error
+    return data.session
+  } catch (error) {
+    console.error('OAuth callback error:', error)
+    return null
+  }
+}
+
+/**
+ * Reset password via email
+ */
+export const resetPassword = async (email: string) => {
+  const { data, error } = await supabase.auth.resetPasswordForEmail(email, {
+    redirectTo: `${window.location.origin}/reset-password`
+  })
+  if (error) throw error
+  return data
+}
+
+/**
+ * Update user password
+ */
+export const updatePassword = async (newPassword: string) => {
+  const { data, error } = await supabase.auth.updateUser({
+    password: newPassword
+  })
+  if (error) throw error
+  return data
+}
+
+// ===================== SESSION MONITORING =====================
+
+/**
+ * Session event listener type
+ */
+export type SessionEventListener = (event: AuthChangeEvent, session: Session | null) => void
+
+/**
+ * Subscribe to auth state changes with enhanced error handling
+ */
+export const onAuthStateChange = (callback: SessionEventListener) => {
+  const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+    try {
+      callback(event, session)
+    } catch (error) {
+      console.error('Auth state change callback error:', error)
+    }
+  })
+
+  return {
+    unsubscribe: () => subscription.unsubscribe()
+  }
+}
+
+/**
+ * Get session with retry logic for better reliability
+ */
+export const getSessionWithRetry = async (maxRetries = 3): Promise<Session | null> => {
+  let lastError: Error | null = null
+  
+  for (let i = 0; i < maxRetries; i++) {
+    try {
+      const { data: { session }, error } = await supabase.auth.getSession()
+      if (error) throw error
+      return session
+    } catch (error) {
+      lastError = error as Error
+      if (i < maxRetries - 1) {
+        // Wait before retry (exponential backoff)
+        await new Promise(resolve => setTimeout(resolve, Math.pow(2, i) * 1000))
+      }
+    }
+  }
+  
+  throw lastError
+}
+
+/**
+ * Register a new user with role-based approval system
+ */
+export const registerUser = async (userData: {
+  email: string
+  password: string
+  fullName: string
+}) => {
+  // Create the auth user but prevent session creation
+  const { data: authData, error: authError } = await supabase.auth.signUp({
+    email: userData.email,
+    password: userData.password,
+    options: {
+      data: {
+        full_name: userData.fullName
+      }
+    }
+  })
+
+  if (authError) throw authError
+
+  // Immediately sign out to prevent session persistence
+  await supabase.auth.signOut()
+
+  // Create the user record in the users table
+  if (authData.user) {
+    const { data: userRecord, error: userError } = await supabase
+      .from('users')
+      .insert([{
+        id: authData.user.id,
+        email: userData.email,
+        full_name: userData.fullName,
+        roles: null // Requires admin approval
+      }])
+      .select()
+      .single()
+
+    if (userError) throw userError
+    
+    return { authData, userRecord }
+  }
+
+  return { authData, userRecord: null }
+}
+
+/**
+ * Login user with email and password
+ */
+export const loginUser = async (credentials: {
+  email: string
+  password: string
+}) => {
+  const { data, error } = await supabase.auth.signInWithPassword({
+    email: credentials.email,
+    password: credentials.password
+  })
+
+  if (error) throw error
+  return data
+}
+
+// ===================== DATABASE TYPES =====================
+
+export interface User {
+  id: string
+  created_at: string
+  email: string
+  full_name: string
+  phone?: string
+  address?: string
+  roles?: string
+}
+
+// ===================== APPLICATION HELPERS =====================
+
+/**
+ * Get application by ID
+ */
 export const getApplicationById = async (id: string) => {
   const { data, error } = await supabase
     .from('applications')
@@ -25,9 +331,6 @@ export const getApplicationById = async (id: string) => {
   return data
 }
 
-export const supabase = createClient(supabaseUrl, supabaseAnonKey)
-
-// Database types
 export interface Application {
   id: string
   business_name: string
@@ -122,6 +425,17 @@ export const getApplications = async () => {
   const { data, error } = await supabase
     .from('applications')
     .select('*')
+    .order('created_at', { ascending: false })
+
+  if (error) throw error
+  return data
+}
+
+export const getApplicationsByUserId = async (userId: string) => {
+  const { data, error } = await supabase
+    .from('applications')
+    .select('*')
+    .eq('user_id', userId)
     .order('created_at', { ascending: false })
 
   if (error) throw error
@@ -483,7 +797,7 @@ export const resolveAndDeleteApplicationMTD = async (
   file_size?: number
 ) => {
   // Look up id safely first
-  let sel = supabase
+  const sel = supabase
     .from('application_mtd')
     .select('id, file_size')
     .eq('application_id', applicationId)
@@ -494,7 +808,7 @@ export const resolveAndDeleteApplicationMTD = async (
 
   const { data, error } = await sel;
   if (error) throw error
-  const id = (data as any)?.id as string | undefined
+  const id = (data as { id: string } | null)?.id as string | undefined
   if (id) {
     await deleteApplicationMTD(id)
     return

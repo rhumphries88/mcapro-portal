@@ -143,7 +143,7 @@ Application ID: {{applicationId}}`;
       // Normalize any legacy/alias values to the live DB statuses
       const normalized = (subs as (DBLenderSubmission & { lender: DBLender })[]).map(s => ({
         ...s,
-        status: (canonicalizeSubmissionStatus(s.status) as any) ?? s.status,
+        status: (canonicalizeSubmissionStatus(s.status)) ?? s.status,
       }));
       setApplicationSubmissions(normalized);
     } catch (error) {
@@ -385,15 +385,15 @@ Application ID: {{applicationId}}`;
 
   // Canonicalize status variations to live DB statuses
   const canonicalizeSubmissionStatus = (status?: string | null): DBLenderSubmission['status'] | undefined => {
-    if (!status) return undefined as any;
+    if (!status) return undefined;
     const s = status.trim().toLowerCase().replace(/_/g, '-');
     // Map legacy aliases to DB statuses
-    if (s === 'decline' || s === 'declined' || s === 'rejected') return 'rejected' as any;
-    if (s === 'fund' || s === 'funded' || s === 'approved') return 'approved' as any;
-    if (s === 'counter-offer' || s === 'counter offer' || s === 'counteroffer' || s === 'responded') return 'responded' as any;
-    if (s === 'sent') return 'sent' as any;
-    if (s === 'pending') return 'pending' as any;
-    return status as any;
+    if (s === 'decline' || s === 'declined' || s === 'rejected') return 'rejected' as DBLenderSubmission['status'];
+    if (s === 'fund' || s === 'funded' || s === 'approved') return 'approved' as DBLenderSubmission['status'];
+    if (s === 'counter-offer' || s === 'counter offer' || s === 'counteroffer' || s === 'responded') return 'responded' as DBLenderSubmission['status'];
+    if (s === 'sent') return 'sent' as DBLenderSubmission['status'];
+    if (s === 'pending') return 'pending' as DBLenderSubmission['status'];
+    return status as DBLenderSubmission['status'];
   };
 
   // Translate UI status values to DB-allowed values before persisting
@@ -414,20 +414,20 @@ Application ID: {{applicationId}}`;
   const persistSubmissionChange = async (submissionId: string, updates: Partial<DBLenderSubmission>) => {
     try {
       // Map UI status to DB-allowed values prior to persisting
-      const dbPatch: Partial<DBLenderSubmission> = { ...updates } as any;
+      const dbPatch: Partial<DBLenderSubmission> = { ...updates };
       if (Object.prototype.hasOwnProperty.call(updates, 'status')) {
-        const dbStatus = mapUiStatusToDb(updates.status as any);
-        if (dbStatus) (dbPatch as any).status = dbStatus as any;
+        const dbStatus = mapUiStatusToDb(updates.status as string | null | undefined);
+        if (dbStatus) dbPatch.status = dbStatus as DBLenderSubmission['status'];
       }
       const updatedSubmission = await updateLenderSubmission(submissionId, dbPatch);
       // Normalize status back to the canonical values used by the UI options
-      const normalizedStatus = canonicalizeSubmissionStatus((updatedSubmission as any)?.status as string | undefined);
+      const normalizedStatus = canonicalizeSubmissionStatus(updatedSubmission.status as DBLenderSubmission['status']);
       setApplicationSubmissions(prev =>
         prev.map(sub => (sub.id === submissionId ? { ...sub, ...updatedSubmission, ...(normalizedStatus ? { status: normalizedStatus } : {}) } : sub))
       );
     } catch (error) {
       console.error('Error persisting submission change:', error);
-      const message = (error as any)?.message || (error as any)?.error_description || JSON.stringify(error);
+      const message = (error as Error)?.message || (error as {error_description?: string})?.error_description || JSON.stringify(error);
       alert(`Error updating submission: ${message}`);
     }
   };

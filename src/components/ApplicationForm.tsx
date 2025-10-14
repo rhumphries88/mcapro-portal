@@ -3,6 +3,7 @@ import { DollarSign, Building2, User, CheckCircle, FileCheck, Loader } from 'luc
 
 import { createApplication, updateApplication, Application as DBApplication } from '../lib/supabase';
 import { extractDataFromPDF } from '../lib/pdfExtractor';
+import { useAuth } from '../App';
 
 interface Application {
   id: string;
@@ -181,6 +182,7 @@ interface WebhookResponse {
 }
 
 const ApplicationForm: React.FC<ApplicationFormProps> = ({ onSubmit, initialStep = 'upload', reviewMode = false, reviewInitial = null, onReviewSubmit, onReadyForForm, reviewDocName, onReplaceDocument }) => {
+  const { user } = useAuth(); // Get the current logged-in user
   const [currentStep, setCurrentStep] = useState<'upload' | 'form'>(initialStep);
 
   const [isExtracting, setIsExtracting] = useState(false);
@@ -220,7 +222,7 @@ const ApplicationForm: React.FC<ApplicationFormProps> = ({ onSubmit, initialStep
       ownerName: reviewInitial.contactInfo?.ownerName ?? prev.ownerName,
       email: reviewInitial.contactInfo?.email ?? prev.email,
       phone: reviewInitial.contactInfo?.phone ?? prev.phone,
-      dateOfBirth: (reviewInitial as any)?.contactInfo?.dateOfBirth ?? prev.dateOfBirth,
+      dateOfBirth: (reviewInitial)?.contactInfo?.dateOfBirth ?? prev.dateOfBirth,
       address: reviewInitial.contactInfo?.address ?? prev.address,
       ein: reviewInitial.businessInfo?.ein ?? prev.ein,
       businessType: reviewInitial.businessInfo?.businessType ?? prev.businessType,
@@ -241,7 +243,7 @@ const ApplicationForm: React.FC<ApplicationFormProps> = ({ onSubmit, initialStep
     if (reviewInitial.contactInfo?.ownerName) provided.push('ownerName');
     if (reviewInitial.contactInfo?.email) provided.push('email');
     if (reviewInitial.contactInfo?.phone) provided.push('phone');
-    if ((reviewInitial as any)?.contactInfo?.dateOfBirth) provided.push('dateOfBirth');
+    if ((reviewInitial)?.contactInfo?.dateOfBirth) provided.push('dateOfBirth');
     if (reviewInitial.contactInfo?.address) provided.push('address');
     if (reviewInitial.businessInfo?.ein) provided.push('ein');
     if (reviewInitial.businessInfo?.businessType) provided.push('businessType');
@@ -890,14 +892,15 @@ const ApplicationForm: React.FC<ApplicationFormProps> = ({ onSubmit, initialStep
           requested_amount: Number(formData.requestedAmount) || 0,
           status: 'submitted',
           documents: formData.documents,
+          user_id: user?.id, // Add the logged-in user's ID
         };
 
         const savedApplication = await createApplication(applicationData);
         // Fallback: some environments may not persist camelCase columns on insert; ensure dateBirth is set
-        if (!(savedApplication as any).dateBirth && formData.dateOfBirth) {
+        if (!(savedApplication).dateBirth && formData.dateOfBirth) {
           try {
-            await updateApplication(savedApplication.id, { dateBirth: formData.dateOfBirth } as any);
-            (savedApplication as any).dateBirth = formData.dateOfBirth;
+            await updateApplication(savedApplication.id, { dateBirth: formData.dateOfBirth });
+            (savedApplication).dateBirth = formData.dateOfBirth;
           } catch (e) {
             console.warn('Failed to backfill dateBirth via update:', e);
           }
@@ -917,7 +920,7 @@ const ApplicationForm: React.FC<ApplicationFormProps> = ({ onSubmit, initialStep
             ownerName: savedApplication.owner_name,
             email: savedApplication.email,
             phone: savedApplication.phone || '',
-            dateOfBirth: (savedApplication as any).dateBirth || '',
+            dateOfBirth: (savedApplication).dateBirth || '',
             address: savedApplication.address || ''
           },
           businessInfo: {

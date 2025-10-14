@@ -2,10 +2,10 @@
 // No React or side-effect imports here to keep this file stateless and reusable.
 
 // Utility: parse various amount representations into a number
-export const parseAmount = (v: any): number => {
+export const parseAmount = (v: string): number => {
   if (typeof v === 'number') return Number.isFinite(v) ? v : 0;
   const s = String(v ?? '')
-    .replace(/[\,\s]/g, '')
+    .replace(/[,\s]/g, '')
     .replace(/[^0-9.+-]/g, '');
   const n = parseFloat(s);
   return Number.isFinite(n) ? n : 0;
@@ -44,12 +44,12 @@ export const isFunderList = (name: string): boolean => {
 };
 
 // Utility: format YYYY-MM-DD into Month DD, YYYY
-export const formatDateHuman = (value: any): string => {
+export const formatDateHuman = (value: string): string => {
   const raw = String(value || '').trim();
   // If already human text, return as-is
   const m = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
   if (!m) return raw || '—';
-  const [_, y, mo, d] = m as unknown as [string, string, string, string];
+  const [, y, mo, d] = m as unknown as [string, string, string, string];
   const date = new Date(Number(y), Number(mo) - 1, Number(d));
   try {
     return date.toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: '2-digit' });
@@ -59,7 +59,7 @@ export const formatDateHuman = (value: any): string => {
 };
 
 // Format any date string into a full readable format like "August 11, 2025"
-export const formatFullDate = (value: any): string => {
+export const formatFullDate = (value: string): string => {
   if (!value) return '—';
   const raw = String(value).trim();
   
@@ -112,7 +112,9 @@ export const formatFullDate = (value: any): string => {
         day: 'numeric' 
       });
     }
-  } catch {}
+  } catch (e) {
+    console.error('Failed to parse date:', e);
+  }
   
   // Return original if we couldn't parse it
   return raw;

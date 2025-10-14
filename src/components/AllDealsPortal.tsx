@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Search, Eye, Edit, Download, DollarSign, Building2, Star, CheckCircle, XCircle, Clock, AlertTriangle } from 'lucide-react';
-import { getApplications, getLenderSubmissions, Application as DBApplication, LenderSubmission as DBLenderSubmission } from '../lib/supabase';
+import { getApplicationsByUserId, getLenderSubmissions, Application as DBApplication, LenderSubmission as DBLenderSubmission } from '../lib/supabase';
+import { useAuth } from '../App';
 
 // Use database types
 type Deal = DBApplication & {
@@ -13,6 +14,7 @@ type AllDealsPortalProps = {
 };
 
 const AllDealsPortal: React.FC<AllDealsPortalProps> = ({ onEditDeal }) => {
+  const { user } = useAuth(); // Get the current logged-in user
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const [selectedDeal, setSelectedDeal] = useState<Deal | null>(null);
@@ -20,12 +22,22 @@ const AllDealsPortal: React.FC<AllDealsPortalProps> = ({ onEditDeal }) => {
   const [deals, setDeals] = useState<Deal[]>([]);
   const [loading, setLoading] = useState(true);
 
-  // Load applications from Supabase
+  // Load applications from Supabase filtered by user_id
   React.useEffect(() => {
     const loadApplications = async () => {
+      if (!user?.id) {
+        console.log('No user ID available, skipping application load');
+        setLoading(false);
+        return;
+      }
+
       try {
         setLoading(true);
-        const dbApplications = await getApplications();
+        console.log('Loading applications for user ID:', user.id);
+        
+        // Get applications filtered by the current user's ID
+        const dbApplications = await getApplicationsByUserId(user.id);
+        console.log('Found applications for user:', dbApplications.length);
         
         // Transform applications and load lender submissions
         const dealsWithSubmissions = await Promise.all(
@@ -47,7 +59,7 @@ const AllDealsPortal: React.FC<AllDealsPortalProps> = ({ onEditDeal }) => {
       }
     };
     loadApplications();
-  }, []);
+  }, [user?.id]);
 
   const getLenderStatusColor = (status: string) => {
     switch (status) {
@@ -144,8 +156,11 @@ const AllDealsPortal: React.FC<AllDealsPortalProps> = ({ onEditDeal }) => {
 
       {/* Header */}
       <div className="mb-8">
-        <h1 className="text-3xl font-bold text-gray-900 mb-2">All Deals</h1>
-        <p className="text-gray-600">View and manage all merchant cash advance submissions</p>
+        <h1 className="text-3xl font-bold text-gray-900 mb-2">My Deals</h1>
+        <p className="text-gray-600">View and manage your merchant cash advance submissions</p>
+        {user && (
+          <p className="text-sm text-gray-500 mt-1">Showing applications for: {user.name} ({user.email})</p>
+        )}
       </div>
 
       {/* Stats Cards */}
@@ -156,7 +171,7 @@ const AllDealsPortal: React.FC<AllDealsPortalProps> = ({ onEditDeal }) => {
               <Building2 className="w-6 h-6 text-blue-600" />
             </div>
             <div className="ml-4">
-              <p className="text-sm font-medium text-gray-600">Total Deals</p>
+              <p className="text-sm font-medium text-gray-600">My Deals</p>
               <p className="text-2xl font-bold text-gray-900">{deals.length}</p>
             </div>
           </div>

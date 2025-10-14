@@ -7,6 +7,7 @@ import SubmissionRecap from './SubmissionRecap';
 import SubmissionIntermediate from './SubmissionIntermediate';
 import { extractLenderMatches, type CleanedMatch } from '../lib/parseLenderMatches';
 import { createApplication, getApplicationById, type Application as DBApplication } from '../lib/supabase';
+import { useAuth } from '../App';
 
 // Type aliases used across this file
 type ReviewInitialType = ComponentProps<typeof ApplicationForm>['reviewInitial'];
@@ -140,6 +141,7 @@ type SubmissionsPortalProps = {
 };
 
 const SubmissionsPortal: React.FC<SubmissionsPortalProps> = ({ initialStep, initialApplicationId, lockedLenderIds = [] }) => {
+  const { user } = useAuth(); // Get the current logged-in user
   const [currentStep, setCurrentStep] = useState<'application' | 'bank' | 'intermediate' | 'matches' | 'recap'>('application');
   const [prevStep, setPrevStep] = useState<'application' | 'bank' | 'intermediate' | 'matches' | 'recap' | null>(null);
   const [application, setApplication] = useState<AppData | null>(null);
@@ -782,8 +784,10 @@ const SubmissionsPortal: React.FC<SubmissionsPortalProps> = ({ initialStep, init
                     requested_amount: merged.requestedAmount ?? 0,
                     status: (merged.status as DBApplication['status']) || 'submitted',
                     documents: Array.isArray(merged.documents) ? merged.documents : [],
+                    user_id: user?.id, // Add the logged-in user's ID
                   };
                   console.log('[SubmissionsPortal] No application ID; creating draft in Supabase with:', payload);
+                  console.log('[SubmissionsPortal] User ID being added:', user?.id);
                   const saved = await createApplication(payload);
                   console.log('[SubmissionsPortal] Draft created. New ID:', saved.id);
                   const withId: AppData = { ...merged, id: saved.id };

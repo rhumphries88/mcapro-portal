@@ -1,6 +1,7 @@
 import React, { type ComponentProps } from 'react';
 import ApplicationForm from './ApplicationForm';
 import { createApplication, updateApplication, type Application as DBApplication } from '../lib/supabase';
+import { useAuth } from '../App';
 
 // Keep this type minimal to avoid tight coupling; it matches what SubmissionsPortal passes
 type AppDataLike = {
@@ -40,6 +41,7 @@ interface BankStatementProps {
 }
 
 const BankStatement: React.FC<BankStatementProps> = ({ onContinue, application, onReplaceDocument }) => {
+  const { user } = useAuth(); // Get the current logged-in user
   type ReviewInitialType = ComponentProps<typeof ApplicationForm>['reviewInitial'];
   const docName = (() => {
     const first = application?.documents && application.documents.length > 0 ? application.documents[0] : '';
@@ -72,6 +74,7 @@ const BankStatement: React.FC<BankStatementProps> = ({ onContinue, application, 
         requested_amount: Number(app.requestedAmount ?? 0) || 0,
         status: (app.status as DBApplication['status']) ?? 'submitted',
         documents: Array.isArray(app.documents) ? app.documents : [],
+        user_id: user?.id, // Add the logged-in user's ID
       };
 
       if (app.id) {
@@ -79,6 +82,7 @@ const BankStatement: React.FC<BankStatementProps> = ({ onContinue, application, 
         await updateApplication(app.id, dbPayload);
       } else {
         console.log('[BankStatement] Creating application with payload', dbPayload);
+        console.log('[BankStatement] User ID being added:', user?.id);
         const created = await createApplication(dbPayload as Omit<DBApplication, 'id' | 'created_at' | 'updated_at'>);
         console.log('[BankStatement] Created application id', created.id);
         // Capture created ID to propagate back to parent

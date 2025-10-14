@@ -10,11 +10,50 @@ export type MTDViewProps = {
   onChooseFiles?: (files: FileList | null) => void; // optional callback to parent if needed later
 };
 
+// Define interfaces for MTD data types
+interface TransactionRow {
+  date?: string;
+  description?: string;
+  type?: string;
+  amount?: number;
+  balance?: number;
+}
+
+interface CategorySection {
+  category: string;
+  rows: TransactionRow[];
+}
+
+interface FunderRow extends TransactionRow {
+  funder?: string;
+  frequency?: string;
+  notes?: string;
+  originalAmount?: number;
+  [key: string]: unknown;
+}
+
+interface MTDSummary {
+  [category: string]: TransactionRow[] | { transactions?: TransactionRow[] };
+}
+
+interface ModalState {
+  id: string;
+  name: string;
+  loading: boolean;
+  mtd_summary?: MTDSummary;
+  total_amount?: number | null;
+  available_balance?: number | null;
+  negative?: number | null;
+  funder_mtd?: FunderRow[] | null;
+  total_mtd?: number | null;
+  mtd_selected?: FunderRow[] | null;
+}
+
 const MTD_WEBHOOK_URL = '/.netlify/functions/mtd-webhook';
 
 const MTDView: React.FC<MTDViewProps> = ({ applicationId, businessName, ownerName, onChooseFiles }) => {
   // Local helper to render dates in a long, human-friendly form (e.g., 24 September 2025)
-  const formatDateLong = React.useCallback((dateStr: any) => {
+  const formatDateLong = React.useCallback((dateStr: string | undefined | null) => {
     try {
       const d = new Date(String(dateStr || '').replace(/\//g, '-'));
       if (isNaN(d.getTime())) return String(dateStr || '');
@@ -44,23 +83,14 @@ const MTDView: React.FC<MTDViewProps> = ({ applicationId, businessName, ownerNam
         const parsed = JSON.parse(raw);
         if (Array.isArray(parsed)) return parsed;
       }
-    } catch {}
+    } catch {
+      // Silently handle errors in localStorage operations
+    }
     return [];
   });
 
   // Modal state for viewing analysis (pulled only from application_mtd.mtd_summary & total_amount)
-  const [detailsModal, setDetailsModal] = React.useState<null | {
-    id: string;
-    name: string;
-    loading: boolean;
-    mtd_summary?: any;
-    total_amount?: number | null;
-    available_balance?: number | null;
-    negative?: number | null;
-    funder_mtd?: any | null;
-    total_mtd?: number | null;
-    mtd_selected?: any | null;
-  }>(null);
+  const [detailsModal, setDetailsModal] = React.useState<null | ModalState>(null);
 
   // Track which transaction rows are selected (unchecked by default)
   const [selectedKeys, setSelectedKeys] = React.useState<Set<string>>(() => new Set());
@@ -95,15 +125,15 @@ const MTDView: React.FC<MTDViewProps> = ({ applicationId, businessName, ownerNam
         id: row.id,
         name: row.name,
         loading: false,
-        mtd_summary: data?.mtd_summary,
-        total_amount: (data as any)?.total_amount ?? null,
-        available_balance: (data as any)?.available_balance ?? null,
-        negative: (data as any)?.negative ?? null,
-        funder_mtd: (data as any)?.funder_mtd ?? null,
-        total_mtd: (data as any)?.total_mtd ?? null,
+        mtd_summary: data?.mtd_summary as MTDSummary | undefined,
+        total_amount: data?.total_amount ?? null,
+        available_balance: data?.available_balance ?? null,
+        negative: data?.negative ?? null,
+        funder_mtd: data?.funder_mtd as FunderRow[] | null | undefined,
+        total_mtd: data?.total_mtd ?? null,
         // transient field kept in modal state for hydration of selections
         // Supabase returns parsed JSON already for jsonb columns
-        mtd_selected: (data as any)?.mtd_selected ?? null,
+        mtd_selected: data?.mtd_selected as FunderRow[] | null | undefined,
       });
     } catch (e) {
       console.warn('Failed to load MTD analysis:', e);
@@ -135,30 +165,39 @@ const MTDView: React.FC<MTDViewProps> = ({ applicationId, businessName, ownerNam
 
   // Normalize MTD summary to: Array<{ category: string; rows: { date?: string; description?: string; amount?: number }[] }>
   const normalizedSummary = React.useMemo(() => {
-    const src: any = detailsModal?.mtd_summary;
-    if (!src) return [] as Array<{ category: string; rows: any[] }>;
+    const src = detailsModal?.mtd_summary as MTDSummary | undefined;
+    if (!src) return [] as CategorySection[];
 
-    const toNum = (v: any) => {
+    const toNum = (v: number | string | null | undefined): number => {
       const n = typeof v === 'number' ? v : parseFloat(String(v ?? '').replace(/[^0-9.-]/g, ''));
       return Number.isFinite(n) ? n : 0;
     };
 
-    const pushRow = (map: Map<string, any[]>, cat: string, r: any) => {
-      const date = r?.date || r?.Date || r?.transaction_date || r?.posted_at || r?.txn_date || '';
-      const description = r?.description || r?.Description || r?.memo || r?.details || r?.desc || '';
-      const amount = toNum(r?.amount ?? r?.Amount ?? r?.value ?? r?.amt ?? r?.debit_amount ?? r?.credit_amount ?? r?.daily_amount);
-      const rawType = r?.type || r?.Type || r?.txn_type || r?.transaction_type || r?.debit_credit || r?.status || '';
+    // Safely pick the first defined value for any of the provided keys from a loosely-typed object
+    const pick = (obj: unknown, keys: string[]): unknown => {
+      if (obj && typeof obj === 'object') {
+        for (const k of keys) {
+          const v = (obj as Record<string, unknown>)[k];
+          if (v !== undefined && v !== null) return v;
+        }
+      }
+      return undefined;
+    };
+
+    const pushRow = (map: Map<string, TransactionRow[]>, cat: string, r: unknown) => {
+      const date = pick(r, ['date','Date','transaction_date','posted_at','txn_date']);
+      const description = pick(r, ['description','Description','memo','details','desc']);
+      const amount = toNum(pick(r, ['amount','Amount','value','amt','debit_amount','credit_amount','daily_amount']) as string | number | null | undefined);
+      const rawType = pick(r, ['type','Type','txn_type','transaction_type','debit_credit','status']);
       // Derive type if missing
-      const type = String(rawType || (amount < 0 ? 'DEBIT' : 'CREDIT')).toUpperCase();
-      const balance = toNum(
-        r?.balance ?? r?.Balance ?? r?.running_balance ?? r?.current_balance ?? r?.ending_balance ?? r?.available_balance
-      );
+      const type = String((rawType ?? (amount < 0 ? 'DEBIT' : 'CREDIT'))).toUpperCase();
+      const balance = toNum(pick(r, ['balance','Balance','running_balance','current_balance','ending_balance','available_balance']) as string | number | null | undefined);
       const arr = map.get(cat) || [];
       arr.push({ date: String(date || ''), description: String(description || ''), type, amount, balance: Number.isFinite(balance) ? balance : undefined });
       map.set(cat, arr);
     };
 
-    const groups = new Map<string, any[]>();
+    const groups = new Map<string, TransactionRow[]>();
 
     // Case 1: Object with category keys -> array of tx
     if (src && typeof src === 'object' && !Array.isArray(src)) {
@@ -167,8 +206,8 @@ const MTDView: React.FC<MTDViewProps> = ({ applicationId, businessName, ownerNam
           v.forEach((it) => pushRow(groups, k, it));
         } else if (v && typeof v === 'object') {
           // nested object possibly has transactions array
-          const arr = (v as any).transactions;
-          if (Array.isArray(arr)) arr.forEach((it: any) => pushRow(groups, k, it));
+          const arr = (v as { transactions?: TransactionRow[] }).transactions;
+          if (Array.isArray(arr)) arr.forEach((it) => pushRow(groups, k, it));
         }
       });
     }
@@ -180,7 +219,7 @@ const MTDView: React.FC<MTDViewProps> = ({ applicationId, businessName, ownerNam
         const tx = Array.isArray(item?.transactions) ? item.transactions : (Array.isArray(item) ? item : []);
         if (Array.isArray(tx) && tx.length) {
           const parentDate = item?.date || item?.Date || '';
-          tx.forEach((it: any) => pushRow(groups, cat, { ...it, date: (it?.date ?? parentDate) }));
+          tx.forEach((it) => pushRow(groups, cat, { ...it, date: (it?.date ?? parentDate) }));
         } else if (item?.date || item?.amount || item?.description) {
           pushRow(groups, cat, item);
         }
@@ -255,14 +294,14 @@ const MTDView: React.FC<MTDViewProps> = ({ applicationId, businessName, ownerNam
 
   // Normalize Funder MTD JSON array to same row shape so we can render a table
   const normalizedFunder = React.useMemo(() => {
-    const src: any = detailsModal?.funder_mtd;
-    const toNum = (v: any) => {
+    const src = detailsModal?.funder_mtd as FunderRow[] | null | undefined;
+    const toNum = (v: number | string | null | undefined): number => {
       const n = typeof v === 'number' ? v : parseFloat(String(v ?? '').replace(/[^0-9.-]/g, ''));
       return Number.isFinite(n) ? n : 0;
     };
-    const rows: any[] = [];
+    const rows: FunderRow[] = [];
     if (Array.isArray(src)) {
-      src.forEach((r: any) => {
+      src.forEach((r: Record<string, any>) => {
         const date = r?.date || r?.Date || '';
         const description = r?.description || r?.Description || '';
         // Get the original amount
@@ -317,13 +356,13 @@ const MTDView: React.FC<MTDViewProps> = ({ applicationId, businessName, ownerNam
 
   // Hydrate checkboxes from previously saved mtd_selected
   React.useEffect(() => {
-    const sel: any = (detailsModal as any)?.mtd_selected;
+    const sel = detailsModal?.mtd_selected;
     if (!sel || !Array.isArray(sel) || !normalizedFunder.length) return;
     const next = new Set<string>();
     normalizedFunder.forEach((r) => {
       // Find matching row from saved mtd_selected
       // For weekly payments, the amount in mtd_selected will be the divided amount
-      const match = sel.find((s: any) => {
+      const match = sel.find((s: Record<string, unknown>) => {
         const savedAmount = Number(s?.amount || 0);
         const currentAmount = Number(r.amount || 0);
         
@@ -341,7 +380,7 @@ const MTDView: React.FC<MTDViewProps> = ({ applicationId, businessName, ownerNam
       }
     });
     if (next.size) setSelectedKeys(next);
-  }, [normalizedFunder, (detailsModal as any)?.mtd_selected, detailsModal?.id]);
+  }, [normalizedFunder, (detailsModal)?.mtd_selected, detailsModal?.id]);
 
   // Funder MTD Select-All logic (placed after normalizedFunder to avoid TS ordering error)
   const allFunderKeys = React.useMemo(() => {
@@ -369,7 +408,7 @@ const MTDView: React.FC<MTDViewProps> = ({ applicationId, businessName, ownerNam
       }
       return next;
     });
-  }, [allFunderSelected, allFunderKeys]);
+  }, [allFunderSelected, allFunderKeys, detailsModal?.id, buildFunderSelectedPayload]);
 
   // removed unused funderTotal (card now uses persisted total_mtd)
 
@@ -382,7 +421,11 @@ const MTDView: React.FC<MTDViewProps> = ({ applicationId, businessName, ownerNam
   // Persist to cache whenever list changes
   React.useEffect(() => {
     if (!cacheKey) return;
-    try { localStorage.setItem(cacheKey, JSON.stringify(recentUploads)); } catch {}
+    try { 
+      localStorage.setItem(cacheKey, JSON.stringify(recentUploads)); 
+    } catch {
+      // Silently handle localStorage errors (e.g., quota exceeded)
+    }
   }, [cacheKey, recentUploads]);
 
   // Load persisted uploads from Supabase so they survive refresh/tab switch
@@ -429,11 +472,14 @@ const MTDView: React.FC<MTDViewProps> = ({ applicationId, businessName, ownerNam
               status: (r.upload_status === 'failed' ? 'error' : (r.upload_status === 'completed' ? 'completed' : 'processing')),
               url: r.file_url || undefined,
             })));
-          } catch {}
+          } catch {
+            // Silently handle errors when fetching application MTD data
+          }
         })
         .subscribe();
-      return () => { try { supabase.removeChannel(channel); } catch {} };
+      return () => { try { supabase.removeChannel(channel); } catch { /* Ignore channel removal errors */ } };
     } catch {
+      // Silently handle errors in channel setup
       return;
     }
   }, [applicationId]);
@@ -481,7 +527,9 @@ const MTDView: React.FC<MTDViewProps> = ({ applicationId, businessName, ownerNam
             status: (r.upload_status === 'failed' ? 'error' : (r.upload_status === 'completed' ? 'completed' : 'processing')),
             url: r.file_url || undefined,
           })));
-        } catch {}
+        } catch {
+          // Silently handle errors when fetching application MTD data after deletion
+        }
       }
       // Delete storage object if we can infer the path from public URL
       if (removed?.url) {
@@ -497,10 +545,12 @@ const MTDView: React.FC<MTDViewProps> = ({ applicationId, businessName, ownerNam
             const objectPath = rel.substring(firstSlash + 1);
             await supabase.storage.from(bucket).remove([objectPath]);
           }
-        } catch {}
+        } catch {
+          // Silently handle storage deletion errors
+        }
       }
-    } catch (err) {
-      // Restore on failure
+    } catch {
+      // Restore on failure - silently catch errors but still restore the uploads
       if (removed) setRecentUploads(prev => [removed!, ...prev]);
     }
   };
@@ -533,7 +583,9 @@ const MTDView: React.FC<MTDViewProps> = ({ applicationId, businessName, ownerNam
             const { data: pub } = supabase.storage.from('application_documents').getPublicUrl(storagePath);
             publicUrl = pub?.publicUrl;
           }
-        } catch {}
+        } catch {
+          // Silently handle storage URL retrieval errors
+        }
 
         // 2) Insert row into application_mtd (if we have applicationId)
         let mtdRowId: string | undefined;
@@ -550,14 +602,20 @@ const MTDView: React.FC<MTDViewProps> = ({ applicationId, businessName, ownerNam
             });
             mtdRowId = row.id;
           }
-        } catch {}
+        } catch {
+          // Silently handle errors when inserting application MTD record
+        }
 
         // 3) Optimistically mark as completed right away for instant display
         setRecentUploads(prev => prev.map(u => (
           u.name === file.name && u.size === file.size ? { ...u, status: 'completed', id: mtdRowId, url: publicUrl } : u
         )));
         if (mtdRowId) {
-          try { await updateApplicationMTDStatus(mtdRowId, 'completed'); } catch {}
+          try { 
+            await updateApplicationMTDStatus(mtdRowId, 'completed'); 
+          } catch {
+            // Silently handle errors when updating MTD status
+          }
         }
 
         // Read file as base64
@@ -618,9 +676,17 @@ const MTDView: React.FC<MTDViewProps> = ({ applicationId, businessName, ownerNam
             if (match) affectedId = u.id;
             return match ? { ...u, status: 'error' } : u;
           }));
-          if (affectedId) { try { await updateApplicationMTDStatus(affectedId, 'failed'); } catch {} }
+          if (affectedId) { 
+            try { 
+              await updateApplicationMTDStatus(affectedId, 'failed'); 
+            } catch {
+              // Silently handle errors when updating MTD status to failed
+            } 
+          }
         }
-      } catch {}
+      } catch {
+        // Silently handle errors in error handling logic
+      }
     } finally {
       setUploading(false);
     }
@@ -968,7 +1034,7 @@ const MTDView: React.FC<MTDViewProps> = ({ applicationId, businessName, ownerNam
                                   <div className="px-6 py-6 text-sm text-slate-500">No transactions</div>
                                 ) : (
                                   (() => {
-                                    const groups = new Map<string, any[]>();
+                                    const groups = new Map<string, TransactionRow[]>();
                                     section.rows.forEach((row) => {
                                       const key = formatDateLong(row.date);
                                       const arr = groups.get(key) || [];
@@ -1088,9 +1154,9 @@ const MTDView: React.FC<MTDViewProps> = ({ applicationId, businessName, ownerNam
                       <div className="p-10 text-center text-slate-500 text-sm">No Funder MTD entries</div>
                     ) : (
                       (() => {
-                        const groups = new Map<string, any[]>();
+                        const groups = new Map<string, FunderRow[]>();
                         normalizedFunder.forEach((row) => {
-                          const key = formatDateHuman(row.date);
+                          const key = formatDateHuman(row.date || '');
                           const arr = groups.get(key) || [];
                           arr.push(row);
                           groups.set(key, arr);
