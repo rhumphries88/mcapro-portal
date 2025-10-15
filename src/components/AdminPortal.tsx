@@ -1,9 +1,9 @@
 import React, { useState } from 'react';
 import { Users, Building2, Settings, Plus, Edit, Trash2, Eye, Star, CheckCircle, Mail, XCircle } from 'lucide-react';
-import { getLenders, createLender, updateLender, deleteLender, getApplications, getLenderSubmissions, updateApplication, deleteApplication, updateLenderSubmission, createLenderSubmissions, Lender as DBLender, Application as DBApplication, LenderSubmission as DBLenderSubmission } from '../lib/supabase';
+import { getLenders, createLender, updateLender, deleteLender, getApplications, getLenderSubmissions, updateApplication, deleteApplication, updateLenderSubmission, createLenderSubmissions, getUsersByRole, getUserApplicationAccessMap, setUserApplicationAccessMap, Lender as DBLender, Application as DBApplication, LenderSubmission as DBLenderSubmission, User as DBUser } from '../lib/supabase';
 
 const AdminPortal: React.FC = () => {
-  const [activeTab, setActiveTab] = useState<'applications' | 'lenders' | 'settings'>('applications');
+  const [activeTab, setActiveTab] = useState<'applications' | 'lenders' | 'deal-users' | 'settings'>('applications');
   const [showLenderForm, setShowLenderForm] = useState(false);
   const [editingLender, setEditingLender] = useState<DBLender | null>(null);
   const [showApplicationDetails, setShowApplicationDetails] = useState(false);
@@ -70,6 +70,14 @@ Application ID: {{applicationId}}`;
   const [showEditApplication, setShowEditApplication] = useState(false);
   const [applicationSubmissions, setApplicationSubmissions] = useState<(DBLenderSubmission & { lender: DBLender })[]>([]);
   const [showAddSubmission, setShowAddSubmission] = useState(false);
+  // Deal Users (members)
+  const [dealUsers, setDealUsers] = useState<DBUser[]>([]);
+  const [dealUsersLoading, setDealUsersLoading] = useState(false);
+  const [showUserPermissionsModal, setShowUserPermissionsModal] = useState(false);
+  const [selectedUser, setSelectedUser] = useState<DBUser | null>(null);
+  const [userApplications, setUserApplications] = useState<(DBApplication & { matchedLenders: number })[]>([]);
+  const [loadingUserApps, setLoadingUserApps] = useState(false);
+  const [userPermissions, setUserPermissions] = useState<{[applicationId: string]: boolean}>({});
 
   const [lenderFormData, setLenderFormData] = useState({
     name: '',
@@ -135,6 +143,23 @@ Application ID: {{applicationId}}`;
     };
     loadData();
   }, []);
+
+  // Load Deal Users (members) when Deal Users tab is activated
+  React.useEffect(() => {
+    const loadMembers = async () => {
+      if (activeTab !== 'deal-users') return;
+      try {
+        setDealUsersLoading(true);
+        const members = await getUsersByRole('member');
+        setDealUsers(members);
+      } catch (error) {
+        console.error('Error loading deal users:', error);
+      } finally {
+        setDealUsersLoading(false);
+      }
+    };
+    loadMembers();
+  }, [activeTab]);
 
   // Load lender submissions for a given application
   const loadApplicationSubmissions = async (applicationId: string) => {
@@ -445,6 +470,60 @@ Application ID: {{applicationId}}`;
     }
   };
 
+  // Handle edit user permissions
+  const handleEditUserPermissions = async (user: DBUser) => {
+    setSelectedUser(user);
+    setShowUserPermissionsModal(true);
+    
+    // Load ALL applications (not just user's own)
+    try {
+      setLoadingUserApps(true);
+      
+      // Get all applications from the existing state (already loaded)
+      setUserApplications(applications);
+      
+      // Prefill with existing persisted map
+      const existing = await getUserApplicationAccessMap(user.id);
+      // Initialize permissions with defaults: own apps true, others false, overridden by existing
+      const permissions: {[applicationId: string]: boolean} = {};
+      applications.forEach(app => { permissions[app.id] = app.user_id === user.id; });
+      Object.entries(existing).forEach(([appId, can]) => { permissions[appId] = !!can; });
+      setUserPermissions(permissions);
+      
+    } catch (error) {
+      console.error('Error loading applications:', error);
+      setUserApplications([]);
+    } finally {
+      setLoadingUserApps(false);
+    }
+  };
+
+  // Persist user permissions
+  const saveUserPermissions = async () => {
+    if (!selectedUser) return;
+    try {
+      const res = await setUserApplicationAccessMap(selectedUser.id, userPermissions);
+      console.log('Saved user permissions rows:', res.count);
+      // Notify other views to reload deals list (same-tab and cross-tab)
+      try { 
+        localStorage.setItem('mca-permissions-updated', String(Date.now()));
+        window.dispatchEvent(new Event('mca-permissions-updated'));
+      } catch { console.warn('Permission update broadcast failed'); }
+      setShowUserPermissionsModal(false);
+    } catch (error) {
+      console.error('Error saving user permissions:', error);
+      alert('Failed to save permissions');
+    }
+  };
+
+  // Toggle application access for user
+  const toggleApplicationAccess = (applicationId: string) => {
+    setUserPermissions(prev => ({
+      ...prev,
+      [applicationId]: !prev[applicationId]
+    }));
+  };
+
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
       {/* Header */}
@@ -479,6 +558,17 @@ Application ID: {{applicationId}}`;
             Lenders
           </button>
           <button
+            onClick={() => setActiveTab('deal-users')}
+            className={`py-2 px-1 border-b-2 font-medium text-sm ${
+              activeTab === 'deal-users'
+                ? 'border-emerald-500 text-emerald-600'
+                : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+            }`}
+          >
+            <Users className="w-5 h-5 inline mr-2" />
+            Deal Users
+          </button>
+          <button
             onClick={() => setShowEmailTemplateSettings(true)}
             className="px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors flex items-center text-sm"
           >
@@ -502,10 +592,17 @@ Application ID: {{applicationId}}`;
       {/* Applications Tab */}
       {activeTab === 'applications' && (
         <div>
-          <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-3 mb-6">
-            <h2 className="text-2xl font-bold text-gray-900">Applications</h2>
-            <div className="flex flex-wrap gap-2">
-              <select className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500 text-sm">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-8">
+            <div>
+              <h2 className="text-2xl font-bold text-gray-900">Applications Management</h2>
+              <p className="text-gray-600 mt-1">Monitor and manage all merchant cash advance applications</p>
+            </div>
+            <div className="flex items-center gap-3">
+              <div className="flex items-center gap-2 text-sm text-gray-500">
+                <div className="w-2 h-2 bg-emerald-500 rounded-full"></div>
+                <span>{applications.length} Total Applications</span>
+              </div>
+              <select className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500 text-sm bg-white">
                 <option>All Statuses</option>
                 <option>Submitted</option>
                 <option>Under Review</option>
@@ -516,50 +613,228 @@ Application ID: {{applicationId}}`;
             </div>
           </div>
 
-          <div className="bg-white rounded-xl shadow-lg overflow-hidden">
+          <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
             <div className="overflow-x-auto">
-              <table className="min-w-full divide-y divide-gray-200">
-                <thead className="bg-gray-50">
+              <table className="min-w-full">
+                <thead className="bg-gradient-to-r from-gray-50 to-gray-100 border-b border-gray-200">
                   <tr>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Application</th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Amount</th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Revenue/Credit</th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Matches</th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
+                    <th className="px-6 py-4 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">Business</th>
+                    <th className="px-6 py-4 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">Amount</th>
+                    <th className="px-6 py-4 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">Financial</th>
+                    <th className="px-6 py-4 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">Status</th>
+                    <th className="px-6 py-4 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">Lenders</th>
+                    <th className="px-6 py-4 text-right text-xs font-semibold text-gray-700 uppercase tracking-wider">Actions</th>
                   </tr>
                 </thead>
-                <tbody className="bg-white divide-y divide-gray-200">
-                  {applications.map((app) => (
-                    <tr key={app.id} className="hover:bg-gray-50">
-                      <td className="px-6 py-4 whitespace-nowrap">
-                        <div>
-                          <div className="text-sm font-medium text-gray-900">{app.business_name}</div>
-                          <div className="text-sm text-gray-500">{app.owner_name}</div>
-                          <div className="text-xs text-gray-400 break-all max-w-[220px] sm:max-w-none">{app.id}</div>
+                <tbody className="bg-white">
+                  {loading && (
+                    <tr>
+                      <td colSpan={6} className="px-6 py-12 text-center">
+                        <div className="flex flex-col items-center">
+                          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-emerald-600 mb-3"></div>
+                          <p className="text-gray-500 text-sm">Loading applications...</p>
                         </div>
                       </td>
-                      <td className="px-6 py-4 whitespace-nowrap">
-                        <div className="text-sm font-medium text-gray-900">${app.requested_amount.toLocaleString()}</div>
-                        <div className="text-sm text-gray-500">{app.industry}</div>
+                    </tr>
+                  )}
+                  {!loading && applications.length === 0 && (
+                    <tr>
+                      <td colSpan={6} className="px-6 py-12 text-center">
+                        <div className="flex flex-col items-center">
+                          <Building2 className="h-12 w-12 text-gray-300 mb-3" />
+                          <p className="text-gray-500 text-sm font-medium">No applications found</p>
+                          <p className="text-gray-400 text-xs mt-1">Applications will appear here once submitted</p>
+                        </div>
                       </td>
-                      <td className="px-6 py-4 whitespace-nowrap">
-                        <div className="text-sm text-gray-900">${app.monthly_revenue.toLocaleString()}/mo</div>
-                        <div className="text-sm text-gray-500">Credit: {app.credit_score}</div>
+                    </tr>
+                  )}
+                  {!loading && applications.map((app) => (
+                    <tr key={app.id} className="border-b border-gray-100 hover:bg-emerald-50/30 transition-colors duration-150">
+                      <td className="px-6 py-5">
+                        <div className="flex items-center">
+                          <div className="flex-shrink-0 h-10 w-10">
+                            <div className="h-10 w-10 rounded-full bg-gradient-to-br from-emerald-500 to-emerald-600 flex items-center justify-center">
+                              <span className="text-sm font-semibold text-white">
+                                {app.business_name.charAt(0).toUpperCase()}
+                              </span>
+                            </div>
+                          </div>
+                          <div className="ml-4">
+                            <div className="text-sm font-semibold text-gray-900">
+                              {app.business_name}
+                            </div>
+                            <div className="text-xs text-gray-500 mt-0.5">
+                              {app.owner_name} • ID: {app.id.slice(0, 8)}...
+                            </div>
+                          </div>
+                        </div>
                       </td>
-                      <td className="px-6 py-4 whitespace-nowrap">
-                        <span className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${getStatusColor(app.status)}`}>{app.status}</span>
+                      <td className="px-6 py-5">
+                        <div className="text-sm text-gray-900 font-semibold">${app.requested_amount.toLocaleString()}</div>
+                        <div className="text-xs text-gray-500 mt-0.5">{app.industry}</div>
                       </td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{app.matchedLenders} lenders</td>
-                      <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
-                        <button onClick={() => handleViewApplication(app)} className="text-emerald-600 hover:text-emerald-900 mr-3">
-                          <Eye className="w-4 h-4" />
-                        </button>
-                        <button onClick={() => handleEditApplication(app)} className="text-blue-600 hover:text-blue-900 mr-3">
-                          <Edit className="w-4 h-4" />
-                        </button>
-                        <button onClick={() => handleDeleteApplication(app.id)} className="text-red-600 hover:text-red-900">
-                          <Trash2 className="w-4 h-4" />
+                      <td className="px-6 py-5">
+                        <div className="text-sm text-gray-900 font-medium">${app.monthly_revenue.toLocaleString()}/mo</div>
+                        <div className="text-xs text-gray-500 mt-0.5">Credit: {app.credit_score} • {app.years_in_business}y</div>
+                      </td>
+                      <td className="px-6 py-5">
+                        <div className="flex items-center">
+                          <div className="flex items-center">
+                            <div className={`w-2 h-2 rounded-full mr-2 ${
+                              app.status === 'funded' ? 'bg-green-400' :
+                              app.status === 'approved' ? 'bg-blue-400' :
+                              app.status === 'submitted' ? 'bg-yellow-400' :
+                              app.status === 'declined' ? 'bg-red-400' : 'bg-gray-400'
+                            }`}></div>
+                            <span className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium border ${getStatusColor(app.status)}`}>
+                              {app.status.charAt(0).toUpperCase() + app.status.slice(1)}
+                            </span>
+                          </div>
+                        </div>
+                      </td>
+                      <td className="px-6 py-5">
+                        <div className="text-sm text-gray-900 font-medium">{app.matchedLenders} lenders</div>
+                        <div className="text-xs text-gray-500 mt-0.5">Matched</div>
+                      </td>
+                      <td className="px-6 py-5 text-right">
+                        <div className="flex items-center justify-end gap-2">
+                          <button 
+                            onClick={() => handleViewApplication(app)} 
+                            className="inline-flex items-center px-2 py-1 border border-emerald-300 text-xs font-medium rounded text-emerald-700 bg-emerald-50 hover:bg-emerald-100 hover:border-emerald-400 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:ring-offset-1 transition-all duration-150" 
+                            title="View details"
+                          >
+                            <Eye className="w-3 h-3" />
+                          </button>
+                          <button 
+                            onClick={() => handleEditApplication(app)} 
+                            className="inline-flex items-center px-2 py-1 border border-blue-300 text-xs font-medium rounded text-blue-700 bg-blue-50 hover:bg-blue-100 hover:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-1 transition-all duration-150" 
+                            title="Edit application"
+                          >
+                            <Edit className="w-3 h-3" />
+                          </button>
+                          <button 
+                            onClick={() => handleDeleteApplication(app.id)} 
+                            className="inline-flex items-center px-2 py-1 border border-red-300 text-xs font-medium rounded text-red-700 bg-red-50 hover:bg-red-100 hover:border-red-400 focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-1 transition-all duration-150" 
+                            title="Delete application"
+                          >
+                            <Trash2 className="w-3 h-3" />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Deal Users Tab */}
+      {activeTab === 'deal-users' && (
+        <div>
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-8">
+            <div>
+              <h2 className="text-2xl font-bold text-gray-900">Deal Users Management</h2>
+              <p className="text-gray-600 mt-1">Manage member accounts and their access permissions</p>
+            </div>
+            <div className="flex items-center gap-3">
+              <div className="flex items-center gap-2 text-sm text-gray-500">
+                <div className="w-2 h-2 bg-blue-500 rounded-full"></div>
+                <span>{dealUsers.length} Active Members</span>
+              </div>
+            </div>
+          </div>
+          
+          <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+            <div className="overflow-x-auto">
+              <table className="min-w-full">
+                <thead className="bg-gradient-to-r from-gray-50 to-gray-100 border-b border-gray-200">
+                  <tr>
+                    <th className="px-6 py-4 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">Member</th>
+                    <th className="px-6 py-4 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">Contact</th>
+                    <th className="px-6 py-4 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">Status</th>
+                    <th className="px-6 py-4 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">Joined</th>
+                    <th className="px-6 py-4 text-right text-xs font-semibold text-gray-700 uppercase tracking-wider">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="bg-white">
+                  {dealUsersLoading && (
+                    <tr>
+                      <td colSpan={5} className="px-6 py-12 text-center">
+                        <div className="flex flex-col items-center">
+                          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mb-3"></div>
+                          <p className="text-gray-500 text-sm">Loading member accounts...</p>
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                  {!dealUsersLoading && dealUsers.length === 0 && (
+                    <tr>
+                      <td colSpan={5} className="px-6 py-12 text-center">
+                        <div className="flex flex-col items-center">
+                          <Users className="h-12 w-12 text-gray-300 mb-3" />
+                          <p className="text-gray-500 text-sm font-medium">No member accounts found</p>
+                          <p className="text-gray-400 text-xs mt-1">Member accounts will appear here once created</p>
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                  {!dealUsersLoading && dealUsers.map((u) => (
+                    <tr key={u.id} className="border-b border-gray-100 hover:bg-blue-50/30 transition-colors duration-150">
+                      <td className="px-6 py-5">
+                        <div className="flex items-center">
+                          <div className="flex-shrink-0 h-10 w-10">
+                            <div className="h-10 w-10 rounded-full bg-gradient-to-br from-blue-500 to-blue-600 flex items-center justify-center">
+                              <span className="text-sm font-semibold text-white">
+                                {(u.full_name || u.email).charAt(0).toUpperCase()}
+                              </span>
+                            </div>
+                          </div>
+                          <div className="ml-4">
+                            <div className="text-sm font-semibold text-gray-900">
+                              {u.full_name || 'Unnamed User'}
+                            </div>
+                            <div className="text-xs text-gray-500 mt-0.5">
+                              ID: {u.id.slice(0, 8)}...
+                            </div>
+                          </div>
+                        </div>
+                      </td>
+                      <td className="px-6 py-5">
+                        <div className="text-sm text-gray-900 font-medium">{u.email}</div>
+                        <div className="text-xs text-gray-500 mt-0.5">Primary contact</div>
+                      </td>
+                      <td className="px-6 py-5">
+                        <div className="flex items-center">
+                          <div className="flex items-center">
+                            <div className="w-2 h-2 bg-green-400 rounded-full mr-2"></div>
+                            <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium bg-green-100 text-green-800 border border-green-200">
+                              {u.roles || 'Member'}
+                            </span>
+                          </div>
+                        </div>
+                      </td>
+                      <td className="px-6 py-5">
+                        <div className="text-sm text-gray-900 font-medium">
+                          {new Date(u.created_at).toLocaleDateString('en-US', { 
+                            month: 'short', 
+                            day: 'numeric', 
+                            year: 'numeric' 
+                          })}
+                        </div>
+                        <div className="text-xs text-gray-500 mt-0.5">
+                          {Math.floor((Date.now() - new Date(u.created_at).getTime()) / (1000 * 60 * 60 * 24))} days ago
+                        </div>
+                      </td>
+                      <td className="px-6 py-5 text-right">
+                        <button 
+                          onClick={() => handleEditUserPermissions(u)}
+                          className="inline-flex items-center px-3 py-1.5 border border-blue-300 text-xs font-medium rounded-md text-blue-700 bg-blue-50 hover:bg-blue-100 hover:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-1 transition-all duration-150" 
+                          title="Edit user permissions"
+                        >
+                          <Edit className="w-3.5 h-3.5 mr-1" />
+                          Edit
                         </button>
                       </td>
                     </tr>
@@ -1659,6 +1934,187 @@ Application ID: {{applicationId}}`;
                 >
                   Save Template
                 </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+      
+      {/* User Permissions Modal */}
+      {showUserPermissionsModal && selectedUser && (
+        <div className="fixed inset-0 bg-gray-600 bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-xl shadow-xl max-w-4xl w-full mx-4 max-h-[90vh] overflow-y-auto">
+            <div className="p-6 border-b border-gray-200">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center">
+                  <div className="h-10 w-10 rounded-full bg-gradient-to-br from-blue-500 to-blue-600 flex items-center justify-center mr-3">
+                    <span className="text-sm font-semibold text-white">
+                      {(selectedUser.full_name || selectedUser.email).charAt(0).toUpperCase()}
+                    </span>
+                  </div>
+                  <div>
+                    <h3 className="text-lg font-medium text-gray-900">
+                      {selectedUser.full_name || 'Unnamed User'} - Permissions
+                    </h3>
+                    <p className="text-sm text-gray-500">{selectedUser.email}</p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setShowUserPermissionsModal(false)}
+                  className="text-gray-400 hover:text-gray-600 text-2xl font-bold"
+                >
+                  ×
+                </button>
+              </div>
+            </div>
+            
+            <div className="p-6">
+              <div className="mb-6">
+              </div>
+
+              {loadingUserApps ? (
+                <div className="flex items-center justify-center py-12">
+                  <div className="text-center">
+                    <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mx-auto mb-3"></div>
+                    <p className="text-gray-500 text-sm">Loading user applications...</p>
+                  </div>
+                </div>
+              ) : userApplications.length === 0 ? (
+                <div className="text-center py-12">
+                  <Building2 className="h-12 w-12 text-gray-300 mx-auto mb-3" />
+                  <p className="text-gray-500 text-sm font-medium">No applications found</p>
+                  <p className="text-gray-400 text-xs mt-1">This user hasn't submitted any applications yet</p>
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  <div className="bg-gray-50 rounded-lg p-4 mb-4">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <h5 className="font-medium text-gray-900">All Applications - Access Control for {selectedUser.full_name || 'User'}</h5>
+                        <p className="text-sm text-gray-500">
+                          {userApplications.length} total applications • 
+                          {Object.values(userPermissions).filter(Boolean).length} accessible
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <button
+                          onClick={() => {
+                            const allPermissions: {[key: string]: boolean} = {};
+                            userApplications.forEach(app => {
+                              allPermissions[app.id] = true;
+                            });
+                            setUserPermissions(allPermissions);
+                          }}
+                          className="text-xs text-blue-600 hover:text-blue-800 font-medium"
+                        >
+                          Grant All
+                        </button>
+                        <button
+                          onClick={() => {
+                            const noPermissions: {[key: string]: boolean} = {};
+                            userApplications.forEach(app => {
+                              noPermissions[app.id] = false;
+                            });
+                            setUserPermissions(noPermissions);
+                          }}
+                          className="text-xs text-red-600 hover:text-red-800 font-medium"
+                        >
+                          Revoke All
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="bg-white border border-gray-200 rounded-lg overflow-hidden">
+                    <table className="min-w-full">
+                      <thead className="bg-gray-50">
+                        <tr>
+                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Business</th>
+                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Amount</th>
+                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
+                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Owner</th>
+                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Access</th>
+                        </tr>
+                      </thead>
+                      <tbody className="bg-white divide-y divide-gray-200">
+                        {userApplications.map((app) => (
+                          <tr key={app.id} className="hover:bg-gray-50">
+                            <td className="px-4 py-3">
+                              <div className="flex items-center">
+                                <div className="flex-shrink-0 h-8 w-8">
+                                  <div className="h-8 w-8 rounded-full bg-gradient-to-br from-emerald-500 to-emerald-600 flex items-center justify-center">
+                                    <span className="text-xs font-semibold text-white">
+                                      {app.business_name.charAt(0).toUpperCase()}
+                                    </span>
+                                  </div>
+                                </div>
+                                <div className="ml-3">
+                                  <div className="text-sm font-medium text-gray-900">{app.business_name}</div>
+                                  <div className="text-xs text-gray-500">ID: {app.id.slice(0, 8)}...</div>
+                                </div>
+                              </div>
+                            </td>
+                            <td className="px-4 py-3">
+                              <div className="text-sm text-gray-900">${app.requested_amount.toLocaleString()}</div>
+                              <div className="text-xs text-gray-500">{app.industry}</div>
+                            </td>
+                            <td className="px-4 py-3">
+                              <span className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${getStatusColor(app.status)}`}>
+                                {app.status}
+                              </span>
+                            </td>
+                            <td className="px-4 py-3">
+                              <div className="text-sm text-gray-900">{app.owner_name}</div>
+                              <div className="text-xs text-gray-500">
+                                {app.user_id === selectedUser?.id ? 'Own Application' : 'Other User'}
+                              </div>
+                            </td>
+                            <td className="px-4 py-3">
+                              <div className="flex items-center">
+                                <button
+                                  onClick={() => toggleApplicationAccess(app.id)}
+                                  className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 ${
+                                    userPermissions[app.id] 
+                                      ? 'bg-blue-600' 
+                                      : 'bg-gray-200'
+                                  }`}
+                                >
+                                  <span
+                                    className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                                      userPermissions[app.id] 
+                                        ? 'translate-x-6' 
+                                        : 'translate-x-1'
+                                    }`}
+                                  />
+                                </button>
+                                <span className="ml-3 text-xs font-medium text-gray-700">
+                                  {userPermissions[app.id] ? 'Accessible' : 'Restricted'}
+                                </span>
+                              </div>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+              
+              <div className="mt-6 pt-6 border-t border-gray-200">
+                <div className="flex justify-end space-x-3">
+                  <button
+                    onClick={() => setShowUserPermissionsModal(false)}
+                    className="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 text-gray-700 font-medium"
+                  >
+                    Close
+                  </button>
+                  <button
+                    onClick={saveUserPermissions}
+                    className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-medium"
+                  >
+                    Save Changes
+                  </button>
+                </div>
               </div>
             </div>
           </div>

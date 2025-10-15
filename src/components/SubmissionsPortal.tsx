@@ -6,7 +6,7 @@ import LenderMatches from './LenderMatches';
 import SubmissionRecap from './SubmissionRecap';
 import SubmissionIntermediate from './SubmissionIntermediate';
 import { extractLenderMatches, type CleanedMatch } from '../lib/parseLenderMatches';
-import { createApplication, getApplicationById, type Application as DBApplication } from '../lib/supabase';
+import { createApplication, updateApplication, getApplicationById, getApplicationDocuments, type Application as DBApplication } from '../lib/supabase';
 import { useAuth } from '../App';
 
 // Type aliases used across this file
@@ -118,6 +118,7 @@ type FormApplication = {
     email: string;
     phone: string;
     address: string;
+    dateOfBirth?: string;
   };
   businessInfo: {
     ein: string;
@@ -146,6 +147,7 @@ const SubmissionsPortal: React.FC<SubmissionsPortalProps> = ({ initialStep, init
   const [prevStep, setPrevStep] = useState<'application' | 'bank' | 'intermediate' | 'matches' | 'recap' | null>(null);
   const [application, setApplication] = useState<AppData | null>(null);
   const [bankPrefill, setBankPrefill] = useState<ReviewInitialType>(null);
+  const [editPrefill, setEditPrefill] = useState<ReviewInitialType>(null);
   const [selectedLenders, setSelectedLenders] = useState<string[]>([]);
   const [intermediateLoading, setIntermediateLoading] = useState(false);
   const [intermediatePrefill, setIntermediatePrefill] = useState<Record<string, string | boolean> | null>(null);
@@ -158,6 +160,17 @@ const SubmissionsPortal: React.FC<SubmissionsPortalProps> = ({ initialStep, init
         try {
           const db = await getApplicationById(initialApplicationId);
           if (db) {
+            // Pull supporting documents: prefer applications.documents, otherwise fallback to application_documents rows
+            let docNames: string[] = Array.isArray(db.documents) ? (db.documents as unknown as string[]) : [];
+            if (!docNames || docNames.length === 0) {
+              try {
+                const docRows = await getApplicationDocuments(initialApplicationId);
+                docNames = (docRows || []).map(r => r.file_name).filter(Boolean) as string[];
+              } catch (e) {
+                console.warn('Failed to load application_documents for edit prefill:', e);
+                docNames = [];
+              }
+            }
             const mapped: AppData = {
               id: db.id,
               businessName: db.business_name,
@@ -203,6 +216,71 @@ const SubmissionsPortal: React.FC<SubmissionsPortalProps> = ({ initialStep, init
           }
         } catch (e) {
           console.warn('Failed to preload application for matches:', e);
+        }
+      }
+    })();
+  }, [initialStep, initialApplicationId]);
+
+  // If requested, preload an application by ID and open Application Form directly with fields prefilled
+  useEffect(() => {
+    (async () => {
+      if (initialStep === 'application' && initialApplicationId) {
+        try {
+          const db = await getApplicationById(initialApplicationId);
+          if (db) {
+            // Collect document names from applications.documents or fallback to application_documents
+            let docNames: string[] = Array.isArray(db.documents) ? (db.documents as unknown as string[]) : [];
+            if (!docNames || docNames.length === 0) {
+              try {
+                const docRows = await getApplicationDocuments(initialApplicationId);
+                docNames = (docRows || []).map(r => r.file_name).filter(Boolean) as string[];
+              } catch (e) {
+                console.warn('Failed to load application_documents for edit prefill:', e);
+                docNames = [];
+              }
+            }
+            const dobRaw = (db as DBApplication).date_of_birth ?? (db as DBApplication).dateBirth ?? '';
+            const dobFormatted = (() => {
+              if (!dobRaw) return '' as unknown as string;
+              const d = new Date(dobRaw);
+              return isNaN(d.getTime()) ? (dobRaw as unknown as string) : d.toLocaleDateString('en-US');
+            })();
+
+            const prefill: NonNullable<ReviewInitialType> = {
+              id: db.id,
+              businessName: db.business_name,
+              industry: db.industry,
+              requestedAmount: db.requested_amount,
+              creditScore: db.credit_score,
+              documents: docNames,
+              contactInfo: {
+                ownerName: db.owner_name,
+                email: db.email,
+                phone: db.phone ?? '',
+                address: db.address ?? '',
+                dateOfBirth: dobFormatted,
+              },
+              businessInfo: {
+                ein: db.ein ?? '',
+                businessType: db.business_type ?? '',
+                yearsInBusiness: db.years_in_business ?? 0,
+                numberOfEmployees: db.number_of_employees ?? 0,
+              },
+              financialInfo: {
+                annualRevenue: db.annual_revenue ?? 0,
+                averageMonthlyRevenue: db.monthly_revenue ?? 0,
+                averageMonthlyDeposits: db.monthly_deposits ?? 0,
+                existingDebt: db.existing_debt ?? 0,
+              },
+            };
+            setEditPrefill(prefill);
+            // Mark step 1 as completed in the progress and keep on Application step
+            const mapped = appDataFromPrefill(prefill);
+            setApplication(mapped);
+            setCurrentStep('application');
+          }
+        } catch (e) {
+          console.warn('Failed to preload application for editing:', e);
         }
       }
     })();
@@ -267,7 +345,7 @@ const SubmissionsPortal: React.FC<SubmissionsPortalProps> = ({ initialStep, init
     }
   };
 
-  const handleApplicationSubmit = (appData: FormApplication, extra?: { pdfFile?: File } | null) => {
+  const handleApplicationSubmit = async (appData: FormApplication, extra?: { pdfFile?: File } | null) => {
     // Map to unified AppData with both nested and top-level fields
     const mapped: AppData = {
       id: appData.id,
@@ -296,6 +374,46 @@ const SubmissionsPortal: React.FC<SubmissionsPortalProps> = ({ initialStep, init
       businessInfo: appData.businessInfo,
       financialInfo: appData.financialInfo,
     };
+
+    // If we came from All Deals editing an existing app (editPrefill is present with a valid id),
+    // update the existing row and jump straight to the Intermediate (documents) step.
+    const isEditingExisting = Boolean(editPrefill && mapped.id);
+    if (isEditingExisting) {
+      try {
+        // Persist updates to the applications table
+        const payload: Partial<DBApplication> = {
+          business_name: mapped.businessName,
+          owner_name: mapped.ownerName,
+          email: mapped.email,
+          phone: mapped.phone || '',
+          address: mapped.address || '',
+          ein: mapped.ein || '',
+          business_type: mapped.businessType || '',
+          industry: mapped.industry,
+          years_in_business: mapped.yearsInBusiness ?? mapped.timeInBusiness ?? 0,
+          number_of_employees: mapped.numberOfEmployees ?? 0,
+          annual_revenue: mapped.annualRevenue ?? 0,
+          monthly_revenue: mapped.monthlyRevenue ?? 0,
+          monthly_deposits: mapped.monthlyDeposits ?? 0,
+          existing_debt: mapped.existingDebt ?? 0,
+          credit_score: mapped.creditScore ?? 0,
+          requested_amount: mapped.requestedAmount ?? 0,
+          status: (mapped.status as DBApplication['status']) || 'submitted',
+          documents: Array.isArray(mapped.documents) ? mapped.documents : [],
+        };
+        await updateApplication(mapped.id, payload as Partial<DBApplication>);
+      } catch (e) {
+        console.warn('[SubmissionsPortal] Failed to update application on edit submit:', e);
+      }
+      // Store and navigate to Documents/Intermediate step (as requested)
+      setApplication(mapped);
+      setIntermediatePrefill(null);
+      setIntermediateLoading(false);
+      goTo('intermediate');
+      return;
+    }
+
+    // New flow (not editing): proceed to Bank step with webhook handling
     // At this point ApplicationForm has already saved to DB and provided a UUID in appData.id
     // Just store it and continue the flow.
     setApplication(mapped);
@@ -693,8 +811,55 @@ const SubmissionsPortal: React.FC<SubmissionsPortalProps> = ({ initialStep, init
 
       {/* Content */}
       {currentStep === 'application' ? (
+        (initialStep === 'application' && initialApplicationId && !editPrefill) ? (
+          <div className="bg-white rounded-xl shadow-sm p-10 flex items-center justify-center">
+            <div className="text-center">
+              <div className="animate-spin rounded-full h-10 w-10 border-4 border-blue-200 border-t-blue-600 mx-auto mb-3"></div>
+              <p className="text-gray-600 text-sm">Loading application...</p>
+            </div>
+          </div>
+        ) : (
         <ApplicationForm 
+          key={editPrefill ? `edit-${initialApplicationId}` : 'new'}
+          initialStep={editPrefill ? 'form' : 'upload'}
+          reviewMode={!!editPrefill}
+          reviewInitial={editPrefill}
+          reviewDocName={editPrefill?.documents && editPrefill.documents.length > 0 ? editPrefill.documents[0] : null}
           onSubmit={handleApplicationSubmit}
+          onReviewSubmit={(application) => {
+            // Convert ApplicationForm.Application to this module's FormApplication
+            const fa: FormApplication = {
+              id: application.id,
+              businessName: application.businessName,
+              monthlyRevenue: application.financialInfo?.averageMonthlyRevenue ?? application.monthlyRevenue ?? 0,
+              timeInBusiness: application.businessInfo?.yearsInBusiness ?? application.timeInBusiness ?? 0,
+              creditScore: application.creditScore ?? 0,
+              industry: application.industry ?? '',
+              requestedAmount: application.requestedAmount ?? 0,
+              status: application.status || 'submitted',
+              contactInfo: {
+                ownerName: application.contactInfo?.ownerName ?? '',
+                email: application.contactInfo?.email ?? '',
+                phone: application.contactInfo?.phone ?? '',
+                dateOfBirth: application.contactInfo?.dateOfBirth ?? '',
+                address: application.contactInfo?.address ?? '',
+              },
+              businessInfo: {
+                ein: application.businessInfo?.ein ?? '',
+                businessType: application.businessInfo?.businessType ?? '',
+                yearsInBusiness: application.businessInfo?.yearsInBusiness ?? 0,
+                numberOfEmployees: application.businessInfo?.numberOfEmployees ?? 0,
+              },
+              financialInfo: {
+                annualRevenue: application.financialInfo?.annualRevenue ?? 0,
+                averageMonthlyRevenue: application.financialInfo?.averageMonthlyRevenue ?? application.monthlyRevenue ?? 0,
+                averageMonthlyDeposits: application.financialInfo?.averageMonthlyDeposits ?? 0,
+                existingDebt: application.financialInfo?.existingDebt ?? 0,
+              },
+              documents: Array.isArray(application.documents) ? application.documents : [],
+            };
+            void handleApplicationSubmit(fa, null);
+          }}
           onReadyForForm={(prefill) => {
             // Accept prefill from upload/extraction and move to Bank step
             console.log('[SubmissionsPortal] onReadyForForm prefill:', prefill);
@@ -709,12 +874,15 @@ const SubmissionsPortal: React.FC<SubmissionsPortalProps> = ({ initialStep, init
             } catch (e) {
               console.warn('Failed to map prefill to AppData:', e);
             }
-            // Defer navigation to ensure bankPrefill is committed before first Bank render
-            setTimeout(() => {
-              goTo('bank');
-            }, 0);
+            // If we are editing (coming from All Deals), stay on the form and do not auto-advance
+            if (!editPrefill) {
+              // Defer navigation to ensure bankPrefill is committed before first Bank render
+              setTimeout(() => {
+                goTo('bank');
+              }, 0);
+            }
           }}
-        />
+        />)
       ) : currentStep === 'bank' ? (
         <BankStatement 
           onContinue={async (updated) => {

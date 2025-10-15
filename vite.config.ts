@@ -8,6 +8,8 @@ export default defineConfig({
     include: ['lucide-react'],
   },
   server: {
+    host: true,
+    port: 5173,
     proxy: {
       '/.netlify/functions': {
         target: 'http://localhost:9999',
@@ -24,6 +26,14 @@ export default defineConfig({
         changeOrigin: true,
         secure: false,
         rewrite: (path) => path.replace(/^\/api/, ''),
+      },
+    },
+  },
+  build: {
+    assetsDir: 'assets',
+    rollupOptions: {
+      output: {
+        manualChunks: undefined,
       },
     },
   },

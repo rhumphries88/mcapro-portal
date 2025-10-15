@@ -264,7 +264,16 @@ const ApplicationForm: React.FC<ApplicationFormProps> = ({ onSubmit, initialStep
         return next;
       });
     }
+    // When editing with prefill, open the form step directly
+    setCurrentStep('form');
   }, [reviewMode, reviewInitial]);
+
+  // Keep currentStep in sync if parent toggles initialStep after first render
+  useEffect(() => {
+    if (initialStep === 'form' || initialStep === 'upload') {
+      setCurrentStep(initialStep);
+    }
+  }, [initialStep]);
 
   // Track the last values that were set by a webhook to detect user edits between webhook events
   const [lastWebhookValues, setLastWebhookValues] = useState<Record<string, string>>({});
@@ -1499,7 +1508,9 @@ const ApplicationForm: React.FC<ApplicationFormProps> = ({ onSubmit, initialStep
             type="submit"
             className="inline-flex items-center gap-3 px-8 py-4 rounded-2xl font-bold text-lg shadow-lg transition-all duration-200 focus:outline-none focus:ring-4 bg-gradient-to-r from-blue-600 to-indigo-600 text-white hover:from-blue-700 hover:to-indigo-700 hover:shadow-xl hover:scale-105 focus:ring-blue-500/40"
           >
-            Submit Application
+            {reviewMode && !!reviewInitial && typeof (reviewInitial as { id?: string }).id === 'string' && (reviewInitial as { id?: string }).id
+              ? 'Update Application'
+              : 'Submit Application'}
             <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7l5 5m0 0l-5 5m5-5H6" />
             </svg>

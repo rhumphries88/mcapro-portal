@@ -18,10 +18,13 @@
 [dev]
   command = "npm run dev"
   targetPort = 5173
+  port = 8888
   functions = "netlify/functions"
+  framework = "#custom"
 
 # SPA redirect for React Router
 [[redirects]]
   from = "/*"
   to = "/index.html"
   status = 200
+  force = false

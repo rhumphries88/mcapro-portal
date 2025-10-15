@@ -315,6 +315,101 @@ export interface User {
   roles?: string
 }
 
+// ===================== ACCESS CONTROL =====================
+// Expected table: application_access(user_id uuid, application_id uuid, can_access boolean, updated_at timestamptz)
+
+export type AccessMap = { [applicationId: string]: boolean }
+
+// Fetch a user's access map for applications
+export const getUserApplicationAccessMap = async (userId: string): Promise<AccessMap> => {
+  const { data, error } = await supabase
+    .from('application_access')
+    .select('application_id, can_access')
+    .eq('user_id', userId)
+
+  if (error) throw error
+  const map: AccessMap = {}
+  for (const row of (data || []) as { application_id: string; can_access: boolean }[]) {
+    map[row.application_id] = !!row.can_access
+  }
+  return map
+}
+
+// Upsert a user's access map for applications
+export const setUserApplicationAccessMap = async (userId: string, access: AccessMap) => {
+  const rows = Object.entries(access).map(([application_id, can_access]) => ({
+    user_id: userId,
+    application_id,
+    can_access,
+  }))
+  if (rows.length === 0) return { count: 0 }
+  const { error } = await supabase
+    .from('application_access')
+    .upsert(rows, { onConflict: 'user_id,application_id' })
+  if (error) throw error
+  return { count: rows.length }
+}
+
+// Get all applications visible to a member: own + those granted via access
+export const getApplicationsForMember = async (userId: string) => {
+  // Fetch own applications
+  const { data: own, error: ownErr } = await supabase
+    .from('applications')
+    .select('*')
+    .eq('user_id', userId)
+    .order('created_at', { ascending: false })
+  if (ownErr) throw ownErr
+
+  // Fetch all access rows for this user (both true and false)
+  const { data: accessRows, error: accessErr } = await supabase
+    .from('application_access')
+    .select('application_id, can_access')
+    .eq('user_id', userId)
+  if (accessErr) throw accessErr
+
+  const accessMap: Record<string, boolean> = {}
+  for (const row of (accessRows || []) as { application_id: string; can_access: boolean }[]) {
+    accessMap[row.application_id] = !!row.can_access
+  }
+
+  // Determine which own apps to keep: include unless explicitly set to false
+  const ownFiltered = (own || []).filter(a => {
+    const v = accessMap[a.id]
+    return v === undefined ? true : v === true
+  })
+
+  // Non-owned apps that are granted (can_access = true)
+  const grantedTrueIds = Object.entries(accessMap)
+    .filter(([, v]) => v === true)
+    .map(([k]) => k)
+
+  const nonOwnedGrantedIds = grantedTrueIds.filter(id => !own?.some(o => o.id === id))
+
+  let grantedApps: Application[] = []
+  if (nonOwnedGrantedIds.length > 0) {
+    const { data: granted, error: grantedErr } = await supabase
+      .from('applications')
+      .select('*')
+      .in('id', nonOwnedGrantedIds)
+    if (grantedErr) throw grantedErr
+    grantedApps = (granted || []) as Application[]
+  }
+
+  return [ ...ownFiltered, ...grantedApps ] as Application[]
+}
+
+// Fetch users filtered by role (e.g., 'member')
+export const getUsersByRole = async (role: string) => {
+  const { data, error } = await supabase
+    .from('users')
+    .select('id, created_at, email, full_name, roles')
+    .eq('roles', role)
+    .order('created_at', { ascending: false })
+
+  if (error) throw error
+  return data as User[]
+}
+
 // ===================== APPLICATION HELPERS =====================
 
 /**
@@ -338,6 +433,7 @@ export interface Application {
   email: string
   phone: string
   dateBirth?: string
+  date_of_birth?: string
   address: string
   ein: string
   business_type: string
@@ -404,6 +500,7 @@ export interface ApplicationDocument {
   file_size?: number
   file_type?: string
   statement_date?: string // ISO date string
+  upload_date?: string // ISO date string (optional, if present in schema)
   file_url?: string
   extracted_json?: unknown
   created_at: string
@@ -422,6 +519,16 @@ export const createApplication = async (applicationData: Omit<Application, 'id' 
 }
 
 export const getApplications = async () => {
+  const { data, error } = await supabase
+    .from('applications')
+    .select('*')
+    .order('created_at', { ascending: false })
+
+  if (error) throw error
+  return data
+}
+
+export const getAllApplications = async () => {
   const { data, error } = await supabase
     .from('applications')
     .select('*')

@@ -35,6 +35,7 @@ interface AuthContextType {
 // Auth Context
 const AuthContext = createContext<AuthContextType | null>(null);
 
+// eslint-disable-next-line react-refresh/only-export-components
 export const useAuth = () => {
   const context = useContext(AuthContext);
   if (!context) {
@@ -459,7 +460,7 @@ function DashboardLayout() {
       {currentPortal === 'deals' && (
         <AllDealsPortal
           onEditDeal={({ applicationId, lockedLenderIds }) => {
-            setLaunchParams({ initialStep: 'matches', initialApplicationId: applicationId, lockedLenderIds });
+            setLaunchParams({ initialStep: 'application', initialApplicationId: applicationId, lockedLenderIds });
             setCurrentPortal('submissions');
           }}
         />
