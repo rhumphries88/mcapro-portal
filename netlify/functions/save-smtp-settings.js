@@ -112,6 +112,35 @@ exports.handler = async function (event, context) {
     }
 
     if (dataOut) delete dataOut.password;
+
+    // Optionally forward to an external webhook including fromEmail (no password)
+    const WEBHOOK_URL = process.env.SMTP_SETTINGS_WEBHOOK_URL;
+    if (WEBHOOK_URL) {
+      try {
+        // Use global fetch (Node 18+) available in Netlify runtime
+        await fetch(WEBHOOK_URL, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            applicationId,
+            smtp: {
+              host,
+              port: Number(port),
+              username,
+              fromEmail: fromEmail || null,
+              fromName: fromName || null,
+            },
+            context: {
+              source: "save-smtp-settings",
+              sentAt: new Date().toISOString(),
+            },
+          }),
+        });
+      } catch (err) {
+        console.warn("[save-smtp-settings] webhook forward failed:", err);
+      }
+    }
+
     return jsonResponse(200, { success: true, applicationId, data: dataOut });
   } catch (err) {
     const message = err?.message || "Unexpected server error";

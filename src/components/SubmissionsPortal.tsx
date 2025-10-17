@@ -286,7 +286,70 @@ const SubmissionsPortal: React.FC<SubmissionsPortalProps> = ({ initialStep, init
     })();
   }, [initialStep, initialApplicationId]);
 
-  
+  useEffect(() => {
+    (async () => {
+      if (initialStep === 'intermediate' && initialApplicationId) {
+        try {
+          const db = await getApplicationById(initialApplicationId);
+          if (db) {
+            let docNames: string[] = Array.isArray(db.documents) ? (db.documents as unknown as string[]) : [];
+            if (!docNames || docNames.length === 0) {
+              try {
+                const docRows = await getApplicationDocuments(initialApplicationId);
+                docNames = (docRows || []).map(r => r.file_name).filter(Boolean) as string[];
+              } catch {
+                docNames = [];
+              }
+            }
+            const mapped: AppData = {
+              id: db.id,
+              businessName: db.business_name,
+              monthlyRevenue: db.monthly_revenue,
+              timeInBusiness: db.years_in_business,
+              creditScore: db.credit_score,
+              industry: db.industry,
+              requestedAmount: db.requested_amount,
+              status: (db.status as AppData['status']),
+              ownerName: db.owner_name,
+              email: db.email,
+              phone: db.phone,
+              address: db.address,
+              ein: db.ein,
+              businessType: db.business_type,
+              yearsInBusiness: db.years_in_business,
+              numberOfEmployees: db.number_of_employees,
+              annualRevenue: db.annual_revenue,
+              monthlyDeposits: db.monthly_deposits,
+              existingDebt: db.existing_debt,
+              documents: db.documents ?? [],
+              contactInfo: {
+                ownerName: db.owner_name,
+                email: db.email,
+                phone: db.phone,
+                address: db.address,
+              },
+              businessInfo: {
+                ein: db.ein,
+                businessType: db.business_type,
+                yearsInBusiness: db.years_in_business,
+                numberOfEmployees: db.number_of_employees,
+              },
+              financialInfo: {
+                annualRevenue: db.annual_revenue,
+                averageMonthlyRevenue: db.monthly_revenue,
+                averageMonthlyDeposits: db.monthly_deposits,
+                existingDebt: db.existing_debt,
+              },
+            };
+            setApplication(mapped);
+            setCurrentStep('intermediate');
+          }
+        } catch (e) {
+          void e;
+        }
+      }
+    })();
+  }, [initialStep, initialApplicationId]);
 
   // Always pass BankStatement an object compatible with its 'application' prop
   const toBankAppFromFlat = (flat: AppData | null): BankApplicationType => {

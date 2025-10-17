@@ -28,6 +28,39 @@ if (!supabaseUrl || !supabaseAnonKey) {
   )
 }
 
+// Fetch an application's access map across users: user_id -> can_access
+export const getApplicationAccessMapByApp = async (
+  applicationId: string
+): Promise<{ [userId: string]: boolean }> => {
+  const { data, error } = await supabase
+    .from('application_access')
+    .select('user_id, can_access')
+    .eq('application_id', applicationId)
+
+  if (error) throw error
+  const map: { [userId: string]: boolean } = {}
+  for (const row of (data || []) as { user_id: string; can_access: boolean }[]) {
+    map[row.user_id] = !!row.can_access
+  }
+  return map
+}
+
+// Upsert a single access row for a specific user and application
+export const setApplicationAccess = async (
+  userId: string,
+  applicationId: string,
+  can_access: boolean
+) => {
+  const { error } = await supabase
+    .from('application_access')
+    .upsert(
+      [{ user_id: userId, application_id: applicationId, can_access }],
+      { onConflict: 'user_id,application_id' }
+    )
+  if (error) throw error
+  return { userId, applicationId, can_access }
+}
+
 // Create Supabase client with enhanced configuration
 export const supabase: SupabaseClient = createClient(supabaseUrl, supabaseAnonKey, {
   auth: {
@@ -550,15 +583,15 @@ export const getApplicationsByUserId = async (userId: string) => {
 }
 
 export const updateApplication = async (id: string, updates: Partial<Application>) => {
-  const { data, error } = await supabase
+  const existing = await getApplicationById(id)
+  if (!existing) throw new Error('Application not found')
+
+  const { error } = await supabase
     .from('applications')
     .update({ ...updates, updated_at: new Date().toISOString() })
     .eq('id', id)
-    .select()
-    .single()
-
   if (error) throw error
-  return data
+  return await getApplicationById(id)
 }
 
 // Update total_amount (sum of selected Transactions rows) for a specific MTD record

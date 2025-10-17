@@ -460,7 +460,11 @@ function DashboardLayout() {
       {currentPortal === 'deals' && (
         <AllDealsPortal
           onEditDeal={({ applicationId, lockedLenderIds }) => {
-            setLaunchParams({ initialStep: 'application', initialApplicationId: applicationId, lockedLenderIds });
+            setLaunchParams({ initialStep: 'intermediate', initialApplicationId: applicationId, lockedLenderIds });
+            setCurrentPortal('submissions');
+          }}
+          onViewQualifiedLenders={({ applicationId, lockedLenderIds }) => {
+            setLaunchParams({ initialStep: 'matches', initialApplicationId: applicationId, lockedLenderIds });
             setCurrentPortal('submissions');
           }}
         />

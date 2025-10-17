@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
-import { Users, Building2, Settings, Plus, Edit, Trash2, Eye, Star, CheckCircle, Mail, XCircle } from 'lucide-react';
-import { getLenders, createLender, updateLender, deleteLender, getApplications, getLenderSubmissions, updateApplication, deleteApplication, updateLenderSubmission, createLenderSubmissions, getUsersByRole, getUserApplicationAccessMap, setUserApplicationAccessMap, Lender as DBLender, Application as DBApplication, LenderSubmission as DBLenderSubmission, User as DBUser } from '../lib/supabase';
+import { Users, Building2, Settings, Plus, Edit, Trash2, Eye, Star, CheckCircle, Mail, XCircle, Search } from 'lucide-react';
+import { getLenders, createLender, updateLender, deleteLender, getApplications, getLenderSubmissions, updateApplication, deleteApplication, updateLenderSubmission, createLenderSubmissions, getUsersByRole, Lender as DBLender, Application as DBApplication, LenderSubmission as DBLenderSubmission, User as DBUser } from '../lib/supabase';
 
 const AdminPortal: React.FC = () => {
   const [activeTab, setActiveTab] = useState<'applications' | 'lenders' | 'deal-users' | 'settings'>('applications');
@@ -73,11 +73,9 @@ Application ID: {{applicationId}}`;
   // Deal Users (members)
   const [dealUsers, setDealUsers] = useState<DBUser[]>([]);
   const [dealUsersLoading, setDealUsersLoading] = useState(false);
-  const [showUserPermissionsModal, setShowUserPermissionsModal] = useState(false);
-  const [selectedUser, setSelectedUser] = useState<DBUser | null>(null);
-  const [userApplications, setUserApplications] = useState<(DBApplication & { matchedLenders: number })[]>([]);
-  const [loadingUserApps, setLoadingUserApps] = useState(false);
-  const [userPermissions, setUserPermissions] = useState<{[applicationId: string]: boolean}>({});
+  const [selectedDealUser, setSelectedDealUser] = useState<DBUser | null>(null);
+  const [showUserApplications, setShowUserApplications] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
 
   const [lenderFormData, setLenderFormData] = useState({
     name: '',
@@ -150,8 +148,15 @@ Application ID: {{applicationId}}`;
       if (activeTab !== 'deal-users') return;
       try {
         setDealUsersLoading(true);
-        const members = await getUsersByRole('member');
-        setDealUsers(members);
+        const [members, adminsLower, adminsTitle] = await Promise.all([
+          getUsersByRole('member'),
+          getUsersByRole('admin').catch(() => [] as DBUser[]),
+          getUsersByRole('Admin').catch(() => [] as DBUser[]),
+        ]);
+        // Merge and de-duplicate by id
+        const merged: Record<string, DBUser> = {};
+        [...members, ...adminsLower, ...adminsTitle].forEach(u => { merged[u.id] = u; });
+        setDealUsers(Object.values(merged));
       } catch (error) {
         console.error('Error loading deal users:', error);
       } finally {
@@ -294,6 +299,12 @@ Application ID: {{applicationId}}`;
     });
     setEditingLender(lender);
     setShowLenderForm(true);
+  };
+
+  const handleViewUserApplications = (user: DBUser) => {
+    setSelectedDealUser(user);
+    setSearchQuery(''); // Reset search when opening modal
+    setShowUserApplications(true);
   };
 
 
@@ -470,59 +481,7 @@ Application ID: {{applicationId}}`;
     }
   };
 
-  // Handle edit user permissions
-  const handleEditUserPermissions = async (user: DBUser) => {
-    setSelectedUser(user);
-    setShowUserPermissionsModal(true);
-    
-    // Load ALL applications (not just user's own)
-    try {
-      setLoadingUserApps(true);
-      
-      // Get all applications from the existing state (already loaded)
-      setUserApplications(applications);
-      
-      // Prefill with existing persisted map
-      const existing = await getUserApplicationAccessMap(user.id);
-      // Initialize permissions with defaults: own apps true, others false, overridden by existing
-      const permissions: {[applicationId: string]: boolean} = {};
-      applications.forEach(app => { permissions[app.id] = app.user_id === user.id; });
-      Object.entries(existing).forEach(([appId, can]) => { permissions[appId] = !!can; });
-      setUserPermissions(permissions);
-      
-    } catch (error) {
-      console.error('Error loading applications:', error);
-      setUserApplications([]);
-    } finally {
-      setLoadingUserApps(false);
-    }
-  };
-
-  // Persist user permissions
-  const saveUserPermissions = async () => {
-    if (!selectedUser) return;
-    try {
-      const res = await setUserApplicationAccessMap(selectedUser.id, userPermissions);
-      console.log('Saved user permissions rows:', res.count);
-      // Notify other views to reload deals list (same-tab and cross-tab)
-      try { 
-        localStorage.setItem('mca-permissions-updated', String(Date.now()));
-        window.dispatchEvent(new Event('mca-permissions-updated'));
-      } catch { console.warn('Permission update broadcast failed'); }
-      setShowUserPermissionsModal(false);
-    } catch (error) {
-      console.error('Error saving user permissions:', error);
-      alert('Failed to save permissions');
-    }
-  };
-
-  // Toggle application access for user
-  const toggleApplicationAccess = (applicationId: string) => {
-    setUserPermissions(prev => ({
-      ...prev,
-      [applicationId]: !prev[applicationId]
-    }));
-  };
+  // Legacy user permission editing removed; handled in AllDealsPortal now
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
@@ -613,108 +572,138 @@ Application ID: {{applicationId}}`;
             </div>
           </div>
 
-          <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+          <div className="bg-white rounded-2xl shadow-lg border border-gray-200/50 overflow-hidden">
             <div className="overflow-x-auto">
               <table className="min-w-full">
-                <thead className="bg-gradient-to-r from-gray-50 to-gray-100 border-b border-gray-200">
-                  <tr>
-                    <th className="px-6 py-4 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">Business</th>
-                    <th className="px-6 py-4 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">Amount</th>
-                    <th className="px-6 py-4 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">Financial</th>
-                    <th className="px-6 py-4 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">Status</th>
-                    <th className="px-6 py-4 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">Lenders</th>
-                    <th className="px-6 py-4 text-right text-xs font-semibold text-gray-700 uppercase tracking-wider">Actions</th>
+                <thead>
+                  <tr className="bg-gradient-to-r from-emerald-50 via-green-50 to-teal-50 border-b border-gray-200/60">
+                    <th className="px-8 py-5 text-left text-xs font-bold text-gray-700 uppercase tracking-wider">
+                      <div className="flex items-center space-x-2">
+                        <Building2 className="w-4 h-4 text-emerald-600" />
+                        <span>Business</span>
+                      </div>
+                    </th>
+                    <th className="px-8 py-5 text-left text-xs font-bold text-gray-700 uppercase tracking-wider">
+                      <div className="flex items-center space-x-2">
+                        <span className="text-green-600">$</span>
+                        <span>Amount</span>
+                      </div>
+                    </th>
+                    <th className="px-8 py-5 text-left text-xs font-bold text-gray-700 uppercase tracking-wider">
+                      <div className="flex items-center space-x-2">
+                        <Star className="w-4 h-4 text-yellow-600" />
+                        <span>Financial</span>
+                      </div>
+                    </th>
+                    <th className="px-8 py-5 text-left text-xs font-bold text-gray-700 uppercase tracking-wider">
+                      <div className="flex items-center space-x-2">
+                        <CheckCircle className="w-4 h-4 text-blue-600" />
+                        <span>Status</span>
+                      </div>
+                    </th>
+                    <th className="px-8 py-5 text-left text-xs font-bold text-gray-700 uppercase tracking-wider">
+                      <div className="flex items-center space-x-2">
+                        <Users className="w-4 h-4 text-purple-600" />
+                        <span>Lenders</span>
+                      </div>
+                    </th>
+                    <th className="px-8 py-5 text-center text-xs font-bold text-gray-700 uppercase tracking-wider">
+                      <div className="flex items-center justify-center space-x-2">
+                        <Settings className="w-4 h-4 text-orange-600" />
+                        <span>Actions</span>
+                      </div>
+                    </th>
                   </tr>
                 </thead>
-                <tbody className="bg-white">
+                <tbody className="bg-white divide-y divide-gray-100/80">
                   {loading && (
                     <tr>
-                      <td colSpan={6} className="px-6 py-12 text-center">
+                      <td colSpan={6} className="px-8 py-16 text-center">
                         <div className="flex flex-col items-center">
-                          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-emerald-600 mb-3"></div>
-                          <p className="text-gray-500 text-sm">Loading applications...</p>
+                          <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-emerald-600 mb-4"></div>
+                          <p className="text-gray-500 text-sm font-medium">Loading applications...</p>
                         </div>
                       </td>
                     </tr>
                   )}
                   {!loading && applications.length === 0 && (
                     <tr>
-                      <td colSpan={6} className="px-6 py-12 text-center">
+                      <td colSpan={6} className="px-8 py-16 text-center">
                         <div className="flex flex-col items-center">
-                          <Building2 className="h-12 w-12 text-gray-300 mb-3" />
-                          <p className="text-gray-500 text-sm font-medium">No applications found</p>
-                          <p className="text-gray-400 text-xs mt-1">Applications will appear here once submitted</p>
+                          <div className="w-16 h-16 bg-gray-100 rounded-full flex items-center justify-center mb-4">
+                            <Building2 className="h-8 w-8 text-gray-400" />
+                          </div>
+                          <h3 className="text-lg font-medium text-gray-900 mb-2">No Applications Found</h3>
+                          <p className="text-gray-500 max-w-sm">Applications will appear here once submitted</p>
                         </div>
                       </td>
                     </tr>
                   )}
                   {!loading && applications.map((app) => (
-                    <tr key={app.id} className="border-b border-gray-100 hover:bg-emerald-50/30 transition-colors duration-150">
-                      <td className="px-6 py-5">
-                        <div className="flex items-center">
-                          <div className="flex-shrink-0 h-10 w-10">
-                            <div className="h-10 w-10 rounded-full bg-gradient-to-br from-emerald-500 to-emerald-600 flex items-center justify-center">
-                              <span className="text-sm font-semibold text-white">
+                    <tr key={app.id} className="hover:bg-gradient-to-r hover:from-emerald-50/40 hover:to-green-50/40 transition-all duration-200">
+                      <td className="px-8 py-6">
+                        <div className="flex items-center space-x-4">
+                          <div className="relative">
+                            <div className="h-12 w-12 rounded-xl bg-gradient-to-br from-emerald-500 via-emerald-600 to-green-700 flex items-center justify-center shadow-lg">
+                              <span className="text-base font-bold text-white">
                                 {app.business_name.charAt(0).toUpperCase()}
                               </span>
                             </div>
                           </div>
-                          <div className="ml-4">
-                            <div className="text-sm font-semibold text-gray-900">
+                          <div>
+                            <div className="text-base font-semibold text-gray-900">
                               {app.business_name}
                             </div>
-                            <div className="text-xs text-gray-500 mt-0.5">
+                            <div className="text-sm text-gray-500 mt-0.5 font-mono">
                               {app.owner_name} • ID: {app.id.slice(0, 8)}...
                             </div>
                           </div>
                         </div>
                       </td>
-                      <td className="px-6 py-5">
-                        <div className="text-sm text-gray-900 font-semibold">${app.requested_amount.toLocaleString()}</div>
-                        <div className="text-xs text-gray-500 mt-0.5">{app.industry}</div>
+                      <td className="px-8 py-6">
+                        <div className="text-xl font-bold text-gray-900">${app.requested_amount.toLocaleString()}</div>
+                        <div className="text-sm text-gray-500">{app.industry}</div>
                       </td>
-                      <td className="px-6 py-5">
-                        <div className="text-sm text-gray-900 font-medium">${app.monthly_revenue.toLocaleString()}/mo</div>
-                        <div className="text-xs text-gray-500 mt-0.5">Credit: {app.credit_score} • {app.years_in_business}y</div>
+                      <td className="px-8 py-6">
+                        <div className="text-sm font-medium text-gray-900">${app.monthly_revenue.toLocaleString()}/mo</div>
+                        <div className="text-xs text-gray-500 mt-1">Credit: {app.credit_score} • {app.years_in_business}y</div>
                       </td>
-                      <td className="px-6 py-5">
+                      <td className="px-8 py-6">
                         <div className="flex items-center">
-                          <div className="flex items-center">
+                          <span className={`inline-flex items-center px-3 py-1.5 rounded-full text-xs font-semibold shadow-sm ${getStatusColor(app.status)}`}>
                             <div className={`w-2 h-2 rounded-full mr-2 ${
                               app.status === 'funded' ? 'bg-green-400' :
                               app.status === 'approved' ? 'bg-blue-400' :
                               app.status === 'submitted' ? 'bg-yellow-400' :
                               app.status === 'declined' ? 'bg-red-400' : 'bg-gray-400'
                             }`}></div>
-                            <span className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium border ${getStatusColor(app.status)}`}>
-                              {app.status.charAt(0).toUpperCase() + app.status.slice(1)}
-                            </span>
-                          </div>
+                            {app.status.charAt(0).toUpperCase() + app.status.slice(1)}
+                          </span>
                         </div>
                       </td>
-                      <td className="px-6 py-5">
-                        <div className="text-sm text-gray-900 font-medium">{app.matchedLenders} lenders</div>
-                        <div className="text-xs text-gray-500 mt-0.5">Matched</div>
+                      <td className="px-8 py-6">
+                        <div className="text-sm font-medium text-gray-900">{app.matchedLenders} lenders</div>
+                        <div className="text-xs text-gray-500 mt-1">Matched</div>
                       </td>
-                      <td className="px-6 py-5 text-right">
-                        <div className="flex items-center justify-end gap-2">
+                      <td className="px-8 py-6 text-center">
+                        <div className="flex items-center justify-center gap-2">
                           <button 
                             onClick={() => handleViewApplication(app)} 
-                            className="inline-flex items-center px-2 py-1 border border-emerald-300 text-xs font-medium rounded text-emerald-700 bg-emerald-50 hover:bg-emerald-100 hover:border-emerald-400 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:ring-offset-1 transition-all duration-150" 
+                            className="inline-flex items-center px-3 py-2 bg-gradient-to-r from-emerald-600 to-green-600 text-white text-xs font-semibold rounded-xl hover:from-emerald-700 hover:to-green-700 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:ring-offset-2 transition-all duration-200 shadow-lg hover:shadow-xl transform hover:-translate-y-0.5" 
                             title="View details"
                           >
                             <Eye className="w-3 h-3" />
                           </button>
                           <button 
                             onClick={() => handleEditApplication(app)} 
-                            className="inline-flex items-center px-2 py-1 border border-blue-300 text-xs font-medium rounded text-blue-700 bg-blue-50 hover:bg-blue-100 hover:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-1 transition-all duration-150" 
+                            className="inline-flex items-center px-3 py-2 bg-gradient-to-r from-blue-600 to-indigo-600 text-white text-xs font-semibold rounded-xl hover:from-blue-700 hover:to-indigo-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 transition-all duration-200 shadow-lg hover:shadow-xl transform hover:-translate-y-0.5" 
                             title="Edit application"
                           >
                             <Edit className="w-3 h-3" />
                           </button>
                           <button 
                             onClick={() => handleDeleteApplication(app.id)} 
-                            className="inline-flex items-center px-2 py-1 border border-red-300 text-xs font-medium rounded text-red-700 bg-red-50 hover:bg-red-100 hover:border-red-400 focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-1 transition-all duration-150" 
+                            className="inline-flex items-center px-3 py-2 bg-gradient-to-r from-red-600 to-red-700 text-white text-xs font-semibold rounded-xl hover:from-red-700 hover:to-red-800 focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-2 transition-all duration-200 shadow-lg hover:shadow-xl transform hover:-translate-y-0.5" 
                             title="Delete application"
                           >
                             <Trash2 className="w-3 h-3" />
@@ -725,6 +714,192 @@ Application ID: {{applicationId}}`;
                   ))}
                 </tbody>
               </table>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* User Applications Modal */}
+      {showUserApplications && selectedDealUser && (
+        <div className="fixed inset-0 bg-black bg-opacity-60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl shadow-2xl max-w-4xl w-full max-h-[85vh] overflow-hidden">
+            {/* Enhanced Header */}
+            <div className="relative bg-gradient-to-r from-blue-600 via-blue-700 to-indigo-800 p-8">
+              <div className="absolute inset-0 bg-gradient-to-r from-blue-600/90 to-indigo-800/90"></div>
+              <div className="relative">
+                <div className="flex items-start justify-between">
+                  <div className="flex items-center space-x-4">
+                    <div className="w-12 h-12 bg-white/20 backdrop-blur-sm rounded-xl flex items-center justify-center">
+                      <Users className="w-6 h-6 text-white" />
+                    </div>
+                    <div>
+                      <h3 className="text-2xl font-bold text-white mb-1">
+                        Applications by {selectedDealUser.full_name || 'User'}
+                      </h3>
+                      <div className="flex items-center space-x-3 text-blue-100">
+                        <span className="text-sm">{selectedDealUser.email}</span>
+                        <span className="w-1 h-1 bg-blue-200 rounded-full"></span>
+                        <span className="text-xs font-mono">ID: {selectedDealUser.id.slice(0, 8)}...</span>
+                      </div>
+                    </div>
+                  </div>
+                  <button 
+                    onClick={() => setShowUserApplications(false)} 
+                    className="w-10 h-10 bg-white/10 hover:bg-white/20 backdrop-blur-sm rounded-xl flex items-center justify-center text-white hover:text-blue-100 transition-all duration-200"
+                  >
+                    <XCircle className="w-5 h-5" />
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* Enhanced Body */}
+            <div className="p-8">
+              <div className="mb-6">
+                <div className="flex items-center justify-between mb-4">
+                  <h4 className="text-lg font-semibold text-gray-800">Application Portfolio</h4>
+                  <div className="flex items-center space-x-2 text-sm text-gray-500">
+                    <div className="w-2 h-2 bg-blue-500 rounded-full"></div>
+                    <span>{applications.filter(a => a.user_id === selectedDealUser.id && 
+                      (searchQuery === '' || 
+                       a.business_name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+                       a.status.toLowerCase().includes(searchQuery.toLowerCase()) ||
+                       a.requested_amount.toString().includes(searchQuery)
+                      )).length} Applications</span>
+                  </div>
+                </div>
+                
+                {/* Search Box */}
+                <div className="relative">
+                  <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
+                    <Search className="h-5 w-5 text-gray-400" />
+                  </div>
+                  <input
+                    type="text"
+                    placeholder="Search applications by business name, status, or amount..."
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    className="w-full pl-12 pr-4 py-3 bg-white border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200 text-sm placeholder-gray-500"
+                  />
+                  {searchQuery && (
+                    <button
+                      onClick={() => setSearchQuery('')}
+                      className="absolute inset-y-0 right-0 pr-4 flex items-center text-gray-400 hover:text-gray-600"
+                    >
+                      <XCircle className="h-4 w-4" />
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              <div className="bg-gradient-to-br from-gray-50 to-white rounded-xl border border-gray-200/80 shadow-sm overflow-hidden">
+                <div className="overflow-x-auto">
+                  <table className="min-w-full">
+                    <thead>
+                      <tr className="bg-gradient-to-r from-gray-100 via-gray-50 to-gray-100">
+                        <th className="px-8 py-4 text-left text-xs font-bold text-gray-700 uppercase tracking-wider border-b border-gray-200">
+                          <div className="flex items-center space-x-2">
+                            <Building2 className="w-4 h-4 text-gray-500" />
+                            <span>Business</span>
+                          </div>
+                        </th>
+                        <th className="px-8 py-4 text-left text-xs font-bold text-gray-700 uppercase tracking-wider border-b border-gray-200">
+                          <div className="flex items-center space-x-2">
+                            <span className="text-green-600">$</span>
+                            <span>Amount</span>
+                          </div>
+                        </th>
+                        <th className="px-8 py-4 text-left text-xs font-bold text-gray-700 uppercase tracking-wider border-b border-gray-200">
+                          <div className="flex items-center space-x-2">
+                            <div className="w-2 h-2 bg-blue-500 rounded-full"></div>
+                            <span>Status</span>
+                          </div>
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody className="bg-white divide-y divide-gray-100">
+                      {applications.filter(a => a.user_id === selectedDealUser.id && 
+                        (searchQuery === '' || 
+                         a.business_name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+                         a.status.toLowerCase().includes(searchQuery.toLowerCase()) ||
+                         a.requested_amount.toString().includes(searchQuery)
+                        )).map((app) => (
+                        <tr key={app.id} className="hover:bg-gradient-to-r hover:from-blue-50/50 hover:to-indigo-50/30 transition-all duration-200">
+                          <td className="px-8 py-6">
+                            <div className="flex items-center space-x-3">
+                              <div className="w-10 h-10 bg-gradient-to-br from-blue-500 to-indigo-600 rounded-xl flex items-center justify-center text-white font-bold text-sm">
+                                {app.business_name.charAt(0).toUpperCase()}
+                              </div>
+                              <div>
+                                <div className="font-semibold text-gray-900 text-base">{app.business_name}</div>
+                                <div className="text-sm text-gray-500">{app.industry}</div>
+                              </div>
+                            </div>
+                          </td>
+                          <td className="px-8 py-6">
+                            <div className="text-xl font-bold text-gray-900">${app.requested_amount.toLocaleString()}</div>
+                            <div className="text-sm text-gray-500">Requested</div>
+                          </td>
+                          <td className="px-8 py-6">
+                            <span className={`inline-flex items-center px-4 py-2 rounded-full text-sm font-semibold shadow-sm ${getStatusColor(app.status)}`}>
+                              <div className={`w-2 h-2 rounded-full mr-2 ${
+                                app.status === 'funded' ? 'bg-green-400' :
+                                app.status === 'approved' ? 'bg-blue-400' :
+                                app.status === 'submitted' ? 'bg-yellow-400' :
+                                app.status === 'declined' ? 'bg-red-400' : 'bg-gray-400'
+                              }`}></div>
+                              {app.status.charAt(0).toUpperCase() + app.status.slice(1)}
+                            </span>
+                          </td>
+                        </tr>
+                      ))}
+                      {applications.filter(a => a.user_id === selectedDealUser.id && 
+                        (searchQuery === '' || 
+                         a.business_name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+                         a.status.toLowerCase().includes(searchQuery.toLowerCase()) ||
+                         a.requested_amount.toString().includes(searchQuery)
+                        )).length === 0 && (
+                        <tr>
+                          <td colSpan={3} className="px-8 py-16 text-center">
+                            <div className="flex flex-col items-center">
+                              <div className="w-16 h-16 bg-gray-100 rounded-full flex items-center justify-center mb-4">
+                                <Building2 className="w-8 h-8 text-gray-400" />
+                              </div>
+                              <h3 className="text-lg font-medium text-gray-900 mb-2">
+                                {searchQuery ? 'No Matching Applications' : 'No Applications Found'}
+                              </h3>
+                              <p className="text-gray-500 max-w-sm">
+                                {searchQuery 
+                                  ? `No applications match "${searchQuery}". Try a different search term.`
+                                  : "This user hasn't submitted any applications yet."
+                                }
+                              </p>
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              {/* Enhanced Footer */}
+              <div className="mt-8 flex items-center justify-between pt-6 border-t border-gray-200">
+                <div className="text-sm text-gray-500">
+                  Showing {applications.filter(a => a.user_id === selectedDealUser.id && 
+                    (searchQuery === '' || 
+                     a.business_name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+                     a.status.toLowerCase().includes(searchQuery.toLowerCase()) ||
+                     a.requested_amount.toString().includes(searchQuery)
+                    )).length} of {applications.filter(a => a.user_id === selectedDealUser.id).length} applications
+                </div>
+                <button 
+                  onClick={() => setShowUserApplications(false)} 
+                  className="px-6 py-3 bg-gradient-to-r from-gray-600 to-gray-700 text-white rounded-xl hover:from-gray-700 hover:to-gray-800 transition-all duration-200 font-medium shadow-lg hover:shadow-xl"
+                >
+                  Close
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -741,100 +916,134 @@ Application ID: {{applicationId}}`;
             <div className="flex items-center gap-3">
               <div className="flex items-center gap-2 text-sm text-gray-500">
                 <div className="w-2 h-2 bg-blue-500 rounded-full"></div>
-                <span>{dealUsers.length} Active Members</span>
+                <span>{dealUsers.length} Active Users</span>
               </div>
             </div>
           </div>
           
-          <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+          <div className="bg-white rounded-2xl shadow-lg border border-gray-200/50 overflow-hidden">
             <div className="overflow-x-auto">
               <table className="min-w-full">
-                <thead className="bg-gradient-to-r from-gray-50 to-gray-100 border-b border-gray-200">
-                  <tr>
-                    <th className="px-6 py-4 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">Member</th>
-                    <th className="px-6 py-4 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">Contact</th>
-                    <th className="px-6 py-4 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">Status</th>
-                    <th className="px-6 py-4 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">Joined</th>
-                    <th className="px-6 py-4 text-right text-xs font-semibold text-gray-700 uppercase tracking-wider">Actions</th>
+                <thead>
+                  <tr className="bg-gradient-to-r from-blue-50 via-indigo-50 to-purple-50 border-b border-gray-200/60">
+                    <th className="px-8 py-5 text-left text-xs font-bold text-gray-700 uppercase tracking-wider">
+                      <div className="flex items-center space-x-2">
+                        <Users className="w-4 h-4 text-blue-600" />
+                        <span>Member</span>
+                      </div>
+                    </th>
+                    <th className="px-8 py-5 text-left text-xs font-bold text-gray-700 uppercase tracking-wider">
+                      <div className="flex items-center space-x-2">
+                        <Mail className="w-4 h-4 text-green-600" />
+                        <span>Contact</span>
+                      </div>
+                    </th>
+                    <th className="px-8 py-5 text-left text-xs font-bold text-gray-700 uppercase tracking-wider">
+                      <div className="flex items-center space-x-2">
+                        <CheckCircle className="w-4 h-4 text-emerald-600" />
+                        <span>Status</span>
+                      </div>
+                    </th>
+                    <th className="px-8 py-5 text-left text-xs font-bold text-gray-700 uppercase tracking-wider">
+                      <div className="flex items-center space-x-2">
+                        <Star className="w-4 h-4 text-yellow-600" />
+                        <span>Joined</span>
+                      </div>
+                    </th>
+                    <th className="px-8 py-5 text-center text-xs font-bold text-gray-700 uppercase tracking-wider">
+                      <div className="flex items-center justify-center space-x-2">
+                        <Settings className="w-4 h-4 text-purple-600" />
+                        <span>Actions</span>
+                      </div>
+                    </th>
                   </tr>
                 </thead>
-                <tbody className="bg-white">
+                <tbody className="bg-white divide-y divide-gray-100/80">
                   {dealUsersLoading && (
                     <tr>
-                      <td colSpan={5} className="px-6 py-12 text-center">
+                      <td colSpan={5} className="px-8 py-16 text-center">
                         <div className="flex flex-col items-center">
-                          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mb-3"></div>
-                          <p className="text-gray-500 text-sm">Loading member accounts...</p>
+                          <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-blue-600 mb-4"></div>
+                          <p className="text-gray-500 text-sm font-medium">Loading user accounts...</p>
                         </div>
                       </td>
                     </tr>
                   )}
                   {!dealUsersLoading && dealUsers.length === 0 && (
                     <tr>
-                      <td colSpan={5} className="px-6 py-12 text-center">
+                      <td colSpan={5} className="px-8 py-16 text-center">
                         <div className="flex flex-col items-center">
-                          <Users className="h-12 w-12 text-gray-300 mb-3" />
-                          <p className="text-gray-500 text-sm font-medium">No member accounts found</p>
-                          <p className="text-gray-400 text-xs mt-1">Member accounts will appear here once created</p>
+                          <div className="w-16 h-16 bg-gray-100 rounded-full flex items-center justify-center mb-4">
+                            <Users className="h-8 w-8 text-gray-400" />
+                          </div>
+                          <h3 className="text-lg font-medium text-gray-900 mb-2">No User Accounts Found</h3>
+                          <p className="text-gray-500 max-w-sm">User accounts will appear here once created</p>
                         </div>
                       </td>
                     </tr>
                   )}
                   {!dealUsersLoading && dealUsers.map((u) => (
-                    <tr key={u.id} className="border-b border-gray-100 hover:bg-blue-50/30 transition-colors duration-150">
-                      <td className="px-6 py-5">
-                        <div className="flex items-center">
-                          <div className="flex-shrink-0 h-10 w-10">
-                            <div className="h-10 w-10 rounded-full bg-gradient-to-br from-blue-500 to-blue-600 flex items-center justify-center">
-                              <span className="text-sm font-semibold text-white">
+                    <tr key={u.id} className="hover:bg-gradient-to-r hover:from-blue-50/40 hover:to-indigo-50/40 transition-all duration-200">
+                      <td className="px-8 py-6">
+                        <div className="flex items-center space-x-4">
+                          <div className="relative">
+                            <div className="h-12 w-12 rounded-xl bg-gradient-to-br from-blue-500 via-blue-600 to-indigo-700 flex items-center justify-center shadow-lg">
+                              <span className="text-base font-bold text-white">
                                 {(u.full_name || u.email).charAt(0).toUpperCase()}
                               </span>
                             </div>
                           </div>
-                          <div className="ml-4">
-                            <div className="text-sm font-semibold text-gray-900">
+                          <div>
+                            <div className="text-base font-semibold text-gray-900">
                               {u.full_name || 'Unnamed User'}
                             </div>
-                            <div className="text-xs text-gray-500 mt-0.5">
+                            <div className="text-sm text-gray-500 mt-0.5 font-mono">
                               ID: {u.id.slice(0, 8)}...
                             </div>
                           </div>
                         </div>
                       </td>
-                      <td className="px-6 py-5">
-                        <div className="text-sm text-gray-900 font-medium">{u.email}</div>
-                        <div className="text-xs text-gray-500 mt-0.5">Primary contact</div>
-                      </td>
-                      <td className="px-6 py-5">
-                        <div className="flex items-center">
-                          <div className="flex items-center">
-                            <div className="w-2 h-2 bg-green-400 rounded-full mr-2"></div>
-                            <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium bg-green-100 text-green-800 border border-green-200">
-                              {u.roles || 'Member'}
-                            </span>
-                          </div>
+                      <td className="px-8 py-6">
+                        <div className="text-sm font-medium text-gray-900">{u.email}</div>
+                        <div className="text-xs text-gray-500 mt-1 flex items-center">
+                          <div className="w-1.5 h-1.5 bg-green-400 rounded-full mr-2"></div>
+                          Primary contact
                         </div>
                       </td>
-                      <td className="px-6 py-5">
-                        <div className="text-sm text-gray-900 font-medium">
+                      <td className="px-8 py-6">
+                        <div className="flex items-center">
+                          <span className={`inline-flex items-center px-3 py-1.5 rounded-full text-xs font-semibold shadow-sm ${
+                            (u.roles === 'admin' || u.roles === 'Admin') 
+                              ? 'bg-purple-100 text-purple-800 border border-purple-200' 
+                              : 'bg-emerald-100 text-emerald-800 border border-emerald-200'
+                          }`}>
+                            <div className={`w-2 h-2 rounded-full mr-2 ${
+                              (u.roles === 'admin' || u.roles === 'Admin') ? 'bg-purple-400' : 'bg-emerald-400'
+                            }`}></div>
+                            {u.roles || 'Member'}
+                          </span>
+                        </div>
+                      </td>
+                      <td className="px-8 py-6">
+                        <div className="text-sm font-medium text-gray-900">
                           {new Date(u.created_at).toLocaleDateString('en-US', { 
                             month: 'short', 
                             day: 'numeric', 
                             year: 'numeric' 
                           })}
                         </div>
-                        <div className="text-xs text-gray-500 mt-0.5">
+                        <div className="text-xs text-gray-500 mt-1">
                           {Math.floor((Date.now() - new Date(u.created_at).getTime()) / (1000 * 60 * 60 * 24))} days ago
                         </div>
                       </td>
-                      <td className="px-6 py-5 text-right">
-                        <button 
-                          onClick={() => handleEditUserPermissions(u)}
-                          className="inline-flex items-center px-3 py-1.5 border border-blue-300 text-xs font-medium rounded-md text-blue-700 bg-blue-50 hover:bg-blue-100 hover:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-1 transition-all duration-150" 
-                          title="Edit user permissions"
+                      <td className="px-8 py-6 text-center">
+                        <button
+                          onClick={() => handleViewUserApplications(u)}
+                          className="inline-flex items-center px-4 py-2.5 bg-gradient-to-r from-blue-600 to-indigo-600 text-white text-sm font-semibold rounded-xl hover:from-blue-700 hover:to-indigo-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 transition-all duration-200 shadow-lg hover:shadow-xl transform hover:-translate-y-0.5"
+                          title="View applications submitted by this user"
                         >
-                          <Edit className="w-3.5 h-3.5 mr-1" />
-                          Edit
+                          <Eye className="w-4 h-4 mr-2" />
+                          View Applications
                         </button>
                       </td>
                     </tr>
@@ -1274,166 +1483,264 @@ Application ID: {{applicationId}}`;
 
       {/* Application Details Modal */}
       {showApplicationDetails && selectedApplication && (
-        <div className="fixed inset-0 bg-gray-600 bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-xl shadow-xl max-w-4xl w-full mx-4 max-h-[90vh] overflow-y-auto">
-            <div className="p-6 border-b border-gray-200">
-              <div className="flex items-center justify-between">
-                <div>
-                  <h3 className="text-2xl font-bold text-gray-900">{selectedApplication.business_name}</h3>
-                  <div className="flex items-center mt-1">
-                    <span className={`px-3 py-1 rounded-full text-sm font-medium ${getStatusColor(selectedApplication.status)}`}>
-                      {selectedApplication.status}
-                    </span>
-                    <span className="ml-4 text-sm text-gray-500">
-                      Application ID: {selectedApplication.id}
-                    </span>
+        <div className="fixed inset-0 bg-black bg-opacity-60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl shadow-2xl max-w-6xl w-full max-h-[90vh] overflow-hidden">
+            {/* Enhanced Header */}
+            <div className="relative bg-gradient-to-r from-emerald-600 via-green-700 to-teal-800 p-8">
+              <div className="absolute inset-0 bg-gradient-to-r from-emerald-600/90 to-teal-800/90"></div>
+              <div className="relative">
+                <div className="flex items-start justify-between">
+                  <div className="flex items-center space-x-4">
+                    <div className="w-16 h-16 bg-white/20 backdrop-blur-sm rounded-2xl flex items-center justify-center">
+                      <Building2 className="w-8 h-8 text-white" />
+                    </div>
+                    <div>
+                      <h3 className="text-3xl font-bold text-white mb-2">
+                        {selectedApplication.business_name}
+                      </h3>
+                      <div className="flex items-center space-x-4 text-emerald-100">
+                        <span className={`inline-flex items-center px-3 py-1.5 rounded-full text-sm font-semibold bg-white/20 backdrop-blur-sm border border-white/30`}>
+                          <div className={`w-2 h-2 rounded-full mr-2 ${
+                            selectedApplication.status === 'funded' ? 'bg-green-300' :
+                            selectedApplication.status === 'approved' ? 'bg-blue-300' :
+                            selectedApplication.status === 'submitted' ? 'bg-yellow-300' :
+                            selectedApplication.status === 'declined' ? 'bg-red-300' : 'bg-gray-300'
+                          }`}></div>
+                          {selectedApplication.status.charAt(0).toUpperCase() + selectedApplication.status.slice(1)}
+                        </span>
+                        <span className="text-sm font-mono">ID: {selectedApplication.id.slice(0, 8)}...</span>
+                        <span className="text-sm">{selectedApplication.industry}</span>
+                      </div>
+                    </div>
                   </div>
+                  <button 
+                    onClick={() => setShowApplicationDetails(false)} 
+                    className="w-12 h-12 bg-white/10 hover:bg-white/20 backdrop-blur-sm rounded-xl flex items-center justify-center text-white hover:text-emerald-100 transition-all duration-200"
+                  >
+                    <XCircle className="w-6 h-6" />
+                  </button>
                 </div>
-                <button
-                  onClick={() => setShowApplicationDetails(false)}
-                  className="text-gray-400 hover:text-gray-600 text-2xl"
-                >
-                  ×
-                </button>
               </div>
             </div>
-            
-            <div className="p-6">
-              {/* Business Information */}
-              <div className="mb-8">
-                <h4 className="text-lg font-semibold text-gray-900 mb-4">Business Information</h4>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700">Business Name</label>
-                    <p className="mt-1 text-sm text-gray-900">{selectedApplication.business_name}</p>
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700">Industry</label>
-                    <p className="mt-1 text-sm text-gray-900">{selectedApplication.industry}</p>
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700">Business Type</label>
-                    <p className="mt-1 text-sm text-gray-900">{selectedApplication.business_type || 'N/A'}</p>
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700">EIN</label>
-                    <p className="mt-1 text-sm text-gray-900">{selectedApplication.ein || 'N/A'}</p>
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700">Years in Business</label>
-                    <p className="mt-1 text-sm text-gray-900">{selectedApplication.years_in_business}</p>
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700">Number of Employees</label>
-                    <p className="mt-1 text-sm text-gray-900">{selectedApplication.number_of_employees}</p>
-                  </div>
-                </div>
-              </div>
 
-              {/* Contact Information */}
-              <div className="mb-8">
-                <h4 className="text-lg font-semibold text-gray-900 mb-4">Contact Information</h4>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700">Owner Name</label>
-                    <p className="mt-1 text-sm text-gray-900">{selectedApplication.owner_name}</p>
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700">Email</label>
-                    <p className="mt-1 text-sm text-gray-900">{selectedApplication.email}</p>
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700">Phone</label>
-                    <p className="mt-1 text-sm text-gray-900">{selectedApplication.phone || 'N/A'}</p>
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700">Address</label>
-                    <p className="mt-1 text-sm text-gray-900">{selectedApplication.address || 'N/A'}</p>
-                  </div>
-                </div>
-              </div>
-
-              {/* Financial Information */}
-              <div className="mb-8">
-                <h4 className="text-lg font-semibold text-gray-900 mb-4">Financial Information</h4>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700">Requested Amount</label>
-                    <p className="mt-1 text-sm text-gray-900 font-semibold">${selectedApplication.requested_amount.toLocaleString()}</p>
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700">Monthly Revenue</label>
-                    <p className="mt-1 text-sm text-gray-900">${selectedApplication.monthly_revenue.toLocaleString()}</p>
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700">Annual Revenue</label>
-                    <p className="mt-1 text-sm text-gray-900">${selectedApplication.annual_revenue.toLocaleString()}</p>
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700">Monthly Deposits</label>
-                    <p className="mt-1 text-sm text-gray-900">${selectedApplication.monthly_deposits.toLocaleString()}</p>
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700">Existing Debt</label>
-                    <p className="mt-1 text-sm text-gray-900">${selectedApplication.existing_debt.toLocaleString()}</p>
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700">Credit Score</label>
-                    <p className="mt-1 text-sm text-gray-900">{selectedApplication.credit_score}</p>
-                  </div>
-                </div>
-              </div>
-
-              {/* Application Status */}
-              <div className="mb-8">
-                <h4 className="text-lg font-semibold text-gray-900 mb-4">Application Status</h4>
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700">Current Status</label>
-                    <span className={`inline-flex px-3 py-1 rounded-full text-sm font-medium ${getStatusColor(selectedApplication.status)}`}>
-                      {selectedApplication.status}
-                    </span>
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700">Matched Lenders</label>
-                    <p className="mt-1 text-sm text-gray-900">{selectedApplication.matchedLenders} lenders</p>
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700">Created</label>
-                    <p className="mt-1 text-sm text-gray-900">{new Date(selectedApplication.created_at).toLocaleDateString()}</p>
-                  </div>
-                </div>
-              </div>
-
-              {/* Documents */}
-              {selectedApplication.documents && selectedApplication.documents.length > 0 && (
-                <div className="mb-8">
-                  <h4 className="text-lg font-semibold text-gray-900 mb-4">Documents</h4>
-                  <div className="space-y-2">
-                    {selectedApplication.documents.map((doc, index) => (
-                      <div key={index} className="flex items-center bg-gray-50 p-3 rounded">
-                        <CheckCircle className="w-4 h-4 text-green-500 mr-2" />
-                        <span className="text-sm text-gray-700">{doc}</span>
+            {/* Enhanced Body */}
+            <div className="overflow-y-auto max-h-[calc(90vh-200px)]">
+              <div className="p-8">
+                {/* Financial Summary Cards */}
+                <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
+                  <div className="bg-gradient-to-br from-emerald-50 to-green-100 rounded-xl p-6 border border-emerald-200">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="text-sm font-medium text-emerald-700">Requested Amount</p>
+                        <p className="text-2xl font-bold text-emerald-900">${selectedApplication.requested_amount.toLocaleString()}</p>
                       </div>
-                    ))}
+                      <div className="w-12 h-12 bg-emerald-500 rounded-xl flex items-center justify-center">
+                        <span className="text-white font-bold">$</span>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="bg-gradient-to-br from-blue-50 to-indigo-100 rounded-xl p-6 border border-blue-200">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="text-sm font-medium text-blue-700">Monthly Revenue</p>
+                        <p className="text-2xl font-bold text-blue-900">${selectedApplication.monthly_revenue.toLocaleString()}</p>
+                      </div>
+                      <div className="w-12 h-12 bg-blue-500 rounded-xl flex items-center justify-center">
+                        <Star className="w-6 h-6 text-white" />
+                      </div>
+                    </div>
+                  </div>
+                  <div className="bg-gradient-to-br from-purple-50 to-violet-100 rounded-xl p-6 border border-purple-200">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="text-sm font-medium text-purple-700">Credit Score</p>
+                        <p className="text-2xl font-bold text-purple-900">{selectedApplication.credit_score}</p>
+                      </div>
+                      <div className="w-12 h-12 bg-purple-500 rounded-xl flex items-center justify-center">
+                        <CheckCircle className="w-6 h-6 text-white" />
+                      </div>
+                    </div>
+                  </div>
+                  <div className="bg-gradient-to-br from-orange-50 to-amber-100 rounded-xl p-6 border border-orange-200">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="text-sm font-medium text-orange-700">Years in Business</p>
+                        <p className="text-2xl font-bold text-orange-900">{selectedApplication.years_in_business}</p>
+                      </div>
+                      <div className="w-12 h-12 bg-orange-500 rounded-xl flex items-center justify-center">
+                        <Building2 className="w-6 h-6 text-white" />
+                      </div>
+                    </div>
                   </div>
                 </div>
-              )}
 
-              {/* Action Buttons */}
-              <div className="flex justify-end space-x-3 pt-6 border-t border-gray-200">
-                <button
-                  onClick={() => setShowApplicationDetails(false)}
-                  className="px-6 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
-                >
-                  Close
-                </button>
-                <button
-                  onClick={() => handleDeleteApplication(selectedApplication.id)}
-                  className="px-6 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors"
-                >
-                  Delete Application
-                </button>
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                  {/* Business Information */}
+                  <div className="bg-gradient-to-br from-gray-50 to-white rounded-xl border border-gray-200 p-6">
+                    <div className="flex items-center space-x-3 mb-6">
+                      <div className="w-10 h-10 bg-emerald-500 rounded-xl flex items-center justify-center">
+                        <Building2 className="w-5 h-5 text-white" />
+                      </div>
+                      <h4 className="text-xl font-bold text-gray-900">Business Information</h4>
+                    </div>
+                    <div className="space-y-4">
+                      <div className="grid grid-cols-2 gap-4">
+                        <div>
+                          <label className="block text-sm font-semibold text-gray-600 mb-1">Business Name</label>
+                          <p className="text-base text-gray-900 font-medium">{selectedApplication.business_name}</p>
+                        </div>
+                        <div>
+                          <label className="block text-sm font-semibold text-gray-600 mb-1">Industry</label>
+                          <p className="text-base text-gray-900">{selectedApplication.industry}</p>
+                        </div>
+                        <div>
+                          <label className="block text-sm font-semibold text-gray-600 mb-1">Business Type</label>
+                          <p className="text-base text-gray-900">{selectedApplication.business_type || 'N/A'}</p>
+                        </div>
+                        <div>
+                          <label className="block text-sm font-semibold text-gray-600 mb-1">EIN</label>
+                          <p className="text-base text-gray-900 font-mono">{selectedApplication.ein || 'N/A'}</p>
+                        </div>
+                        <div>
+                          <label className="block text-sm font-semibold text-gray-600 mb-1">Employees</label>
+                          <p className="text-base text-gray-900">{selectedApplication.number_of_employees}</p>
+                        </div>
+                        <div>
+                          <label className="block text-sm font-semibold text-gray-600 mb-1">Created</label>
+                          <p className="text-base text-gray-900">{new Date(selectedApplication.created_at).toLocaleDateString()}</p>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Contact Information */}
+                  <div className="bg-gradient-to-br from-blue-50 to-white rounded-xl border border-blue-200 p-6">
+                    <div className="flex items-center space-x-3 mb-6">
+                      <div className="w-10 h-10 bg-blue-500 rounded-xl flex items-center justify-center">
+                        <Users className="w-5 h-5 text-white" />
+                      </div>
+                      <h4 className="text-xl font-bold text-gray-900">Contact Information</h4>
+                    </div>
+                    <div className="space-y-4">
+                      <div>
+                        <label className="block text-sm font-semibold text-gray-600 mb-1">Owner Name</label>
+                        <p className="text-base text-gray-900 font-medium">{selectedApplication.owner_name}</p>
+                      </div>
+                      <div>
+                        <label className="block text-sm font-semibold text-gray-600 mb-1">Email</label>
+                        <p className="text-base text-gray-900">{selectedApplication.email}</p>
+                      </div>
+                      <div>
+                        <label className="block text-sm font-semibold text-gray-600 mb-1">Phone</label>
+                        <p className="text-base text-gray-900">{selectedApplication.phone || 'N/A'}</p>
+                      </div>
+                      <div>
+                        <label className="block text-sm font-semibold text-gray-600 mb-1">Address</label>
+                        <p className="text-base text-gray-900">{selectedApplication.address || 'N/A'}</p>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Financial Analysis Section */}
+                <div className="mt-8 bg-gradient-to-br from-purple-50 to-white rounded-xl border border-purple-200 p-6">
+                  <div className="flex items-center space-x-3 mb-6">
+                    <div className="w-10 h-10 bg-purple-500 rounded-xl flex items-center justify-center">
+                      <Star className="w-5 h-5 text-white" />
+                    </div>
+                    <h4 className="text-xl font-bold text-gray-900">Financial Analysis</h4>
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                    <div className="bg-white rounded-lg p-4 border border-purple-100">
+                      <label className="block text-sm font-semibold text-purple-600 mb-2">Annual Revenue</label>
+                      <p className="text-2xl font-bold text-gray-900">${selectedApplication.annual_revenue.toLocaleString()}</p>
+                    </div>
+                    <div className="bg-white rounded-lg p-4 border border-purple-100">
+                      <label className="block text-sm font-semibold text-purple-600 mb-2">Monthly Deposits</label>
+                      <p className="text-2xl font-bold text-gray-900">${selectedApplication.monthly_deposits.toLocaleString()}</p>
+                    </div>
+                    <div className="bg-white rounded-lg p-4 border border-purple-100">
+                      <label className="block text-sm font-semibold text-purple-600 mb-2">Existing Debt</label>
+                      <p className="text-2xl font-bold text-gray-900">${selectedApplication.existing_debt.toLocaleString()}</p>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Application Status */}
+                <div className="mt-8 bg-gradient-to-br from-orange-50 to-white rounded-xl border border-orange-200 p-6">
+                  <div className="flex items-center space-x-3 mb-6">
+                    <div className="w-10 h-10 bg-orange-500 rounded-xl flex items-center justify-center">
+                      <CheckCircle className="w-5 h-5 text-white" />
+                    </div>
+                    <h4 className="text-xl font-bold text-gray-900">Application Status</h4>
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <div className="bg-white rounded-lg p-4 border border-orange-100">
+                      <label className="block text-sm font-semibold text-orange-600 mb-2">Current Status</label>
+                      <span className={`inline-flex items-center px-4 py-2 rounded-full text-sm font-semibold shadow-sm ${getStatusColor(selectedApplication.status)}`}>
+                        <div className={`w-2 h-2 rounded-full mr-2 ${
+                          selectedApplication.status === 'funded' ? 'bg-green-400' :
+                          selectedApplication.status === 'approved' ? 'bg-blue-400' :
+                          selectedApplication.status === 'submitted' ? 'bg-yellow-400' :
+                          selectedApplication.status === 'declined' ? 'bg-red-400' : 'bg-gray-400'
+                        }`}></div>
+                        {selectedApplication.status.charAt(0).toUpperCase() + selectedApplication.status.slice(1)}
+                      </span>
+                    </div>
+                    <div className="bg-white rounded-lg p-4 border border-orange-100">
+                      <label className="block text-sm font-semibold text-orange-600 mb-2">Matched Lenders</label>
+                      <p className="text-2xl font-bold text-gray-900">{selectedApplication.matchedLenders} lenders</p>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Documents */}
+                {selectedApplication.documents && selectedApplication.documents.length > 0 && (
+                  <div className="mt-8 bg-gradient-to-br from-green-50 to-white rounded-xl border border-green-200 p-6">
+                    <div className="flex items-center space-x-3 mb-6">
+                      <div className="w-10 h-10 bg-green-500 rounded-xl flex items-center justify-center">
+                        <CheckCircle className="w-5 h-5 text-white" />
+                      </div>
+                      <h4 className="text-xl font-bold text-gray-900">Bank Statements & Documents</h4>
+                    </div>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      {selectedApplication.documents.map((doc, index) => (
+                        <div key={index} className="flex items-center bg-white rounded-lg p-4 border border-green-100 hover:border-green-300 transition-colors">
+                          <div className="w-10 h-10 bg-green-100 rounded-lg flex items-center justify-center mr-4">
+                            <CheckCircle className="w-5 h-5 text-green-600" />
+                          </div>
+                          <div>
+                            <p className="font-medium text-gray-900">{doc}</p>
+                            <p className="text-sm text-gray-500">Bank Statement Document</p>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Enhanced Footer */}
+              <div className="bg-gray-50 border-t border-gray-200 px-8 py-6">
+                <div className="flex items-center justify-between">
+                  <div className="text-sm text-gray-500">
+                    Application reviewed for financial analysis and bank statement verification
+                  </div>
+                  <div className="flex space-x-3">
+                    <button
+                      onClick={() => setShowApplicationDetails(false)}
+                      className="px-6 py-3 bg-gradient-to-r from-gray-600 to-gray-700 text-white rounded-xl hover:from-gray-700 hover:to-gray-800 transition-all duration-200 font-medium shadow-lg hover:shadow-xl"
+                    >
+                      Close
+                    </button>
+                    <button
+                      onClick={() => handleDeleteApplication(selectedApplication.id)}
+                      className="px-6 py-3 bg-gradient-to-r from-red-600 to-red-700 text-white rounded-xl hover:from-red-700 hover:to-red-800 transition-all duration-200 font-medium shadow-lg hover:shadow-xl"
+                    >
+                      Delete Application
+                    </button>
+                  </div>
+                </div>
               </div>
             </div>
           </div>
@@ -1940,186 +2247,6 @@ Application ID: {{applicationId}}`;
         </div>
       )}
       
-      {/* User Permissions Modal */}
-      {showUserPermissionsModal && selectedUser && (
-        <div className="fixed inset-0 bg-gray-600 bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-xl shadow-xl max-w-4xl w-full mx-4 max-h-[90vh] overflow-y-auto">
-            <div className="p-6 border-b border-gray-200">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center">
-                  <div className="h-10 w-10 rounded-full bg-gradient-to-br from-blue-500 to-blue-600 flex items-center justify-center mr-3">
-                    <span className="text-sm font-semibold text-white">
-                      {(selectedUser.full_name || selectedUser.email).charAt(0).toUpperCase()}
-                    </span>
-                  </div>
-                  <div>
-                    <h3 className="text-lg font-medium text-gray-900">
-                      {selectedUser.full_name || 'Unnamed User'} - Permissions
-                    </h3>
-                    <p className="text-sm text-gray-500">{selectedUser.email}</p>
-                  </div>
-                </div>
-                <button
-                  onClick={() => setShowUserPermissionsModal(false)}
-                  className="text-gray-400 hover:text-gray-600 text-2xl font-bold"
-                >
-                  ×
-                </button>
-              </div>
-            </div>
-            
-            <div className="p-6">
-              <div className="mb-6">
-              </div>
-
-              {loadingUserApps ? (
-                <div className="flex items-center justify-center py-12">
-                  <div className="text-center">
-                    <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mx-auto mb-3"></div>
-                    <p className="text-gray-500 text-sm">Loading user applications...</p>
-                  </div>
-                </div>
-              ) : userApplications.length === 0 ? (
-                <div className="text-center py-12">
-                  <Building2 className="h-12 w-12 text-gray-300 mx-auto mb-3" />
-                  <p className="text-gray-500 text-sm font-medium">No applications found</p>
-                  <p className="text-gray-400 text-xs mt-1">This user hasn't submitted any applications yet</p>
-                </div>
-              ) : (
-                <div className="space-y-4">
-                  <div className="bg-gray-50 rounded-lg p-4 mb-4">
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <h5 className="font-medium text-gray-900">All Applications - Access Control for {selectedUser.full_name || 'User'}</h5>
-                        <p className="text-sm text-gray-500">
-                          {userApplications.length} total applications • 
-                          {Object.values(userPermissions).filter(Boolean).length} accessible
-                        </p>
-                      </div>
-                      <div className="flex items-center gap-3">
-                        <button
-                          onClick={() => {
-                            const allPermissions: {[key: string]: boolean} = {};
-                            userApplications.forEach(app => {
-                              allPermissions[app.id] = true;
-                            });
-                            setUserPermissions(allPermissions);
-                          }}
-                          className="text-xs text-blue-600 hover:text-blue-800 font-medium"
-                        >
-                          Grant All
-                        </button>
-                        <button
-                          onClick={() => {
-                            const noPermissions: {[key: string]: boolean} = {};
-                            userApplications.forEach(app => {
-                              noPermissions[app.id] = false;
-                            });
-                            setUserPermissions(noPermissions);
-                          }}
-                          className="text-xs text-red-600 hover:text-red-800 font-medium"
-                        >
-                          Revoke All
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="bg-white border border-gray-200 rounded-lg overflow-hidden">
-                    <table className="min-w-full">
-                      <thead className="bg-gray-50">
-                        <tr>
-                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Business</th>
-                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Amount</th>
-                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
-                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Owner</th>
-                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Access</th>
-                        </tr>
-                      </thead>
-                      <tbody className="bg-white divide-y divide-gray-200">
-                        {userApplications.map((app) => (
-                          <tr key={app.id} className="hover:bg-gray-50">
-                            <td className="px-4 py-3">
-                              <div className="flex items-center">
-                                <div className="flex-shrink-0 h-8 w-8">
-                                  <div className="h-8 w-8 rounded-full bg-gradient-to-br from-emerald-500 to-emerald-600 flex items-center justify-center">
-                                    <span className="text-xs font-semibold text-white">
-                                      {app.business_name.charAt(0).toUpperCase()}
-                                    </span>
-                                  </div>
-                                </div>
-                                <div className="ml-3">
-                                  <div className="text-sm font-medium text-gray-900">{app.business_name}</div>
-                                  <div className="text-xs text-gray-500">ID: {app.id.slice(0, 8)}...</div>
-                                </div>
-                              </div>
-                            </td>
-                            <td className="px-4 py-3">
-                              <div className="text-sm text-gray-900">${app.requested_amount.toLocaleString()}</div>
-                              <div className="text-xs text-gray-500">{app.industry}</div>
-                            </td>
-                            <td className="px-4 py-3">
-                              <span className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${getStatusColor(app.status)}`}>
-                                {app.status}
-                              </span>
-                            </td>
-                            <td className="px-4 py-3">
-                              <div className="text-sm text-gray-900">{app.owner_name}</div>
-                              <div className="text-xs text-gray-500">
-                                {app.user_id === selectedUser?.id ? 'Own Application' : 'Other User'}
-                              </div>
-                            </td>
-                            <td className="px-4 py-3">
-                              <div className="flex items-center">
-                                <button
-                                  onClick={() => toggleApplicationAccess(app.id)}
-                                  className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 ${
-                                    userPermissions[app.id] 
-                                      ? 'bg-blue-600' 
-                                      : 'bg-gray-200'
-                                  }`}
-                                >
-                                  <span
-                                    className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
-                                      userPermissions[app.id] 
-                                        ? 'translate-x-6' 
-                                        : 'translate-x-1'
-                                    }`}
-                                  />
-                                </button>
-                                <span className="ml-3 text-xs font-medium text-gray-700">
-                                  {userPermissions[app.id] ? 'Accessible' : 'Restricted'}
-                                </span>
-                              </div>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-              )}
-              
-              <div className="mt-6 pt-6 border-t border-gray-200">
-                <div className="flex justify-end space-x-3">
-                  <button
-                    onClick={() => setShowUserPermissionsModal(false)}
-                    className="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 text-gray-700 font-medium"
-                  >
-                    Close
-                  </button>
-                  <button
-                    onClick={saveUserPermissions}
-                    className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-medium"
-                  >
-                    Save Changes
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 };

@@ -1,6 +1,6 @@
-import React, { useState } from 'react';
-import { Search, Eye, Edit, Download, DollarSign, Building2, Star, CheckCircle, XCircle, Clock, AlertTriangle, FileText } from 'lucide-react';
-import { getApplicationsForMember, getAllApplications, getLenderSubmissions, getUserApplicationAccessMap, getApplicationDocuments, getApplicationMTDByApplicationId, Application as DBApplication, LenderSubmission as DBLenderSubmission } from '../lib/supabase';
+import React, { useRef, useState, useCallback } from 'react';
+import { Search, Eye, Download, DollarSign, Building2, Star, CheckCircle, XCircle, Clock, AlertTriangle, FileText, MoreVertical, Users } from 'lucide-react';
+import { supabase, getApplicationsForMember, getAllApplications, getLenderSubmissions, getUserApplicationAccessMap, getApplicationDocuments, getApplicationMTDByApplicationId, getUsersByRole, getApplicationAccessMapByApp, setApplicationAccess, deleteApplicationDocument, resolveAndDeleteApplicationMTD, insertApplicationMTD, updateApplication, Application as DBApplication, LenderSubmission as DBLenderSubmission, User as DBUser } from '../lib/supabase';
 import { useAuth } from '../App';
 
 // Use database types
@@ -12,9 +12,10 @@ type Deal = DBApplication & {
 
 type AllDealsPortalProps = {
   onEditDeal?: (params: { applicationId: string; lockedLenderIds: string[] }) => void;
+  onViewQualifiedLenders?: (params: { applicationId: string; lockedLenderIds: string[] }) => void;
 };
 
-const AllDealsPortal: React.FC<AllDealsPortalProps> = ({ onEditDeal }) => {
+const AllDealsPortal: React.FC<AllDealsPortalProps> = ({ onEditDeal, onViewQualifiedLenders }) => {
   const { user } = useAuth(); // Get the current logged-in user
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('all');
@@ -24,9 +25,415 @@ const AllDealsPortal: React.FC<AllDealsPortalProps> = ({ onEditDeal }) => {
   const [docsLoading, setDocsLoading] = useState(false);
   const [documents, setDocuments] = useState<Array<{ id: string; file_name: string; file_size?: number; file_type?: string; upload_date?: string; file_url?: string }>>([]);
   const [mtdDocuments, setMtdDocuments] = useState<Array<{ id: string; file_name: string; file_size?: number; file_type?: string; upload_date?: string; file_url?: string; statement_date?: string }>>([]);
+  const [uploadingDoc, setUploadingDoc] = useState(false);
+  const [uploadingMtd, setUploadingMtd] = useState(false);
+  const [docDragOver, setDocDragOver] = useState(false);
+  const [mtdDragOver, setMtdDragOver] = useState(false);
+  const docInputRef = useRef<HTMLInputElement | null>(null);
+  const mtdInputRef = useRef<HTMLInputElement | null>(null);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<
+    | { kind: 'doc'; data: { id: string; file_url?: string; file_name: string } }
+    | { kind: 'mtd'; data: { id: string; file_url?: string; file_name: string; file_size?: number } }
+    | null
+  >(null);
   const [deals, setDeals] = useState<Deal[]>([]);
   const [loading, setLoading] = useState(true);
   const [reloadToken, setReloadToken] = useState(0);
+  const [openActionId, setOpenActionId] = useState<string | null>(null);
+  const [showAccessModal, setShowAccessModal] = useState(false);
+  const [accessLoading, setAccessLoading] = useState(false);
+  const [accessUsers, setAccessUsers] = useState<DBUser[]>([]);
+  const [accessByUser, setAccessByUser] = useState<{[userId: string]: boolean}>({});
+  const [accessApp, setAccessApp] = useState<Deal | null>(null);
+  const [accessSearch, setAccessSearch] = useState('');
+  const [selectedUserIds, setSelectedUserIds] = useState<Set<string>>(new Set());
+  const [editingDetails, setEditingDetails] = useState(false);
+  const [savingDetails, setSavingDetails] = useState(false);
+  const [businessForm, setBusinessForm] = useState({
+    business_name: '',
+    industry: '',
+    years_in_business: 0,
+    monthly_revenue: 0,
+    credit_score: 0,
+  });
+
+  // Lightweight toast notifications
+  const [toast, setToast] = useState<{ type: 'success' | 'error' | 'info'; message: string } | null>(null);
+  const pushToast = (message: string, type: 'success' | 'error' | 'info' = 'success') => {
+    setToast({ type, message });
+    window.setTimeout(() => setToast(null), 2500);
+  };
+  const [contactForm, setContactForm] = useState({
+    owner_name: '',
+    email: '',
+    phone: '',
+    address: '',
+  });
+
+  React.useEffect(() => {
+    if (selectedDeal) {
+      setBusinessForm({
+        business_name: selectedDeal.business_name || '',
+        industry: selectedDeal.industry || '',
+        years_in_business: Number(selectedDeal.years_in_business) || 0,
+        monthly_revenue: Number(selectedDeal.monthly_revenue) || 0,
+        credit_score: Number(selectedDeal.credit_score) || 0,
+      });
+      setContactForm({
+        owner_name: selectedDeal.owner_name || '',
+        email: selectedDeal.email || '',
+        phone: selectedDeal.phone || '',
+        address: selectedDeal.address || '',
+      });
+    }
+  }, [selectedDeal]);
+
+  // Removed per-section save handlers; unified handler below covers both sections
+
+  const handleStartEditDetails = () => {
+    setEditingDetails(true);
+  };
+
+  const handleCancelDetails = () => {
+    // reset forms to selectedDeal values
+    if (selectedDeal) {
+      setBusinessForm({
+        business_name: selectedDeal.business_name || '',
+        industry: selectedDeal.industry || '',
+        years_in_business: Number(selectedDeal.years_in_business) || 0,
+        monthly_revenue: Number(selectedDeal.monthly_revenue) || 0,
+        credit_score: Number(selectedDeal.credit_score) || 0,
+      });
+      setContactForm({
+        owner_name: selectedDeal.owner_name || '',
+        email: selectedDeal.email || '',
+        phone: selectedDeal.phone || '',
+        address: selectedDeal.address || '',
+      });
+    }
+    setEditingDetails(false);
+  };
+
+  const handleSaveDetails = async () => {
+    if (!selectedDeal) return;
+    setSavingDetails(true);
+    try {
+      const payload: Partial<DBApplication> = {
+        // business
+        business_name: businessForm.business_name,
+        industry: businessForm.industry,
+        years_in_business: Number(businessForm.years_in_business) || 0,
+        monthly_revenue: Number(businessForm.monthly_revenue) || 0,
+        credit_score: Number(businessForm.credit_score) || 0,
+        // contact
+        owner_name: contactForm.owner_name,
+        email: contactForm.email,
+        phone: contactForm.phone,
+        address: contactForm.address,
+      };
+      // Debug log for payload and id
+      console.log('Saving application details', { id: selectedDeal.id, payload });
+
+      // Detect no-op updates to avoid unnecessary calls
+      const noChange =
+        (payload.business_name ?? '') === (selectedDeal.business_name ?? '') &&
+        (payload.industry ?? '') === (selectedDeal.industry ?? '') &&
+        Number(payload.years_in_business ?? 0) === Number(selectedDeal.years_in_business ?? 0) &&
+        Number(payload.monthly_revenue ?? 0) === Number(selectedDeal.monthly_revenue ?? 0) &&
+        Number(payload.credit_score ?? 0) === Number(selectedDeal.credit_score ?? 0) &&
+        (payload.owner_name ?? '') === (selectedDeal.owner_name ?? '') &&
+        (payload.email ?? '') === (selectedDeal.email ?? '') &&
+        (payload.phone ?? '') === (selectedDeal.phone ?? '') &&
+        (payload.address ?? '') === (selectedDeal.address ?? '');
+      if (noChange) {
+        pushToast('No changes to save', 'info');
+        setEditingDetails(false);
+        return;
+      }
+
+      const updated = await updateApplication(selectedDeal.id, payload as Partial<DBApplication>);
+      setSelectedDeal(prev => prev ? { ...prev, ...updated } as Deal : prev);
+      setDeals(ds => ds.map(d => d.id === selectedDeal.id ? ({ ...d, ...updated } as Deal) : d));
+      setEditingDetails(false);
+      pushToast('Saved changes successfully', 'success');
+    } catch (e) {
+      console.error('Failed to save details', e);
+      pushToast('Failed to save details', 'error');
+    } finally {
+      setSavingDetails(false);
+    }
+  };
+
+  // Close the menu when clicking anywhere outside of the dropdown container
+  React.useEffect(() => {
+    const onDocClick = (e: MouseEvent) => {
+      if (!openActionId) return;
+      const target = e.target as Element | null;
+      if (target && !target.closest('[data-dropdown="actions"]')) {
+        setOpenActionId(null);
+      }
+    };
+    document.addEventListener('mousedown', onDocClick);
+    return () => document.removeEventListener('mousedown', onDocClick);
+  }, [openActionId]);
+
+  // Utility to refresh docs for selected deal
+  const reloadDocs = useCallback(async () => {
+    if (!selectedDeal) return;
+    setDocsLoading(true);
+    try {
+      const [rows, mtdRows] = await Promise.all([
+        getApplicationDocuments(selectedDeal.id),
+        getApplicationMTDByApplicationId(selectedDeal.id)
+      ]);
+      setDocuments(rows.map(r => ({ id: r.id, file_name: r.file_name, file_size: r.file_size, file_type: r.file_type, upload_date: r.upload_date, file_url: r.file_url })));
+      setMtdDocuments((mtdRows || []).map(r => ({ id: r.id, file_name: r.file_name, file_size: r.file_size, file_type: r.file_type, upload_date: r.upload_date, file_url: r.file_url, statement_date: r.statement_date })));
+    } catch (e) {
+      console.error('Failed to reload documents', e);
+    } finally {
+      setDocsLoading(false);
+    }
+  }, [selectedDeal]);
+
+  // Upload helpers
+  const processDocFiles = async (files: FileList | File[]) => {
+    if (!files || !selectedDeal) return;
+    setUploadingDoc(true);
+    try {
+      for (const file of Array.from(files)) {
+        const storagePath = `docs/${selectedDeal.id}/${Date.now()}-${file.name}`;
+        const up = await supabase.storage.from('application_documents').upload(storagePath, file, { upsert: true });
+        if (up.error) throw up.error;
+        const { data: pub } = supabase.storage.from('application_documents').getPublicUrl(storagePath);
+        const publicUrl = pub?.publicUrl;
+        const ins = await supabase
+          .from('application_documents')
+          .insert([
+            {
+              application_id: selectedDeal.id,
+              file_name: file.name,
+              file_size: file.size,
+              file_type: file.type,
+              upload_date: new Date().toISOString(),
+              file_url: publicUrl ?? null,
+            },
+          ])
+          .select();
+        if (ins.error) throw ins.error;
+      }
+      await reloadDocs();
+    } catch (err) {
+      console.error('Document upload failed', err);
+      alert('Failed to upload document(s).');
+    } finally {
+      setUploadingDoc(false);
+      if (docInputRef.current) docInputRef.current.value = '';
+    }
+  };
+
+  const handleDocFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    await processDocFiles(e.target.files as FileList);
+  };
+
+  const confirmDeleteNow = async () => {
+    if (!deleteTarget) return;
+    const t = deleteTarget;
+    setShowDeleteConfirm(false);
+    setDeleteTarget(null);
+    if (t.kind === 'doc') {
+      await handleDeleteDoc(t.data);
+    } else {
+      await handleDeleteMtd(t.data);
+    }
+  };
+
+  const processMtdFiles = async (files: FileList | File[]) => {
+    if (!files || !selectedDeal) return;
+    setUploadingMtd(true);
+    try {
+      for (const file of Array.from(files)) {
+        const storagePath = `mtd/${selectedDeal.id}/${Date.now()}-${file.name}`;
+        const up = await supabase.storage.from('application_documents').upload(storagePath, file, { upsert: true });
+        if (up.error) throw up.error;
+        const { data: pub } = supabase.storage.from('application_documents').getPublicUrl(storagePath);
+        const publicUrl = pub?.publicUrl;
+        await insertApplicationMTD({
+          application_id: selectedDeal.id,
+          file_name: file.name,
+          file_size: file.size,
+          file_type: file.type,
+          file_url: publicUrl,
+          upload_status: 'completed',
+        });
+      }
+      await reloadDocs();
+    } catch (err) {
+      console.error('MTD upload failed', err);
+      alert('Failed to upload MTD file(s).');
+    } finally {
+      setUploadingMtd(false);
+      if (mtdInputRef.current) mtdInputRef.current.value = '';
+    }
+  };
+
+  const handleMtdFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    await processMtdFiles(e.target.files as FileList);
+  };
+
+  // Delete handlers
+  const handleDeleteDoc = async (doc: { id: string; file_url?: string; file_name: string }) => {
+    if (!selectedDeal) return;
+    // optimistic
+    const prev = documents;
+    setDocuments(d => d.filter(x => x.id !== doc.id));
+    try {
+      // try storage removal
+      if (doc.file_url) {
+        try {
+          const marker = '/object/public/';
+          const idx = doc.file_url.indexOf(marker);
+          if (idx !== -1) {
+            const rel = doc.file_url.substring(idx + marker.length); // bucket/path
+            const firstSlash = rel.indexOf('/');
+            const bucket = rel.substring(0, firstSlash);
+            const objectPath = rel.substring(firstSlash + 1);
+            await supabase.storage.from(bucket).remove([objectPath]);
+          }
+        } catch (err) { void err; }
+      }
+      await deleteApplicationDocument(doc.id);
+    } catch (e) {
+      console.error('Delete document failed', e);
+      setDocuments(prev);
+      alert('Failed to delete document.');
+    }
+  };
+
+  const handleDeleteMtd = async (doc: { id: string; file_url?: string; file_name: string; file_size?: number }) => {
+    if (!selectedDeal) return;
+    const prev = mtdDocuments;
+    setMtdDocuments(d => d.filter(x => x.id !== doc.id));
+    try {
+      if (doc.file_url) {
+        try {
+          const marker = '/object/public/';
+          const idx = doc.file_url.indexOf(marker);
+          if (idx !== -1) {
+            const rel = doc.file_url.substring(idx + marker.length);
+            const firstSlash = rel.indexOf('/');
+            const bucket = rel.substring(0, firstSlash);
+            const objectPath = rel.substring(firstSlash + 1);
+            await supabase.storage.from(bucket).remove([objectPath]);
+          }
+        } catch (err) { void err; }
+      }
+      await resolveAndDeleteApplicationMTD(selectedDeal.id, doc.file_name, doc.file_size);
+    } catch (e) {
+      console.error('Delete MTD failed', e);
+      setMtdDocuments(prev);
+      alert('Failed to delete MTD file.');
+    }
+  };
+
+  // Realtime: sync documents and MTD while modal open
+  React.useEffect(() => {
+    if (!showDocs || !selectedDeal?.id) return;
+    const channel = supabase.channel(`docs-mtd-${selectedDeal.id}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'application_documents', filter: `application_id=eq.${selectedDeal.id}` }, () => { reloadDocs(); })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'application_mtd', filter: `application_id=eq.${selectedDeal.id}` }, () => { reloadDocs(); })
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
+  }, [showDocs, selectedDeal?.id, reloadDocs]);
+
+  // Selection helpers for bulk add
+  const toggleSelectUser = (id: string) => {
+    setSelectedUserIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+
+  const handleBulkAddUsers = async () => {
+    if (!accessApp || selectedUserIds.size === 0) return;
+    const ids = Array.from(selectedUserIds).filter(id => !accessByUser[id]);
+    if (ids.length === 0) return;
+
+    // Optimistic UI: grant immediately and clear UI BEFORE network
+    const prevAccess = { ...accessByUser };
+    setAccessByUser(prev => {
+      const copy = { ...prev };
+      ids.forEach(id => { copy[id] = true; });
+      return copy;
+    });
+    setSelectedUserIds(new Set());
+    setAccessSearch('');
+
+    // Fire-and-forget network call; rollback on failure
+    Promise.all(ids.map(id => setApplicationAccess(id, accessApp.id, true)))
+      .then(() => {
+        try {
+          localStorage.setItem('mca-permissions-updated', String(Date.now()));
+          window.dispatchEvent(new Event('mca-permissions-updated'));
+        } catch (err) { void err; }
+      })
+      .catch(e => {
+        console.error('Bulk add failed', e);
+        setAccessByUser(prev => {
+          const copy = { ...prev };
+          ids.forEach(id => { copy[id] = prevAccess[id] || false; });
+          return copy;
+        });
+        alert('Failed to add selected users');
+      });
+  };
+
+  const handleRevoke = async (id: string) => {
+    if (!accessApp) return;
+    const prev = !!accessByUser[id];
+    setAccessByUser(p => ({ ...p, [id]: false }));
+    try {
+      await setApplicationAccess(id, accessApp.id, false);
+      try {
+        localStorage.setItem('mca-permissions-updated', String(Date.now()));
+        window.dispatchEvent(new Event('mca-permissions-updated'));
+      } catch (err) { void err; }
+    } catch (e) {
+      console.error('Revoke failed', e);
+      setAccessByUser(p => ({ ...p, [id]: prev }));
+      alert('Failed to revoke access');
+    }
+  };
+
+  // Open Manage Access modal and load users + current access map
+  const handleManageAccess = async (deal: Deal) => {
+    if (!user) return;
+    setAccessApp(deal);
+    setShowAccessModal(true);
+    setAccessLoading(true);
+    try {
+      const [admins, members, map] = await Promise.all([
+        getUsersByRole('admin'),
+        getUsersByRole('member'),
+        getApplicationAccessMapByApp(deal.id)
+      ]);
+      const merged = [...admins, ...members].filter(u => u.id !== user.id);
+      setAccessUsers(merged);
+      setAccessByUser(map || {});
+      setSelectedUserIds(new Set());
+      setAccessSearch('');
+    } catch (e) {
+      console.error('Failed to load access data', e);
+      setAccessUsers([]);
+      setAccessByUser({});
+    } finally {
+      setAccessLoading(false);
+    }
+  };
+
+  // (toggleUserAccess removed; using search + bulk add + revoke UI now)
+
 
   // Load applications from Supabase - all applications for admin, user-specific for members
   React.useEffect(() => {
@@ -179,6 +586,15 @@ const AllDealsPortal: React.FC<AllDealsPortalProps> = ({ onEditDeal }) => {
     onEditDeal?.({ applicationId: deal.id, lockedLenderIds: lockedIds });
   };
 
+  const handleViewQualified = (deal: Deal) => {
+    const lockedIds = Array.from(new Set(
+      (deal.lenderSubmissions || [])
+        .map((ls: DBLenderSubmission & { lender: { name: string } }) => ls.lender_id)
+        .filter((id: unknown): id is string => typeof id === 'string' && id.length > 0)
+    ));
+    onViewQualifiedLenders?.({ applicationId: deal.id, lockedLenderIds: lockedIds });
+  };
+
   const handleViewDetails = (deal: Deal) => {
     setSelectedDeal(deal);
     setShowDetails(true);
@@ -230,33 +646,49 @@ const AllDealsPortal: React.FC<AllDealsPortalProps> = ({ onEditDeal }) => {
         </div>
       )}
 
-      {/* Documents Modal */}
+      {/* Enhanced Documents Modal */}
       {showDocs && selectedDeal && (
-        <div className="fixed inset-0 bg-black bg-opacity-60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-2xl shadow-2xl max-w-4xl w-full max-h-[90vh] overflow-hidden">
-            {/* Modal Header */}
-            <div className="bg-gradient-to-r from-blue-600 to-blue-700 px-8 py-6">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center space-x-4">
-                  <div className="h-12 w-12 rounded-xl bg-white bg-opacity-20 flex items-center justify-center">
-                    <FileText className="w-6 h-6 text-white" />
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-3xl shadow-2xl max-w-6xl w-full max-h-[95vh] overflow-hidden border border-gray-100">
+            {/* Enhanced Header */}
+            <div className="px-8 py-6 bg-gradient-to-br from-blue-600 via-blue-700 to-indigo-700 text-white relative overflow-hidden">
+              <div className="absolute inset-0 bg-gradient-to-r from-white/10 to-transparent"></div>
+              <div className="relative z-10">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-4">
+                    <div className="w-12 h-12 rounded-2xl bg-white/20 backdrop-blur-sm flex items-center justify-center shadow-lg">
+                      <FileText className="w-6 h-6 text-white" />
+                    </div>
+                    <div>
+                      <h3 className="text-2xl font-bold tracking-tight">Application Documents</h3>
+                      <div className="flex items-center gap-2 mt-1">
+                        <span className="text-blue-100 text-sm font-medium">{selectedDeal.business_name}</span>
+                        <span className="text-blue-200 text-sm">•</span>
+                        <span className="text-blue-200 text-sm">Document Management</span>
+                      </div>
+                    </div>
                   </div>
-                  <div>
-                    <h3 className="text-xl font-semibold text-white">Application Documents</h3>
-                    <p className="text-blue-100 text-sm">{selectedDeal.business_name}</p>
-                  </div>
+                  <button 
+                    onClick={() => setShowDocs(false)} 
+                    className="w-10 h-10 rounded-xl bg-white/20 hover:bg-white/30 border border-white/20 flex items-center justify-center text-white transition-all duration-200 shadow-sm hover:shadow-md"
+                  >
+                    <XCircle className="w-5 h-5" />
+                  </button>
                 </div>
-                <button 
-                  onClick={() => setShowDocs(false)} 
-                  className="h-10 w-10 rounded-full bg-white bg-opacity-20 hover:bg-opacity-30 flex items-center justify-center text-white transition-all duration-200"
-                >
-                  <XCircle className="w-5 h-5" />
-                </button>
               </div>
             </div>
 
-            {/* Modal Body */}
-            <div className="p-8">
+            {/* Enhanced Modal Body */}
+            <div className="p-8 overflow-y-auto max-h-[calc(95vh-200px)]">
+              <div className="text-gray-600 mb-6 text-center">
+                <div className="text-sm font-medium">Manage application documents and bank statements</div>
+                <div className="text-xs text-gray-500 mt-1">Upload, view, and delete documents for this application</div>
+              </div>
+
+              {/* Hidden file inputs for uploads */}
+              <input ref={docInputRef} type="file" multiple onChange={handleDocFileChange} className="hidden" />
+              <input ref={mtdInputRef} type="file" multiple onChange={handleMtdFileChange} className="hidden" />
+
               {docsLoading ? (
                 <div className="flex flex-col items-center justify-center py-16">
                   <div className="relative">
@@ -264,168 +696,282 @@ const AllDealsPortal: React.FC<AllDealsPortalProps> = ({ onEditDeal }) => {
                   </div>
                   <p className="text-gray-600 text-sm mt-4 font-medium">Loading documents...</p>
                 </div>
-              ) : documents.length === 0 ? (
-                <div className="text-center py-16">
-                  <div className="h-16 w-16 rounded-full bg-gray-100 flex items-center justify-center mx-auto mb-4">
-                    <FileText className="w-8 h-8 text-gray-400" />
-                  </div>
-                  <h4 className="text-lg font-medium text-gray-900 mb-2">No Documents Found</h4>
-                  <p className="text-gray-500 text-sm">No documents have been uploaded for this application yet.</p>
-                </div>
               ) : (
-                <div className="space-y-4">
-                  <div className="flex items-center justify-between mb-6">
-                    <div>
-                      <h4 className="text-lg font-semibold text-gray-900">Uploaded Documents</h4>
-                      <p className="text-sm text-gray-500">{documents.length} document{documents.length !== 1 ? 's' : ''} available</p>
+                <>
+                  {/* Documents Section */}
+                  <div className={`rounded-2xl p-6 mb-8 transition-all duration-150 bg-gradient-to-br from-gray-50 to-gray-100/50 border border-gray-200/50`}>
+                    <div className="flex items-center mb-6">
+                      <div className="flex items-center gap-3">
+                        <div className="w-8 h-8 rounded-lg bg-blue-100 flex items-center justify-center">
+                          <FileText className="w-4 h-4 text-blue-600" />
+                        </div>
+                        <div>
+                          <h4 className="text-lg font-bold text-gray-900">Uploaded Documents</h4>
+                          <p className="text-sm text-gray-600">{documents.length} document{documents.length !== 1 ? 's' : ''} available</p>
+                        </div>
+                      </div>
                     </div>
-                  </div>
-                  
-                  <div className="grid gap-4">
-                    {documents.map((doc, index) => (
-                      <div key={doc.id} className="group bg-gray-50 hover:bg-gray-100 border border-gray-200 hover:border-gray-300 rounded-xl p-6 transition-all duration-200 hover:shadow-md">
-                        <div className="flex items-center justify-between">
-                          <div className="flex items-center space-x-4 flex-1">
-                            <div className="h-12 w-12 rounded-xl bg-gradient-to-br from-blue-500 to-blue-600 flex items-center justify-center flex-shrink-0">
-                              <span className="text-white font-semibold text-sm">
-                                {(index + 1).toString().padStart(2, '0')}
-                              </span>
-                            </div>
-                            <div className="flex-1 min-w-0">
-                              <div className="flex items-center space-x-2 mb-1">
-                                <h5 className="text-sm font-semibold text-gray-900 truncate">{doc.file_name}</h5>
-                                <span className="inline-flex px-2 py-1 text-xs font-medium bg-blue-100 text-blue-800 rounded-full">
-                                  {doc.file_type?.split('/')[1]?.toUpperCase() || 'FILE'}
-                                </span>
+
+                    {/* Dedicated Dropzone for Documents */}
+                    <div
+                      onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); setDocDragOver(true); }}
+                      onDragLeave={() => setDocDragOver(false)}
+                      onDrop={async (e) => { e.preventDefault(); e.stopPropagation(); setDocDragOver(false); const files = e.dataTransfer.files; if (files && files.length) { await processDocFiles(files as FileList); } }}
+                      className={`mb-6 rounded-xl border-2 border-dashed ${docDragOver ? 'border-blue-400 bg-blue-50/40' : 'border-blue-200 bg-white/60'} p-5 flex items-center justify-between`}
+                    >
+                      <div className="flex items-center gap-3 text-left">
+                        <div className="w-9 h-9 rounded-lg bg-blue-100 flex items-center justify-center">
+                          <svg className="w-4 h-4 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" /></svg>
+                        </div>
+                        <div>
+                          <div className="text-sm font-semibold text-gray-800">Drag & drop documents here</div>
+                          <div className="text-xs text-gray-500">or click Browse to select files</div>
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => docInputRef.current?.click()}
+                        disabled={uploadingDoc}
+                        className={`px-3 py-2 rounded-lg text-sm font-semibold ${uploadingDoc ? 'bg-blue-300 text-white cursor-not-allowed' : 'bg-blue-600 text-white hover:bg-blue-700'}`}
+                      >
+                        {uploadingDoc ? 'Uploading…' : 'Browse'}
+                      </button>
+                    </div>
+
+                    {documents.length === 0 ? (
+                      <div className="text-center py-6 text-sm text-gray-500">No documents uploaded yet</div>
+                    ) : (
+                      <div className={`space-y-3 rounded-lg ${docDragOver ? 'ring-2 ring-blue-300 ring-offset-0' : ''}`}>
+                        {documents.map((doc, index) => (
+                          <div key={doc.id} className="bg-white/80 backdrop-blur-sm rounded-xl p-5 border border-white/60 shadow-sm hover:shadow-md transition-all duration-200 group">
+                            <div className="flex items-center justify-between">
+                              <div className="flex items-center gap-4 flex-1">
+                                <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-blue-500 to-blue-600 flex items-center justify-center shadow-sm">
+                                  <span className="text-white font-bold text-sm">
+                                    {(index + 1).toString().padStart(2, '0')}
+                                  </span>
+                                </div>
+                                <div className="flex-1 min-w-0">
+                                  <div className="flex items-center gap-2 mb-1">
+                                    <h5 className="text-sm font-semibold text-gray-900 truncate">{doc.file_name}</h5>
+                                    <span className="inline-flex px-2.5 py-1 text-xs font-semibold bg-blue-100 text-blue-800 rounded-full">
+                                      {doc.file_type?.split('/')[1]?.toUpperCase() || 'PDF'}
+                                    </span>
+                                  </div>
+                                  <div className="flex items-center gap-3 text-xs text-gray-500">
+                                    <span className="flex items-center gap-1">
+                                      <Building2 className="w-3 h-3" />
+                                      {doc.file_size ? `${(doc.file_size / 1024).toFixed(1)} KB` : 'Size unknown'}
+                                    </span>
+                                    {doc.upload_date && (
+                                      <span className="flex items-center gap-1">
+                                        <Clock className="w-3 h-3" />
+                                        {new Date(doc.upload_date).toLocaleDateString('en-US', { 
+                                          month: 'short', 
+                                          day: 'numeric', 
+                                          year: 'numeric' 
+                                        })}
+                                      </span>
+                                    )}
+                                  </div>
+                                </div>
                               </div>
-                              <div className="flex items-center space-x-3 text-xs text-gray-500">
-                                <span className="flex items-center">
-                                  <Building2 className="w-3 h-3 mr-1" />
-                                  {doc.file_size ? `${(doc.file_size / 1024).toFixed(1)} KB` : 'Size unknown'}
-                                </span>
-                                {doc.upload_date && (
-                                  <span className="flex items-center">
-                                    <Clock className="w-3 h-3 mr-1" />
-                                    {new Date(doc.upload_date).toLocaleDateString('en-US', { 
-                                      month: 'short', 
-                                      day: 'numeric', 
-                                      year: 'numeric' 
-                                    })}
+                              <div className="flex items-center gap-2">
+                                {doc.file_url ? (
+                                  <>
+                                    <button className="px-3 py-2 text-xs font-semibold text-gray-700 bg-white border border-gray-200 rounded-lg hover:bg-gray-50 hover:border-gray-300 transition-all duration-200">
+                                      <Download className="w-3 h-3 mr-1 inline" />
+                                      Download
+                                    </button>
+                                    <a 
+                                      href={doc.file_url} 
+                                      target="_blank" 
+                                      rel="noreferrer" 
+                                      className="px-3 py-2 text-xs font-semibold text-white bg-gradient-to-r from-blue-600 to-blue-700 rounded-lg hover:from-blue-700 hover:to-blue-800 transition-all duration-200 shadow-sm hover:shadow-md"
+                                    >
+                                      <Eye className="w-3 h-3 mr-1 inline" />
+                                      Open
+                                    </a>
+                                    <button onClick={() => { setDeleteTarget({ kind: 'doc', data: doc }); setShowDeleteConfirm(true); }} className="px-3 py-2 text-xs font-semibold text-red-700 bg-red-50 border border-red-200 rounded-lg hover:bg-red-100 hover:border-red-300 transition-all duration-200">
+                                      <svg className="w-3 h-3 mr-1 inline" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                                      </svg>
+                                      Delete
+                                    </button>
+                                  </>
+                                ) : (
+                                  <span className="px-3 py-2 text-xs text-gray-400 bg-gray-100 rounded-lg">
+                                    <XCircle className="w-3 h-3 mr-1 inline" />
+                                    No URL
                                   </span>
                                 )}
                               </div>
                             </div>
                           </div>
-                          <div className="flex items-center space-x-3">
-                            {doc.file_url ? (
-                              <>
-                                <button className="inline-flex items-center px-3 py-2 text-xs font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors">
-                                  <Download className="w-3 h-3 mr-1" />
-                                  Download
-                                </button>
-                                <a 
-                                  href={doc.file_url} 
-                                  target="_blank" 
-                                  rel="noreferrer" 
-                                  className="inline-flex items-center px-4 py-2 text-xs font-medium text-white bg-gradient-to-r from-blue-600 to-blue-700 rounded-lg hover:from-blue-700 hover:to-blue-800 transition-all duration-200 shadow-sm hover:shadow-md"
-                                >
-                                  <Eye className="w-3 h-3 mr-1" />
-                                  Open
-                                </a>
-                              </>
-                            ) : (
-                              <span className="inline-flex items-center px-3 py-2 text-xs text-gray-400 bg-gray-100 rounded-lg">
-                                <XCircle className="w-3 h-3 mr-1" />
-                                No URL
-                              </span>
-                            )}
-                          </div>
-                        </div>
+                        ))}
                       </div>
-                    ))}
+                    )}
                   </div>
 
                   {/* MTD Section */}
-                  <div className="flex items-center justify-between mt-10 mb-6">
-                    <div>
-                      <h4 className="text-lg font-semibold text-gray-900">Bank Statements (MTD)</h4>
-                      <p className="text-sm text-gray-500">{mtdDocuments.length} file{mtdDocuments.length !== 1 ? 's' : ''} available</p>
+                  <div className={`rounded-2xl p-6 transition-all duration-150 bg-gradient-to-br from-purple-50 to-pink-50/50 border border-purple-200/50`}>
+                    <div className="flex items-center mb-6">
+                      <div className="flex items-center gap-3">
+                        <div className="w-8 h-8 rounded-lg bg-purple-100 flex items-center justify-center">
+                          <svg className="w-4 h-4 text-purple-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2m0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+                          </svg>
+                        </div>
+                        <div>
+                          <h4 className="text-lg font-bold text-gray-900">Bank Statements (MTD)</h4>
+                          <p className="text-sm text-gray-600">{mtdDocuments.length} file{mtdDocuments.length !== 1 ? 's' : ''} available</p>
+                        </div>
+                      </div>
                     </div>
-                  </div>
-                  <div className="grid gap-4">
-                    {mtdDocuments.map((doc, index) => (
-                      <div key={doc.id} className="group bg-gray-50 hover:bg-gray-100 border border-gray-200 hover:border-gray-300 rounded-xl p-6 transition-all duration-200 hover:shadow-md">
-                        <div className="flex items-center justify-between">
-                          <div className="flex items-center space-x-4 flex-1">
-                            <div className="h-12 w-12 rounded-xl bg-gradient-to-br from-purple-500 to-purple-600 flex items-center justify-center flex-shrink-0">
-                              <span className="text-white font-semibold text-sm">
-                                {(index + 1).toString().padStart(2, '0')}
-                              </span>
-                            </div>
-                            <div className="flex-1 min-w-0">
-                              <div className="flex items-center space-x-2 mb-1">
-                                <h5 className="text-sm font-semibold text-gray-900 truncate">{doc.file_name}</h5>
-                                <span className="inline-flex px-2 py-1 text-xs font-medium bg-purple-100 text-purple-800 rounded-full">MTD</span>
+
+                    {/* Dedicated Dropzone for MTD */}
+                    <div
+                      onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); setMtdDragOver(true); }}
+                      onDragLeave={() => setMtdDragOver(false)}
+                      onDrop={async (e) => { e.preventDefault(); e.stopPropagation(); setMtdDragOver(false); const files = e.dataTransfer.files; if (files && files.length) { await processMtdFiles(files as FileList); } }}
+                      className={`mb-6 rounded-xl border-2 border-dashed ${mtdDragOver ? 'border-purple-400 bg-purple-50/40' : 'border-purple-200 bg-white/60'} p-5 flex items-center justify-between`}
+                    >
+                      <div className="flex items-center gap-3 text-left">
+                        <div className="w-9 h-9 rounded-lg bg-purple-100 flex items-center justify-center">
+                          <svg className="w-4 h-4 text-purple-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" /></svg>
+                        </div>
+                        <div>
+                          <div className="text-sm font-semibold text-gray-800">Drag & drop MTD files here</div>
+                          <div className="text-xs text-gray-500">or click Browse to select files</div>
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => mtdInputRef.current?.click()}
+                        disabled={uploadingMtd}
+                        className={`px-3 py-2 rounded-lg text-sm font-semibold ${uploadingMtd ? 'bg-purple-300 text-white cursor-not-allowed' : 'bg-purple-600 text-white hover:bg-purple-700'}`}
+                      >
+                        {uploadingMtd ? 'Uploading…' : 'Browse'}
+                      </button>
+                    </div>
+
+                    {mtdDocuments.length === 0 ? (
+                      <div className="text-center py-6 text-sm text-gray-500">No MTD files uploaded yet</div>
+                    ) : (
+                      <div className={`space-y-3 rounded-lg ${mtdDragOver ? 'ring-2 ring-purple-300 ring-offset-0' : ''}`}>
+                        {mtdDocuments.map((doc, index) => (
+                          <div key={doc.id} className="bg-white/80 backdrop-blur-sm rounded-xl p-5 border border-white/60 shadow-sm hover:shadow-md transition-all duration-200 group">
+                            <div className="flex items-center justify-between">
+                              <div className="flex items-center gap-4 flex-1">
+                                <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-purple-500 to-purple-600 flex items-center justify-center shadow-sm">
+                                  <span className="text-white font-bold text-sm">
+                                    {(index + 1).toString().padStart(2, '0')}
+                                  </span>
+                                </div>
+                                <div className="flex-1 min-w-0">
+                                  <div className="flex items-center gap-2 mb-1">
+                                    <h5 className="text-sm font-semibold text-gray-900 truncate">{doc.file_name}</h5>
+                                    <span className="inline-flex px-2.5 py-1 text-xs font-semibold bg-purple-100 text-purple-800 rounded-full">MTD</span>
+                                  </div>
+                                  <div className="flex items-center gap-3 text-xs text-gray-500">
+                                    <span className="flex items-center gap-1">
+                                      <Building2 className="w-3 h-3" />
+                                      {doc.file_size ? `${(doc.file_size / 1024).toFixed(1)} KB` : 'Size unknown'}
+                                    </span>
+                                    {doc.statement_date && (
+                                      <span className="flex items-center gap-1">
+                                        <Clock className="w-3 h-3" />
+                                        {new Date(doc.statement_date).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+                                      </span>
+                                    )}
+                                  </div>
+                                </div>
                               </div>
-                              <div className="flex items-center space-x-3 text-xs text-gray-500">
-                                <span className="flex items-center">
-                                  <Building2 className="w-3 h-3 mr-1" />
-                                  {doc.file_size ? `${(doc.file_size / 1024).toFixed(1)} KB` : 'Size unknown'}
-                                </span>
-                                {doc.statement_date && (
-                                  <span className="flex items-center">
-                                    <Clock className="w-3 h-3 mr-1" />
-                                    {new Date(doc.statement_date).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+                              <div className="flex items-center gap-2">
+                                {doc.file_url ? (
+                                  <>
+                                    <button className="px-3 py-2 text-xs font-semibold text-gray-700 bg-white border border-gray-200 rounded-lg hover:bg-gray-50 hover:border-gray-300 transition-all duration-200">
+                                      <Download className="w-3 h-3 mr-1 inline" />
+                                      Download
+                                    </button>
+                                    <a 
+                                      href={doc.file_url} 
+                                      target="_blank" 
+                                      rel="noreferrer" 
+                                      className="px-3 py-2 text-xs font-semibold text-white bg-gradient-to-r from-purple-600 to-purple-700 rounded-lg hover:from-purple-700 hover:to-purple-800 transition-all duration-200 shadow-sm hover:shadow-md"
+                                    >
+                                      <Eye className="w-3 h-3 mr-1 inline" />
+                                      Open
+                                    </a>
+                                    <button onClick={() => { setDeleteTarget({ kind: 'mtd', data: doc }); setShowDeleteConfirm(true); }} className="px-3 py-2 text-xs font-semibold text-red-700 bg-red-50 border border-red-200 rounded-lg hover:bg-red-100 hover:border-red-300 transition-all duration-200">
+                                      <svg className="w-3 h-3 mr-1 inline" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                                      </svg>
+                                      Delete
+                                    </button>
+                                  </>
+                                ) : (
+                                  <span className="px-3 py-2 text-xs text-gray-400 bg-gray-100 rounded-lg">
+                                    <XCircle className="w-3 h-3 mr-1 inline" />
+                                    No URL
                                   </span>
                                 )}
                               </div>
                             </div>
                           </div>
-                          <div className="flex items-center space-x-3">
-                            {doc.file_url ? (
-                              <>
-                                <button className="inline-flex items-center px-3 py-2 text-xs font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors">
-                                  <Download className="w-3 h-3 mr-1" />
-                                  Download
-                                </button>
-                                <a 
-                                  href={doc.file_url} 
-                                  target="_blank" 
-                                  rel="noreferrer" 
-                                  className="inline-flex items-center px-4 py-2 text-xs font-medium text-white bg-gradient-to-r from-purple-600 to-purple-700 rounded-lg hover:from-purple-700 hover:to-purple-800 transition-all duration-200 shadow-sm hover:shadow-md"
-                                >
-                                  <Eye className="w-3 h-3 mr-1" />
-                                  Open
-                                </a>
-                              </>
-                            ) : (
-                              <span className="inline-flex items-center px-3 py-2 text-xs text-gray-400 bg-gray-100 rounded-lg">
-                                <XCircle className="w-3 h-3 mr-1" />
-                                No URL
-                              </span>
-                            )}
-                          </div>
-                        </div>
+                        ))}
                       </div>
-                    ))}
+                    )}
                   </div>
-                </div>
+                </>
               )}
             </div>
 
-            {/* Modal Footer */}
-            <div className="bg-gray-50 px-8 py-4 border-t border-gray-200">
-              <div className="flex items-center justify-between">
-                <div className="text-xs text-gray-500">
-                  Application ID: {selectedDeal.id}
+            {/* Delete Confirm Dialog */}
+            {showDeleteConfirm && deleteTarget && (
+              <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
+                <div className="absolute inset-0 bg-black/50" onClick={() => { setShowDeleteConfirm(false); setDeleteTarget(null); }}></div>
+                <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-md border border-gray-100 p-6">
+                  <div className="flex items-start gap-3">
+                    <div className="w-10 h-10 rounded-xl bg-red-100 flex items-center justify-center text-red-600">
+                      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"/></svg>
+                    </div>
+                    <div className="flex-1">
+                      <div className="text-lg font-semibold text-gray-900 mb-1">Confirm Delete</div>
+                      <div className="text-sm text-gray-600">
+                        {deleteTarget.kind === 'doc' ? 'Delete document' : 'Delete MTD file'}
+                        {': '}
+                        <span className="font-medium">{deleteTarget.data.file_name}</span>?
+                      </div>
+                    </div>
+                  </div>
+                  <div className="mt-6 flex justify-end gap-3">
+                    <button
+                      onClick={() => { setShowDeleteConfirm(false); setDeleteTarget(null); }}
+                      className="px-4 py-2 rounded-xl border border-gray-200 text-gray-700 bg-white hover:bg-gray-50"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      onClick={confirmDeleteNow}
+                      className="px-4 py-2 rounded-xl text-white bg-red-600 hover:bg-red-700 shadow-sm"
+                    >
+                      Delete
+                    </button>
+                  </div>
                 </div>
-                <button 
-                  onClick={() => setShowDocs(false)} 
-                  className="px-6 py-2 bg-white border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors font-medium"
-                >
-                  Close
-                </button>
               </div>
+            )}
+
+            {/* Enhanced Footer */}
+            <div className="px-8 py-6 bg-gray-50/80 border-t border-gray-100 flex justify-between items-center">
+              <div className="text-xs text-gray-500">
+                Application ID: {selectedDeal.id}
+              </div>
+              <button 
+                onClick={() => setShowDocs(false)} 
+                className="px-6 py-3 rounded-xl border border-gray-200 bg-white text-gray-700 hover:bg-gray-50 hover:border-gray-300 font-semibold transition-all duration-200 shadow-sm hover:shadow-md"
+              >
+                Close
+              </button>
             </div>
           </div>
         </div>
@@ -485,12 +1031,12 @@ const AllDealsPortal: React.FC<AllDealsPortalProps> = ({ onEditDeal }) => {
             </div>
             <div className="ml-4">
               <p className="text-sm font-medium text-gray-600">Submitted</p>
-              <p className="text-2xl font-bold text-gray-900">
-                {statusCounts.submitted}
-              </p>
+              <p className="text-2xl font-bold text-gray-900">{statusCounts.submitted}</p>
             </div>
           </div>
         </div>
+
+        
 
         <div className="bg-white rounded-xl shadow-lg p-6">
           <div className="flex items-center">
@@ -545,8 +1091,8 @@ const AllDealsPortal: React.FC<AllDealsPortalProps> = ({ onEditDeal }) => {
       </div>
 
       {/* Deals Table */}
-      <div className="bg-white rounded-xl shadow-lg overflow-hidden">
-        <div className={`${user && (user.role === 'admin' || user.role === 'Admin') ? '' : 'overflow-x-auto'}`}>
+      <div className="bg-white rounded-xl shadow-lg overflow-visible">
+        <div className="w-full overflow-x-auto md:overflow-visible">
           <table className="min-w-full">
             <thead className="bg-gray-50 border-b border-gray-200">
               <tr>
@@ -570,9 +1116,7 @@ const AllDealsPortal: React.FC<AllDealsPortalProps> = ({ onEditDeal }) => {
                     Submitted By
                   </th>
                 )}
-                <th className="px-6 py-4 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Actions
-                </th>
+                <th className="px-4 py-4"></th>
               </tr>
             </thead>
             <tbody className="bg-white divide-y divide-gray-200">
@@ -657,36 +1201,103 @@ const AllDealsPortal: React.FC<AllDealsPortalProps> = ({ onEditDeal }) => {
                       </div>
                     </td>
                   )}
-                  <td className="px-6 py-4 text-right">
-                    <div className="flex items-center justify-end space-x-2">
-                      <div className="flex items-center bg-gray-50 rounded-lg p-1 border border-gray-200 shadow-sm">
-                        <button
-                          onClick={() => handleViewDetails(deal)}
-                          className="group relative inline-flex items-center justify-center w-9 h-9 text-purple-600 hover:text-white hover:bg-gradient-to-r hover:from-purple-500 hover:to-purple-600 rounded-md transition-all duration-300 hover:shadow-md hover:scale-110"
-                          title="View details"
-                        >
-                          <Eye className="w-4 h-4 transition-transform group-hover:scale-110" />
-                          <div className="absolute inset-0 bg-purple-100 rounded-md opacity-0 group-hover:opacity-20 transition-opacity duration-300"></div>
-                        </button>
-                        <div className="w-px h-6 bg-gray-300 mx-1"></div>
-                        <button
-                          className="group relative inline-flex items-center justify-center w-9 h-9 text-gray-600 hover:text-white hover:bg-gradient-to-r hover:from-gray-500 hover:to-gray-600 rounded-md transition-all duration-300 hover:shadow-md hover:scale-110"
-                          title="View documents"
-                          onClick={() => handleViewDocuments(deal)}
-                        >
-                          <FileText className="w-4 h-4 transition-transform group-hover:scale-110" />
-                          <div className="absolute inset-0 bg-gray-100 rounded-md opacity-0 group-hover:opacity-20 transition-opacity duration-300"></div>
-                        </button>
-                        <div className="w-px h-6 bg-gray-300 mx-1"></div>
-                        <button 
-                          className="group relative inline-flex items-center justify-center w-9 h-9 text-blue-600 hover:text-white hover:bg-gradient-to-r hover:from-blue-500 hover:to-blue-600 rounded-md transition-all duration-300 hover:shadow-md hover:scale-110"
-                          onClick={() => handleEditDeal(deal)}
-                          title="Edit deal"
-                        >
-                          <Edit className="w-4 h-4 transition-transform group-hover:scale-110" />
-                          <div className="absolute inset-0 bg-blue-100 rounded-md opacity-0 group-hover:opacity-20 transition-opacity duration-300"></div>
-                        </button>
-                      </div>
+                  <td className="px-4 py-4 relative text-right">
+                    <div data-dropdown="actions">
+                      <button
+                        onClick={() => setOpenActionId(openActionId === deal.id ? null : deal.id)}
+                        className={`inline-flex items-center justify-center h-8 w-8 rounded-lg transition-all duration-200 ${
+                          openActionId === deal.id 
+                            ? 'bg-gray-100 text-gray-700 shadow-sm' 
+                            : 'text-gray-400 hover:text-gray-600 hover:bg-gray-50'
+                        }`}
+                        title="More actions"
+                      >
+                        <MoreVertical className="w-4 h-4" />
+                      </button>
+                      {openActionId === deal.id && (
+                        <div className="absolute right-10 top-1/2 -translate-y-1/2 bg-white border border-gray-200/60 rounded-xl shadow-2xl z-20 min-w-[240px] overflow-hidden backdrop-blur-sm">
+                          {/* Header */}
+                          <div className="px-6 py-3 bg-gradient-to-r from-slate-50 to-gray-50 border-b border-gray-200/80">
+                            <div className="text-xs font-bold uppercase tracking-wider text-slate-600 flex items-center">
+                              <div className="w-2 h-2 rounded-full bg-blue-500 mr-2"></div>
+                              Deal Actions
+                            </div>
+                          </div>
+                          
+                          {/* Menu Items */}
+                          <div className="py-2">
+                            <button
+                              onClick={() => { handleViewDetails(deal); setOpenActionId(null); }}
+                              className="flex items-center w-full text-left px-6 py-3 text-sm font-medium text-slate-700 hover:bg-blue-50/80 hover:text-blue-700 transition-all duration-200 group"
+                            >
+                              <div className="flex items-center justify-center w-8 h-8 rounded-lg bg-blue-100/50 group-hover:bg-blue-200/80 mr-3 transition-colors">
+                                <Eye className="w-4 h-4 text-blue-600 group-hover:text-blue-700" />
+                              </div>
+                              <div>
+                                <div className="font-medium">View Details</div>
+                                <div className="text-xs text-slate-500 group-hover:text-blue-600">Review application info</div>
+                              </div>
+                            </button>
+                            
+                            <button
+                              onClick={() => { handleViewDocuments(deal); setOpenActionId(null); }}
+                              className="flex items-center w-full text-left px-6 py-3 text-sm font-medium text-slate-700 hover:bg-emerald-50/80 hover:text-emerald-700 transition-all duration-200 group"
+                            >
+                              <div className="flex items-center justify-center w-8 h-8 rounded-lg bg-emerald-100/50 group-hover:bg-emerald-200/80 mr-3 transition-colors">
+                                <FileText className="w-4 h-4 text-emerald-600 group-hover:text-emerald-700" />
+                              </div>
+                              <div>
+                                <div className="font-medium">View Documents</div>
+                                <div className="text-xs text-slate-500 group-hover:text-emerald-600">Bank statements & files</div>
+                              </div>
+                            </button>
+                            
+                            <button
+                              onClick={() => { handleViewQualified(deal); setOpenActionId(null); }}
+                              className="flex items-center w-full text-left px-6 py-3 text-sm font-medium text-slate-700 hover:bg-indigo-50/80 hover:text-indigo-700 transition-all duration-200 group"
+                            >
+                              <div className="flex items-center justify-center w-8 h-8 rounded-lg bg-indigo-100/50 group-hover:bg-indigo-200/80 mr-3 transition-colors">
+                                <Star className="w-4 h-4 text-indigo-600 group-hover:text-indigo-700" />
+                              </div>
+                              <div>
+                                <div className="font-medium">Qualified Lenders</div>
+                                <div className="text-xs text-slate-500 group-hover:text-indigo-600">View lender matches</div>
+                              </div>
+                            </button>
+
+                            <button
+                              onClick={() => { handleEditDeal(deal); setOpenActionId(null); }}
+                              className="flex items-center w-full text-left px-6 py-3 text-sm font-medium text-slate-700 hover:bg-amber-50/80 hover:text-amber-700 transition-all duration-200 group"
+                            >
+                              <div className="flex items-center justify-center w-8 h-8 rounded-lg bg-amber-100/50 group-hover:bg-amber-200/80 mr-3 transition-colors">
+                                <svg className="w-4 h-4 text-amber-600 group-hover:text-amber-700" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                                </svg>
+                              </div>
+                              <div>
+                                <div className="font-medium">Bank Statements</div>
+                                <div className="text-xs text-slate-500 group-hover:text-amber-600">Modify Bank Documents</div>
+                              </div>
+                            </button>
+                            
+                            {user && (user.role === 'admin' || user.role === 'Admin') && (
+                                <button
+                                  onClick={() => { handleManageAccess(deal); setOpenActionId(null); }}
+                                  className="flex items-center w-full text-left px-6 py-3 text-sm font-medium text-slate-700 hover:bg-violet-50/80 hover:text-violet-700 transition-all duration-200 group"
+                                  title="Manage which users can access this deal"
+                                >
+                                  <div className="flex items-center justify-center w-8 h-8 rounded-lg bg-violet-100/50 group-hover:bg-violet-200/80 mr-3 transition-colors">
+                                    <Users className="w-4 h-4 text-violet-600 group-hover:text-violet-700" />
+                                  </div>
+                                  <div>
+                                    <div className="font-medium">Manage Access</div>
+                                    <div className="text-xs text-slate-500 group-hover:text-violet-600">Control user permissions</div>
+                                  </div>
+                                </button>
+                            )}
+                          </div>
+                        </div>
+                      )}
                     </div>
                   </td>
                 </tr>
@@ -696,125 +1307,487 @@ const AllDealsPortal: React.FC<AllDealsPortalProps> = ({ onEditDeal }) => {
         </div>
       </div>
 
-      {/* Deal Details Modal */}
+      {showAccessModal && accessApp && (
+        <div className="fixed inset-0 z-40 flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={() => setShowAccessModal(false)}></div>
+          <div className="relative z-50 w-full max-w-2xl bg-white rounded-3xl shadow-2xl border border-gray-100 overflow-hidden">
+            {/* Enhanced Header */}
+            <div className="px-8 py-6 bg-gradient-to-br from-emerald-600 via-emerald-700 to-teal-700 text-white relative overflow-hidden">
+              <div className="absolute inset-0 bg-gradient-to-r from-white/10 to-transparent"></div>
+              <div className="relative z-10">
+                <div className="flex items-center gap-3 mb-2">
+                  <div className="w-10 h-10 rounded-xl bg-white/20 backdrop-blur-sm flex items-center justify-center">
+                    <Users className="w-5 h-5 text-white" />
+                  </div>
+                  <div>
+                    <div className="text-xl font-bold tracking-tight">Manage Access</div>
+                    <div className="text-emerald-100 text-sm font-medium">{accessApp.business_name}</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+            
+            {/* Enhanced Body */}
+            <div className="p-8">
+              <div className="text-gray-600 mb-6 text-center">
+                <div className="text-sm font-medium">Grant specific users access to this deal</div>
+                <div className="text-xs text-gray-500 mt-1">Search and select users to manage permissions</div>
+              </div>
+              
+              {accessLoading ? (
+                <div className="flex flex-col items-center justify-center py-16">
+                  <div className="relative">
+                    <div className="animate-spin rounded-full h-12 w-12 border-4 border-emerald-200 border-t-emerald-600"></div>
+                  </div>
+                  <p className="text-gray-600 text-sm mt-4 font-medium">Loading users...</p>
+                </div>
+              ) : (
+                <>
+                  {/* Enhanced Search and Add */}
+                  <div className="flex items-center gap-4 mb-8">
+                    <input
+                      type="text"
+                      value={accessSearch}
+                      onChange={(e) => setAccessSearch(e.target.value)}
+                      placeholder="Search users by name or email..."
+                      className="flex-1 px-5 py-3.5 border border-gray-200 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 transition-all duration-200 text-sm font-medium placeholder-gray-400 shadow-sm"
+                    />
+                    <button
+                      onClick={handleBulkAddUsers}
+                      disabled={selectedUserIds.size === 0}
+                      className={`px-6 py-3.5 rounded-xl text-white font-semibold transition-all duration-200 shadow-lg ${
+                        selectedUserIds.size === 0 
+                          ? 'bg-gray-300 cursor-not-allowed text-gray-500' 
+                          : 'bg-gradient-to-r from-emerald-600 to-emerald-700 hover:from-emerald-700 hover:to-emerald-800 hover:shadow-xl transform hover:scale-105'
+                      }`}
+                    >
+                      Add Users {selectedUserIds.size > 0 && `(${selectedUserIds.size})`}
+                    </button>
+                  </div>
+
+                  {/* Enhanced Search Results */}
+                  <div className="mb-8">
+                    {accessSearch.trim().length === 0 ? (
+                      <div className="text-center py-12 bg-gray-50/50 rounded-2xl border-2 border-dashed border-gray-200">
+                        <Users className="w-12 h-12 text-gray-300 mx-auto mb-3" />
+                        <div className="text-sm font-medium text-gray-600">Start typing to search for users</div>
+                        <div className="text-xs text-gray-400 mt-1">Find users by name or email address</div>
+                      </div>
+                    ) : (
+                      <div className="space-y-3 max-h-64 overflow-auto pr-2">
+                        {accessUsers
+                          .filter(u => !accessByUser[u.id])
+                          .filter(u => {
+                            const q = accessSearch.trim().toLowerCase();
+                            const name = (u.full_name || '').toLowerCase();
+                            const email = (u.email || '').toLowerCase();
+                            return name.includes(q) || email.includes(q);
+                          })
+                          .map(u => (
+                            <label key={u.id} className="flex items-center justify-between rounded-xl border border-gray-200 px-5 py-4 hover:bg-emerald-50/50 hover:border-emerald-200 cursor-pointer transition-all duration-200 group">
+                              <div className="flex items-center gap-4">
+                                <input
+                                  type="checkbox"
+                                  checked={selectedUserIds.has(u.id)}
+                                  onChange={() => toggleSelectUser(u.id)}
+                                  className="h-5 w-5 text-emerald-600 focus:ring-emerald-500 rounded-md border-2 border-gray-300 group-hover:border-emerald-400 transition-colors"
+                                />
+                                <div className="w-10 h-10 rounded-full bg-gradient-to-br from-emerald-100 to-emerald-200 flex items-center justify-center">
+                                  <span className="text-emerald-700 font-semibold text-sm">
+                                    {(u.full_name || u.email).charAt(0).toUpperCase()}
+                                  </span>
+                                </div>
+                                <div>
+                                  <div className="text-sm font-semibold text-gray-900">{u.full_name || u.email}</div>
+                                  <div className="text-xs text-gray-500 flex items-center gap-1">
+                                    <span className={`inline-block w-2 h-2 rounded-full ${(u.roles || '').toLowerCase() === 'admin' ? 'bg-purple-400' : 'bg-blue-400'}`}></span>
+                                    {(u.roles || '').toLowerCase() === 'admin' ? 'Admin' : 'Member'}
+                                  </div>
+                                </div>
+                              </div>
+                            </label>
+                          ))}
+                        {accessUsers.filter(u => !accessByUser[u.id]).filter(u => {
+                          const q = accessSearch.trim().toLowerCase();
+                          const name = (u.full_name || '').toLowerCase();
+                          const email = (u.email || '').toLowerCase();
+                          return q && (name.includes(q) || email.includes(q));
+                        }).length === 0 && (
+                          <div className="text-center py-12 bg-gray-50/50 rounded-2xl">
+                            <div className="text-sm font-medium text-gray-600">No users match your search</div>
+                            <div className="text-xs text-gray-400 mt-1">Try a different search term</div>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Enhanced Granted Users */}
+                  <div>
+                    <div className="flex items-center gap-2 mb-4">
+                      <div className="text-sm font-bold text-gray-700">Granted Users</div>
+                      <div className="px-2 py-1 bg-emerald-100 text-emerald-700 rounded-full text-xs font-semibold">
+                        {accessUsers.filter(u => accessByUser[u.id]).length}
+                      </div>
+                    </div>
+                    <div className="space-y-3 max-h-64 overflow-auto pr-2">
+                      {accessUsers.filter(u => accessByUser[u.id]).map(u => (
+                        <div key={u.id} className="flex items-center justify-between rounded-xl border border-emerald-200 px-5 py-4 bg-gradient-to-r from-emerald-50/80 to-emerald-50/40">
+                          <div className="flex items-center gap-4">
+                            <div className="w-10 h-10 rounded-full bg-gradient-to-br from-emerald-500 to-emerald-600 flex items-center justify-center shadow-sm">
+                              <span className="text-white font-semibold text-sm">
+                                {(u.full_name || u.email).charAt(0).toUpperCase()}
+                              </span>
+                            </div>
+                            <div>
+                              <div className="text-sm font-semibold text-gray-900">{u.full_name || u.email}</div>
+                              <div className="text-xs text-gray-500 flex items-center gap-1">
+                                <span className={`inline-block w-2 h-2 rounded-full ${(u.roles || '').toLowerCase() === 'admin' ? 'bg-purple-400' : 'bg-blue-400'}`}></span>
+                                {(u.roles || '').toLowerCase() === 'admin' ? 'Admin' : 'Member'}
+                                <span className="mx-1">•</span>
+                                <span className="text-emerald-600 font-medium">Access Granted</span>
+                              </div>
+                            </div>
+                          </div>
+                          <button
+                            onClick={() => handleRevoke(u.id)}
+                            className="px-4 py-2 text-xs font-semibold rounded-lg border border-red-200 text-red-700 bg-red-50 hover:bg-red-100 hover:border-red-300 transition-all duration-200 hover:shadow-sm"
+                          >
+                            Revoke
+                          </button>
+                        </div>
+                      ))}
+                      {accessUsers.filter(u => accessByUser[u.id]).length === 0 && (
+                        <div className="text-center py-12 bg-gray-50/50 rounded-2xl border-2 border-dashed border-gray-200">
+                          <Users className="w-12 h-12 text-gray-300 mx-auto mb-3" />
+                          <div className="text-sm font-medium text-gray-600">No users have access yet</div>
+                          <div className="text-xs text-gray-400 mt-1">Search and add users to grant access</div>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </>
+              )}
+            </div>
+            
+            {/* Enhanced Footer */}
+            <div className="px-8 py-6 bg-gray-50/80 border-t border-gray-100 flex justify-end">
+              <button
+                onClick={() => setShowAccessModal(false)}
+                className="px-6 py-3 rounded-xl border border-gray-200 bg-white text-gray-700 hover:bg-gray-50 hover:border-gray-300 font-semibold transition-all duration-200 shadow-sm hover:shadow-md"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Enhanced Deal Details Modal */}
       {showDetails && selectedDeal && (
-        <div className="fixed inset-0 bg-gray-600 bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-xl shadow-xl max-w-4xl w-full mx-4 max-h-[90vh] overflow-y-auto">
-            <div className="p-6 border-b border-gray-200">
-              <div className="flex items-center justify-between">
-                <h3 className="text-lg font-medium text-gray-900">
-                  Deal Details - {selectedDeal.business_name}
-                </h3>
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-3xl shadow-2xl max-w-5xl w-full max-h-[95vh] overflow-hidden border border-gray-100">
+            {/* Enhanced Header */}
+            <div className="px-8 py-6 bg-gradient-to-br from-slate-50 via-blue-50 to-indigo-50 border-b border-gray-200/80 relative overflow-hidden">
+              <div className="absolute inset-0 bg-gradient-to-r from-white/40 to-transparent"></div>
+              <div className="relative z-10 flex items-center justify-between">
+                <div className="flex items-center gap-4">
+                  <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center shadow-lg">
+                    <span className="text-white font-bold text-lg">
+                      {selectedDeal.business_name.charAt(0).toUpperCase()}
+                    </span>
+                  </div>
+                  <div>
+                    <h3 className="text-2xl font-bold text-gray-900 tracking-tight">
+                      {selectedDeal.business_name}
+                    </h3>
+                    <div className="flex items-center gap-2 mt-1">
+                      <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-blue-100 text-blue-800">
+                        {selectedDeal.industry}
+                      </span>
+                      <span className="text-gray-500 text-sm">•</span>
+                      <span className="text-gray-600 text-sm font-medium">Deal Details</span>
+                    </div>
+                  </div>
+                </div>
                 <button
                   onClick={() => setShowDetails(false)}
-                  className="text-gray-400 hover:text-gray-600"
+                  className="w-10 h-10 rounded-xl bg-white/80 hover:bg-white border border-gray-200 flex items-center justify-center text-gray-500 hover:text-gray-700 transition-all duration-200 shadow-sm hover:shadow-md"
                 >
                   ×
                 </button>
               </div>
             </div>
-            <div className="p-6">
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                <div>
-                  <h4 className="text-sm font-medium text-gray-700 mb-3">Business Information</h4>
-                  <div className="space-y-2 text-sm">
-                    <div><span className="text-gray-500">Business Name:</span> <span className="font-medium">{selectedDeal.business_name}</span></div>
-                    <div><span className="text-gray-500">Industry:</span> <span className="font-medium">{selectedDeal.industry}</span></div>
-                    <div><span className="text-gray-500">Time in Business:</span> <span className="font-medium">{selectedDeal.years_in_business} years</span></div>
-                    <div><span className="text-gray-500">Monthly Revenue:</span> <span className="font-medium">${selectedDeal.monthly_revenue.toLocaleString()}</span></div>
-                    <div><span className="text-gray-500">Credit Score:</span> <span className="font-medium">{selectedDeal.credit_score}</span></div>
-                  </div>
-                </div>
-                <div>
-                  <h4 className="text-sm font-medium text-gray-700 mb-3">Contact Information</h4>
-                  <div className="space-y-2 text-sm">
-                    <div><span className="text-gray-500">Owner:</span> <span className="font-medium">{selectedDeal.owner_name}</span></div>
-                    <div><span className="text-gray-500">Email:</span> <span className="font-medium">{selectedDeal.email}</span></div>
-                    <div><span className="text-gray-500">Phone:</span> <span className="font-medium">{selectedDeal.phone || 'N/A'}</span></div>
-                    <div><span className="text-gray-500">Source:</span> <span className="font-medium">website</span></div>
-                  </div>
-                </div>
-              </div>
-              
-              {/* Lender Submissions Section */}
-              <div className="mt-6 pt-6 border-t border-gray-200">
-                <h4 className="text-lg font-medium text-gray-900 mb-4">
-                  Lender Submissions ({selectedDeal.lenderSubmissions.length})
-                </h4>
-                <div className="space-y-4">
-                  {selectedDeal.lenderSubmissions.map((submission, index) => (
-                    <div key={index} className="bg-gray-50 rounded-lg p-4">
-                      <div className="flex items-start justify-between mb-3">
-                        <div>
-                          <h5 className="font-medium text-gray-900">{submission.lender.name}</h5>
-                          <p className="text-sm text-gray-500">
-                            Submitted: {new Date(submission.created_at).toLocaleDateString()}
-                            {submission.response_date && (
-                              <span> • Responded: {new Date(submission.response_date).toLocaleDateString()}</span>
-                            )}
-                          </p>
-                        </div>
-                        <span className={`inline-flex px-2.5 py-0.5 rounded-full text-xs font-medium ${getLenderStatusColor(submission.status)}`}>
-                          {submission.status}
-                        </span>
-                      </div>
-                      
-                      {submission.response && (
-                        <div className="mb-3">
-                          <p className="text-sm text-gray-700">
-                            <span className="font-medium">Response:</span> {submission.response}
-                          </p>
-                        </div>
-                      )}
-                      
-                      {(submission.offered_amount || submission.factor_rate || submission.terms) && (
-                        <div className="grid grid-cols-3 gap-4 mb-3">
-                          {submission.offered_amount && (
-                            <div>
-                              <span className="text-xs text-gray-500">Offered Amount</span>
-                              <p className="font-medium text-sm">${submission.offered_amount.toLocaleString()}</p>
-                            </div>
-                          )}
-                          {submission.factor_rate && (
-                            <div>
-                              <span className="text-xs text-gray-500">Factor Rate</span>
-                              <p className="font-medium text-sm">{submission.factor_rate}</p>
-                            </div>
-                          )}
-                          {submission.terms && (
-                            <div>
-                              <span className="text-xs text-gray-500">Terms</span>
-                              <p className="font-medium text-sm">{submission.terms}</p>
-                            </div>
-                          )}
-                        </div>
-                      )}
-                      
-                      {submission.notes && (
-                        <div className="text-xs text-gray-600 bg-white p-2 rounded border">
-                          <span className="font-medium">Notes:</span> {submission.notes}
-                        </div>
-                      )}
+
+            {/* Enhanced Body */}
+            <div className="p-8 overflow-y-auto max-h-[calc(95vh-140px)]">
+              {/* Unified header row with centered toast */}
+              <div className="relative mb-4">
+                {/* Centered toast within the same row */}
+                {toast && (
+                  <div className="pointer-events-none absolute left-1/2 -translate-x-1/2 top-1/2 -translate-y-1/2">
+                    <div className={`px-4 py-2 rounded-xl border text-sm font-semibold shadow-sm
+                      ${toast.type === 'success' ? 'bg-emerald-50 border-emerald-200 text-emerald-800' : ''}
+                      ${toast.type === 'error' ? 'bg-red-50 border-red-200 text-red-800' : ''}
+                      ${toast.type === 'info' ? 'bg-blue-50 border-blue-200 text-blue-800' : ''}
+                    `}>
+                      {toast.message}
                     </div>
-                  ))}
+                  </div>
+                )}
+                <div className="flex items-center justify-end gap-2">
+                  {!editingDetails ? (
+                    <button onClick={handleStartEditDetails} className="px-4 py-2 text-sm font-semibold text-indigo-700 bg-indigo-100 rounded-lg hover:bg-indigo-200">Edit Details</button>
+                  ) : (
+                    <div className="flex items-center gap-2">
+                      <button disabled={savingDetails} onClick={handleSaveDetails} className={`px-4 py-2 text-sm font-semibold text-white rounded-lg ${savingDetails ? 'bg-indigo-300' : 'bg-indigo-600 hover:bg-indigo-700'}`}>{savingDetails ? 'Saving...' : 'Save Changes'}</button>
+                      <button onClick={handleCancelDetails} className="px-4 py-2 text-sm font-semibold text-gray-700 bg-white border border-gray-200 rounded-lg hover:bg-gray-50">Cancel</button>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 mb-8">
+                {/* Business Information Card */}
+                <div className="bg-gradient-to-br from-gray-50 to-gray-100/50 rounded-2xl p-6 border border-gray-200/50">
+                  <div className="flex items-center gap-3 mb-5">
+                      <div className="w-8 h-8 rounded-lg bg-emerald-100 flex items-center justify-center">
+                        <svg className="w-4 h-4 text-emerald-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4" />
+                        </svg>
+                      </div>
+                      <h4 className="text-lg font-bold text-gray-900">Business Information</h4>
+                  </div>
+                  <div className="space-y-4">
+                    {!editingDetails ? (
+                      <>
+                        <div className="flex items-center justify-between py-2 border-b border-gray-200/60">
+                          <span className="text-gray-600 font-medium">Business Name</span>
+                          <span className="font-semibold text-gray-900">{selectedDeal.business_name}</span>
+                        </div>
+                        <div className="flex items-center justify-between py-2 border-b border-gray-200/60">
+                          <span className="text-gray-600 font-medium">Industry</span>
+                          <span className="font-semibold text-gray-900">{selectedDeal.industry}</span>
+                        </div>
+                        <div className="flex items-center justify-between py-2 border-b border-gray-200/60">
+                          <span className="text-gray-600 font-medium">Time in Business</span>
+                          <span className="font-semibold text-gray-900">{selectedDeal.years_in_business} years</span>
+                        </div>
+                        <div className="flex items-center justify-between py-2 border-b border-gray-200/60">
+                          <span className="text-gray-600 font-medium">Monthly Revenue</span>
+                          <span className="font-bold text-emerald-600">${selectedDeal.monthly_revenue.toLocaleString()}</span>
+                        </div>
+                        <div className="flex items-center justify-between py-2">
+                          <span className="text-gray-600 font-medium">Credit Score</span>
+                          <span className={`${selectedDeal.credit_score >= 700 ? 'text-green-600' : selectedDeal.credit_score >= 600 ? 'text-yellow-600' : 'text-red-600'} font-bold`}>
+                            {selectedDeal.credit_score}
+                          </span>
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        <div className="grid grid-cols-1 gap-4">
+                          <label className="flex items-center justify-between py-1">
+                            <span className="text-gray-600 font-medium">Business Name</span>
+                            <input value={businessForm.business_name} onChange={e => setBusinessForm(s => ({ ...s, business_name: e.target.value }))} className="ml-4 w-64 px-3 py-2 border border-gray-300 rounded-lg text-sm" />
+                          </label>
+                          <label className="flex items-center justify-between py-1">
+                            <span className="text-gray-600 font-medium">Industry</span>
+                            <input value={businessForm.industry} onChange={e => setBusinessForm(s => ({ ...s, industry: e.target.value }))} className="ml-4 w-64 px-3 py-2 border border-gray-300 rounded-lg text-sm" />
+                          </label>
+                          <label className="flex items-center justify-between py-1">
+                            <span className="text-gray-600 font-medium">Time in Business (years)</span>
+                            <input type="number" value={businessForm.years_in_business} onChange={e => setBusinessForm(s => ({ ...s, years_in_business: Number(e.target.value) }))} className="no-spinner ml-4 w-32 px-3 py-2 border border-gray-300 rounded-lg text-sm" />
+                          </label>
+                          <label className="flex items-center justify-between py-1">
+                            <span className="text-gray-600 font-medium">Monthly Revenue</span>
+                            <input type="number" value={businessForm.monthly_revenue} onChange={e => setBusinessForm(s => ({ ...s, monthly_revenue: Number(e.target.value) }))} className="no-spinner ml-4 w-40 px-3 py-2 border border-gray-300 rounded-lg text-sm" />
+                          </label>
+                          <label className="flex items-center justify-between py-1">
+                            <span className="text-gray-600 font-medium">Credit Score</span>
+                            <input type="number" value={businessForm.credit_score} onChange={e => setBusinessForm(s => ({ ...s, credit_score: Number(e.target.value) }))} className="no-spinner ml-4 w-32 px-3 py-2 border border-gray-300 rounded-lg text-sm" />
+                          </label>
+                        </div>
+                      </>
+                    )}
+                  </div>
+                </div>
+
+                {/* Contact Information Card */}
+                <div className="bg-gradient-to-br from-blue-50 to-indigo-50/50 rounded-2xl p-6 border border-blue-200/50">
+                  <div className="flex items-center gap-3 mb-5">
+                      <div className="w-8 h-8 rounded-lg bg-blue-100 flex items-center justify-center">
+                        <svg className="w-4 h-4 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+                        </svg>
+                      </div>
+                      <h4 className="text-lg font-bold text-gray-900">Contact Information</h4>
+                  </div>
+                  <div className="space-y-4">
+                    {!editingDetails ? (
+                      <>
+                        <div className="flex items-center justify-between py-2 border-b border-blue-200/60">
+                          <span className="text-gray-600 font-medium">Owner</span>
+                          <span className="font-semibold text-gray-900">{selectedDeal.owner_name}</span>
+                        </div>
+                        <div className="flex items-center justify-between py-2 border-b border-blue-200/60">
+                          <span className="text-gray-600 font-medium">Email</span>
+                          <span className="font-semibold text-blue-600">{selectedDeal.email}</span>
+                        </div>
+                        <div className="flex items-center justify-between py-2 border-b border-blue-200/60">
+                          <span className="text-gray-600 font-medium">Phone</span>
+                          <span className="font-semibold text-gray-900">{selectedDeal.phone || 'N/A'}</span>
+                        </div>
+                        <div className="flex items-center justify-between py-2 border-b border-blue-200/60">
+                          <span className="text-gray-600 font-medium">Address</span>
+                          <span className="font-semibold text-gray-900 truncate max-w-[60%] text-right">{selectedDeal.address || 'N/A'}</span>
+                        </div>
+                        <div className="flex items-center justify-between py-2">
+                          <span className="text-gray-600 font-medium">Source</span>
+                          <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold bg-purple-100 text-purple-800">website</span>
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        <div className="grid grid-cols-1 gap-4">
+                          <label className="flex items-center justify-between py-1">
+                            <span className="text-gray-600 font-medium">Owner</span>
+                            <input value={contactForm.owner_name} onChange={e => setContactForm(s => ({ ...s, owner_name: e.target.value }))} className="ml-4 w-64 px-3 py-2 border border-gray-300 rounded-lg text-sm" />
+                          </label>
+                          <label className="flex items-center justify-between py-1">
+                            <span className="text-gray-600 font-medium">Email</span>
+                            <input type="email" value={contactForm.email} onChange={e => setContactForm(s => ({ ...s, email: e.target.value }))} className="ml-4 w-64 px-3 py-2 border border-gray-300 rounded-lg text-sm" />
+                          </label>
+                          <label className="flex items-center justify-between py-1">
+                            <span className="text-gray-600 font-medium">Phone</span>
+                            <input value={contactForm.phone} onChange={e => setContactForm(s => ({ ...s, phone: e.target.value }))} className="ml-4 w-48 px-3 py-2 border border-gray-300 rounded-lg text-sm" />
+                          </label>
+                          <label className="flex items-center justify-between py-1">
+                            <span className="text-gray-600 font-medium">Address</span>
+                            <input value={contactForm.address} onChange={e => setContactForm(s => ({ ...s, address: e.target.value }))} className="ml-4 w-72 px-3 py-2 border border-gray-300 rounded-lg text-sm" />
+                          </label>
+                          <div className="flex items-center justify-between py-1 opacity-60">
+                            <span className="text-gray-600 font-medium">Source</span>
+                            <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold bg-purple-100 text-purple-800">website</span>
+                          </div>
+                        </div>
+                      </>
+                    )}
+                  </div>
                 </div>
               </div>
               
-              <div className="mt-6 pt-6 border-t border-gray-200">
-                <div className="flex justify-end space-x-3">
-                  <button
-                    onClick={() => setShowDetails(false)}
-                    className="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50"
-                  >
-                    Close
-                  </button>
-                  <button
-                    className="px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700"
-                    onClick={() => handleEditDeal(selectedDeal)}
-                  >
-                    Edit Deal
-                  </button>
+              {/* Enhanced Lender Submissions Section */}
+              <div className="bg-gradient-to-br from-purple-50 to-pink-50/50 rounded-2xl p-6 border border-purple-200/50">
+                <div className="flex items-center gap-3 mb-6">
+                  <div className="w-8 h-8 rounded-lg bg-purple-100 flex items-center justify-center">
+                    <svg className="w-4 h-4 text-purple-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                    </svg>
+                  </div>
+                  <div className="flex-1">
+                    <h4 className="text-lg font-bold text-gray-900">Lender Submissions</h4>
+                    <p className="text-sm text-gray-600">Track all lender responses and offers</p>
+                  </div>
+                  <div className="px-3 py-1 bg-purple-100 text-purple-700 rounded-full text-sm font-semibold">
+                    {selectedDeal.lenderSubmissions.length} Submissions
+                  </div>
                 </div>
+
+                {selectedDeal.lenderSubmissions.length === 0 ? (
+                  <div className="text-center py-12 bg-white/60 rounded-xl border-2 border-dashed border-purple-200">
+                    <svg className="w-12 h-12 text-purple-300 mx-auto mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                    </svg>
+                    <div className="text-sm font-medium text-gray-600">No lender submissions yet</div>
+                    <div className="text-xs text-gray-400 mt-1">Submissions will appear here once lenders respond</div>
+                  </div>
+                ) : (
+                  <div className="space-y-4">
+                    {selectedDeal.lenderSubmissions.map((submission, index) => (
+                      <div key={index} className="bg-white/80 backdrop-blur-sm rounded-xl p-5 border border-white/60 shadow-sm hover:shadow-md transition-all duration-200">
+                        <div className="flex items-start justify-between mb-4">
+                          <div className="flex items-center gap-3">
+                            <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center shadow-sm">
+                              <span className="text-white font-bold text-sm">
+                                {submission.lender.name.charAt(0).toUpperCase()}
+                              </span>
+                            </div>
+                            <div>
+                              <h5 className="font-bold text-gray-900">{submission.lender.name}</h5>
+                              <p className="text-xs text-gray-500 flex items-center gap-2">
+                                <span>Submitted: {new Date(submission.created_at).toLocaleDateString()}</span>
+                                {submission.response_date && (
+                                  <>
+                                    <span className="w-1 h-1 bg-gray-400 rounded-full"></span>
+                                    <span>Responded: {new Date(submission.response_date).toLocaleDateString()}</span>
+                                  </>
+                                )}
+                              </p>
+                            </div>
+                          </div>
+                          <span className={`inline-flex px-3 py-1 rounded-full text-xs font-bold ${getLenderStatusColor(submission.status)}`}>
+                            {submission.status}
+                          </span>
+                        </div>
+                        
+                        {submission.response && (
+                          <div className="mb-4 p-3 bg-blue-50/50 rounded-lg border border-blue-200/50">
+                            <p className="text-sm text-gray-700">
+                              <span className="font-semibold text-blue-700">Response:</span> {submission.response}
+                            </p>
+                          </div>
+                        )}
+                        
+                        {(submission.offered_amount || submission.factor_rate || submission.terms) && (
+                          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+                            {submission.offered_amount && (
+                              <div className="bg-emerald-50/50 rounded-lg p-3 border border-emerald-200/50">
+                                <span className="text-xs font-semibold text-emerald-700 uppercase tracking-wide">Offered Amount</span>
+                                <p className="font-bold text-emerald-600 text-lg">${submission.offered_amount.toLocaleString()}</p>
+                              </div>
+                            )}
+                            {submission.factor_rate && (
+                              <div className="bg-orange-50/50 rounded-lg p-3 border border-orange-200/50">
+                                <span className="text-xs font-semibold text-orange-700 uppercase tracking-wide">Factor Rate</span>
+                                <p className="font-bold text-orange-600 text-lg">{submission.factor_rate}</p>
+                              </div>
+                            )}
+                            {submission.terms && (
+                              <div className="bg-purple-50/50 rounded-lg p-3 border border-purple-200/50">
+                                <span className="text-xs font-semibold text-purple-700 uppercase tracking-wide">Terms</span>
+                                <p className="font-bold text-purple-600 text-sm">{submission.terms}</p>
+                              </div>
+                            )}
+                          </div>
+                        )}
+                        
+                        {submission.notes && (
+                          <div className="bg-gray-50/50 rounded-lg p-3 border border-gray-200/50">
+                            <span className="text-xs font-semibold text-gray-700 uppercase tracking-wide">Notes</span>
+                            <p className="text-sm text-gray-600 mt-1">{submission.notes}</p>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+              
+              {/* Enhanced Footer */}
+              <div className="mt-8 pt-6 border-t border-gray-200/80 flex justify-end gap-4">
+                <button
+                  onClick={() => setShowDetails(false)}
+                  className="px-6 py-3 border border-gray-200 rounded-xl hover:bg-gray-50 hover:border-gray-300 font-semibold text-gray-700 transition-all duration-200 shadow-sm hover:shadow-md"
+                >
+                  Close
+                </button>
+                <button
+                  className="px-6 py-3 bg-gradient-to-r from-purple-600 to-indigo-600 text-white rounded-xl hover:from-purple-700 hover:to-indigo-700 font-semibold transition-all duration-200 shadow-lg hover:shadow-xl transform hover:scale-105"
+                  onClick={() => handleEditDeal(selectedDeal)}
+                >
+                  Edit Deal
+                </button>
               </div>
             </div>
           </div>

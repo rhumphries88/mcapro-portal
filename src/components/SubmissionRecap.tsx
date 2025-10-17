@@ -100,6 +100,7 @@ const SubmissionRecap: React.FC<SubmissionRecapProps> = ({
   const [showPassword, setShowPassword] = useState<boolean>(false);
   // UI: simple validation state for SMTP form
   const [smtpErrors, setSmtpErrors] = useState<{ host?: string; port?: string; user?: string; password?: string; fromEmail?: string }>({});
+  const [smtpSettingsId, setSmtpSettingsId] = useState<string | null>(null);
 
   const applyPreset = (preset: 'gmail_tls' | 'gmail_ssl' | 'outlook_tls') => {
     if (preset === 'gmail_tls') {
@@ -166,7 +167,7 @@ const SubmissionRecap: React.FC<SubmissionRecapProps> = ({
       }
     };
     loadLenders();
-  }, []);
+  }, [application, emailSettings.fromEmail]);
 
   // Load application documents from Supabase for this application
   React.useEffect(() => {
@@ -214,7 +215,9 @@ const SubmissionRecap: React.FC<SubmissionRecapProps> = ({
   }, [application?.id]);
 
   // Application form files stored on the application row (text[])
-  const inlineDocs: string[] = Array.isArray(application?.documents) ? (application!.documents as string[]) : [];
+  const inlineDocs: string[] = React.useMemo(() => {
+    return Array.isArray(application?.documents) ? (application!.documents as string[]) : [];
+  }, [application]);
   
   const selectedLenders = lenders.filter(lender => selectedLenderIds.includes(lender.id));
   
@@ -323,41 +326,23 @@ const SubmissionRecap: React.FC<SubmissionRecapProps> = ({
                 <div class="info-grid">
                     <div class="info-card">
                         <h3>Requested Amount</h3>
-                        <p style="color: #10b981; font-size: 20px;">$\{{requestedAmount}}</p>
+                        <p style="color: #10b981; font-size: 20px;">$ {{requestedAmount}}</p>
                     </div>
                     <div class="info-card">
                         <h3>Monthly Revenue</h3>
-                        <p>$\{{monthlyRevenue}}</p>
+                        <p>$ {{monthlyRevenue}}</p>
                     </div>
                     <div class="info-card">
                         <h3>Annual Revenue</h3>
-                        <p>$\{{annualRevenue}}</p>
+                        <p>$ {{annualRevenue}}</p>
                     </div>
                     <div class="info-card">
                         <h3>Credit Score</h3>
-                        <p>\{{creditScore}}</p>
+                        <p>{{creditScore}}</p>
                     </div>
                     <div class="info-card">
                         <h3>Existing Debt</h3>
-                        <p>$\{{existingDebt}}</p>
-                    </div>
-                </div>
-            </div>
-
-            <div class="contact-info">
-                <h3>📞 Contact Information</h3>
-                <div class="contact-grid">
-                    <div class="contact-item">
-                        <span class="icon">📧</span>
-                        <span>{{email}}</span>
-                    </div>
-                    <div class="contact-item">
-                        <span class="icon">📱</span>
-                        <span>{{phone}}</span>
-                    </div>
-                    <div class="contact-item">
-                        <span class="icon">📍</span>
-                        <span>{{address}}</span>
+                        <p>$ {{existingDebt}}</p>
                     </div>
                 </div>
             </div>
@@ -378,7 +363,7 @@ const SubmissionRecap: React.FC<SubmissionRecapProps> = ({
                 <ul class="criteria-list">
                     <li>
                         <span class="label">Amount Range:</span>
-                        <span class="value">$\{{lenderMinAmount}} - $\{{lenderMaxAmount}}</span>
+                        <span class="value">$ {{lenderMinAmount}} - $ {{lenderMaxAmount}}</span>
                     </li>
                     <li>
                         <span class="label">Factor Rate:</span>
@@ -413,7 +398,10 @@ const SubmissionRecap: React.FC<SubmissionRecapProps> = ({
 </body>
 </html>`;
 
-    let template = savedTemplate || defaultTemplate;
+    // Prefer saved template only if it includes key sections; else fall back to default
+    const hasKeySections = (tpl: string | null) =>
+      !!tpl && tpl.includes('<div class="contact-info">') && tpl.includes('<div class="documents">') && tpl.includes('criteria-list');
+    let template = hasKeySections(savedTemplate) ? (savedTemplate as string) : defaultTemplate;
 
     // Build dynamic documents list combining application_documents (appDocs), MTD documents (mtdDocs), and inline application documents (application.documents)
     const dbDocs = Array.isArray(appDocs) ? appDocs : [];
@@ -438,27 +426,30 @@ const SubmissionRecap: React.FC<SubmissionRecapProps> = ({
         .replace(/&/g, '&amp;')
         .replace(/</g, '&lt;')
         .replace(/>/g, '&gt;')
-        .replace(/\"/g, '&quot;')
+        .replace(/"/g, '&quot;')
         .replace(/'/g, '&#039;');
       const items = uniqueNames
         .map(name => `<li>${escapeHtml(name)}</li>`) 
         .join('\n');
       // Replace the default placeholder list with real documents
       template = template.replace(
-        /<ul class=\"doc-list\">[\s\S]*?<\/ul>/,
-        `<ul class=\"doc-list\">\n${items}\n</ul>`
+        /<ul class="doc-list">[\s\S]*?<\/ul>/,
+        `<ul class="doc-list">\n${items}\n</ul>`
       );
 
       // Add a download-all ZIP link right after the documents section
       const downloadUrl = `${window.location.origin}/.netlify/functions/application-docs-zip?applicationId=${application.id}`;
       const zipCtaHtml = `\n<div class="download-zip" style="margin-top:16px; text-align:center;">\n  <a href="${downloadUrl}" style="display:inline-block; background:#10b981; color:#fff; padding:10px 16px; border-radius:8px; text-decoration:none; font-weight:600;">\n    Download all documents (ZIP)\n  </a>\n</div>`;
       template = template.replace(
-        /(<div class=\"documents\">[\s\S]*?<\/div>)/,
+        /(<div class="documents">[\s\S]*?<\/div>)/,
         `$1${zipCtaHtml}`
       );
     }
 
     // Replace template variables with actual data
+    // Remove signature contact line (email | phone), but keep owner and business lines
+    template = template.replace(/\s*<br>\s*\{\{email\}\}\s*\|\s*\{\{phone\}\}\s*/g, '');
+
     return template
       .replace(/\{\{businessName\}\}/g, application.businessName)
       .replace(/\{\{ownerName\}\}/g, application.contactInfo.ownerName)
@@ -504,7 +495,7 @@ const SubmissionRecap: React.FC<SubmissionRecapProps> = ({
   };
 
   // Fire-and-forget webhook for auditing/forwarding the application payload externally
-  const sendApplicationToWebhook = async (payload: any) => {
+  const sendApplicationToWebhook = async (payload: unknown) => {
     const webhookUrl = '/.netlify/functions/send-application';
     try {
       const resp = await fetch(webhookUrl, {
@@ -543,8 +534,8 @@ const SubmissionRecap: React.FC<SubmissionRecapProps> = ({
   };
 
   // Save SMTP settings via our backend to avoid RLS/client-side permission issues
-  const saveSmtpSettingsBackend = async (appId: string, settings: EmailSettings) => {
-    if (!appId) return;
+  const saveSmtpSettingsBackend = async (appId: string, settings: EmailSettings): Promise<string | null> => {
+    if (!appId) return null;
     try {
       const resp = await fetch('/.netlify/functions/save-smtp-settings', {
         method: 'POST',
@@ -563,9 +554,14 @@ const SubmissionRecap: React.FC<SubmissionRecapProps> = ({
       if (!resp.ok) {
         const text = await resp.text();
         console.warn('Failed to save SMTP settings (backend):', resp.status, text);
+        return null;
       }
+      const json = await resp.json().catch(() => null);
+      const id = json?.data?.id ?? null;
+      return id;
     } catch (e) {
       console.warn('Failed to reach SMTP settings backend:', e);
+      return null;
     }
   };
 
@@ -601,13 +597,8 @@ const SubmissionRecap: React.FC<SubmissionRecapProps> = ({
   };
 
   const handleFinalSubmit = async () => {
-    // Check if from email is specified
-    if (!emailSettings.fromEmail) {
-      alert('Please configure your From Email in the Email Settings before submitting.');
-      setShowEmailSettings(true);
-      return;
-    }
-    
+    // Proceed even if from email is not specified
+
     setIsSubmitting(true);
     setSendingProgress(0);
     // Simulate progress while processing
@@ -620,13 +611,17 @@ const SubmissionRecap: React.FC<SubmissionRecapProps> = ({
     
     // Save SMTP settings for future use
     saveSmtpSettings(emailSettings);
-    // Ensure server-side smtp_settings row exists for this application
-    if (application?.id) {
-      await saveSmtpSettingsBackend(application.id, {
+    // Ensure server-side smtp_settings row exists for this application when SMTP is complete
+    let savedSmtpId: string | null = null;
+    const hasSmtp = Boolean(
+      emailSettings.smtpHost && emailSettings.smtpPort && emailSettings.smtpUser && emailSettings.smtpPassword
+    );
+    if (application?.id && hasSmtp) {
+      savedSmtpId = await saveSmtpSettingsBackend(application.id, {
         ...emailSettings,
-        // Only use the explicitly entered fromEmail, no fallback
         fromEmail: emailSettings.fromEmail,
       });
+      if (savedSmtpId) setSmtpSettingsId(savedSmtpId);
     }
     
     try {
@@ -670,6 +665,31 @@ const SubmissionRecap: React.FC<SubmissionRecapProps> = ({
 
       // Get HTML content for each lender
       const htmlContent = selectedLenders[0] ? extractHtmlBody(generateEmailContent(selectedLenders[0])) : '';
+      // Apply the same preview stripping before sending to send-application webhook
+      let previewHtml = htmlContent
+        // Allow extra attributes after class and remove nested contact items
+        .replace(/<div class="contact-info"[^>]*>[\s\S]*?<\/div>/, '')
+        .replace(/<div class="documents"[^>]*>[\s\S]*?<\/div>/, '')
+        .replace(/<div class="download-zip"[^>]*>[\s\S]*?<\/div>/, '')
+        .replace(/<div class="highlight-box"[^>]*>[\s\S]*?<\/div>/, '')
+        .replace(/<div class="contact-item"[^>]*>[\s\S]*?<\/div>/g, '')
+        // Signature and narratives (simplified patterns)
+        .replace(/<p[^>]*>\s*<strong>Best regards,[\s\S]*?<\/p>/, '')
+        .replace(/<p[^>]*>\s*<strong>[^<]+<\/strong>\s*<br[^>]*>[\s\S]*?<\/p>/, '')
+        .replace(/<p[^>]*>I would appreciate[\s\S]*?<\/p>/, '')
+        .replace(/<p[^>]*>Thank you for your time[\s\S]*?<\/p>/, '')
+        // Financial Information section
+        .replace(/<div class="section">[\s\S]*?<h2>[\s\S]*?Financial Information[\s\S]*?<\/h2>[\s\S]*?<\/div>/, '')
+        .replace(/<h2>[\s\S]*?Financial Information[\s\S]*?<\/h2>[\s\S]*?<div class="info-grid">[\s\S]*?<\/div>/, '')
+        // Application ID paragraph
+        .replace(/<p[^>]*>\s*Application ID:[\s\S]*?<\/p>/, '');
+      try {
+        const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const phone = esc(application?.contactInfo?.phone || '');
+        const addr = esc(application?.contactInfo?.address || '');
+        if (phone) previewHtml = previewHtml.replace(new RegExp(phone, 'g'), '');
+        if (addr) previewHtml = previewHtml.replace(new RegExp(addr, 'g'), '');
+      } catch { void 0; }
 
       // Build webhook payload and send (fire-and-forget)
       const webhookPayload = {
@@ -678,9 +698,10 @@ const SubmissionRecap: React.FC<SubmissionRecapProps> = ({
         lenderIds,
         lendersDetailed,
         subject: preview.subject,
-        body: preview.body,
-        bodyHtml: htmlContent,
+        body: previewHtml,
+        bodyHtml: previewHtml,
         attachments,
+        smtpSettingsId: savedSmtpId || smtpSettingsId || null,
         context: {
           businessName: application?.businessName,
           applicantEmail: emailSettings.fromEmail || null,
@@ -694,24 +715,26 @@ const SubmissionRecap: React.FC<SubmissionRecapProps> = ({
       // Don't block UI on webhook; intentionally no await
       sendApplicationToWebhook(webhookPayload);
 
-      // POST to local email server (CORS enabled on server)
-      const resp = await fetch('/.netlify/functions/send-application-email', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          applicationId: application?.id,
-          lenders: lenderEmails,
-          lenderIds,
-          lendersDetailed,
-          subject: preview.subject,
-          body: htmlContent,
-          attachments,
-        }),
-      });
-      if (!resp.ok) {
-        const text = await resp.text();
-        console.warn('Email server responded with error:', resp.status, text);
-        throw new Error('Email sending failed');
+      // POST to local email server only if smtp_settings exists
+      if (savedSmtpId) {
+        const resp = await fetch('/.netlify/functions/send-application-email', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            applicationId: application?.id,
+            lenders: lenderEmails,
+            lenderIds,
+            lendersDetailed,
+            subject: preview.subject,
+            body: previewHtml,
+            attachments,
+          }),
+        });
+        if (!resp.ok) {
+          const text = await resp.text();
+          console.warn('Email server responded with error:', resp.status, text);
+          throw new Error('Email sending failed');
+        }
       }
 
       setSubmissionComplete(true);
@@ -1258,12 +1281,38 @@ const SubmissionRecap: React.FC<SubmissionRecapProps> = ({
                 <iframe
                   title="Email HTML Preview"
                   style={{ width: '100%', height: `${iframeHeight}px`, border: '0', display: 'block' }}
-                  srcDoc={(() => {
+                  srcDoc={((): string => {
                     const content = generateEmailContent(selectedLenderForDetails);
                     const parts = content.split(/\r?\n\r?\n/);
-                    return parts.length > 1 ? parts.slice(1).join('\n\n') : content;
+                    const base = parts.length > 1 ? parts.slice(1).join('\n\n') : content;
+                    // Strip sections from preview UI only
+                    let out = base
+                      .replace(/<div class="contact-info">[\s\S]*?<\/div>/, '')
+                      .replace(/<div class="documents">[\s\S]*?<\/div>/, '')
+                      .replace(/<div class="download-zip">[\s\S]*?<\/div>/, '')
+                      .replace(/<div class="highlight-box">[\s\S]*?<\/div>/, '')
+                      // remove signature block (Best regards + name/business), keep footer
+                      .replace(/<p[^>]*>\s*<strong>Best regards,[\s\S]*?<\/p>/, '')
+                      .replace(/<p[^>]*>\s*<strong>[^<]+<\/strong>\s*<br[^>]*>[\s\S]*?<\/p>/, '')
+                      // remove narrative paragraphs before signature (default template text)
+                      .replace(/<p[^>]*>I would appreciate[\s\S]*?<\/p>/, '')
+                      .replace(/<p[^>]*>Thank you for your time[\s\S]*?<\/p>/, '')
+                      // remove Financial Information section
+                      .replace(/<div class="section">[\s\S]*?<h2>[\s\S]*?Financial Information[\s\S]*?<\/h2>[\s\S]*?<\/div>/, '')
+                      .replace(/<h2>[\s\S]*?Financial Information[\s\S]*?<\/h2>[\s\S]*?<div class="info-grid">[\s\S]*?<\/div>/, '')
+                      // remove Application ID paragraph in footer
+                      .replace(/<p[^>]*>\s*Application ID:[\s\S]*?<\/p>/, '');
+                    // remove any leftover plain phone/address occurrences (outside known blocks)
+                    try {
+                      const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                      const phone = esc(application.contactInfo.phone || '');
+                      const addr = esc(application.contactInfo.address || '');
+                      if (phone) out = out.replace(new RegExp(phone, 'g'), '');
+                      if (addr) out = out.replace(new RegExp(addr, 'g'), '');
+                    } catch { void 0; }
+                    return out;
                   })()}
-                  onLoad={(e) => {
+                  onLoad={(e: React.SyntheticEvent<HTMLIFrameElement>) => {
                     try {
                       const iframe = e.currentTarget as HTMLIFrameElement;
                       const doc = iframe.contentDocument || iframe.contentWindow?.document;
@@ -1273,34 +1322,57 @@ const SubmissionRecap: React.FC<SubmissionRecapProps> = ({
                         800
                       );
                       setIframeHeight(newHeight + 20); // small buffer
-                    } catch {}
+                    } catch { void 0; }
                   }}
                 />
               </div>
-            </div>
-            <div className="p-6 border-t border-gray-200 flex justify-between">
-              <button
-                onClick={() => {
-                  const content = generateEmailContent(selectedLenderForDetails);
-                  const parts = content.split(/\r?\n\r?\n/);
-                  const html = parts.length > 1 ? parts.slice(1).join('\n\n') : content;
-                  const win = window.open('', '_blank');
-                  if (win) {
-                    win.document.open();
-                    win.document.write(html);
-                    win.document.close();
-                  }
-                }}
-                className="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50"
-              >
-                Open in new window
-              </button>
-              <button
-                onClick={() => setShowEmailPreview(false)}
-                className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
-              >
-                Close Preview
-              </button>
+              <div className="p-6 border-t border-gray-200 flex justify-between">
+                <button
+                  onClick={() => {
+                    const content = generateEmailContent(selectedLenderForDetails);
+                    const parts = content.split(/\r?\n\r?\n/);
+                    let html = parts.length > 1 ? parts.slice(1).join('\n\n') : content;
+                    html = html
+                    .replace(/<div class="contact-info">[\s\S]*?<\/div>/, '')
+                    .replace(/<div class="documents">[\s\S]*?<\/div>/, '')
+                    .replace(/<div class="download-zip">[\s\S]*?<\/div>/, '')
+                    .replace(/<div class="highlight-box">[\s\S]*?<\/div>/, '')
+                    // remove signature block (Best regards + name/business), keep footer
+                    .replace(/<p[^>]*>\s*<strong>Best regards,[\s\S]*?<\/p>/, '')
+                    .replace(/<p[^>]*>\s*<strong>[^<]+<\/strong>\s*<br[^>]*>[\s\S]*?<\/p>/, '')
+                    // remove narrative paragraphs
+                    .replace(/<p[^>]*>I would appreciate[\s\S]*?<\/p>/, '')
+                    .replace(/<p[^>]*>Thank you for your time[\s\S]*?<\/p>/, '')
+                    // remove Financial Information section
+                    .replace(/<div class="section">[\s\S]*?<h2>[\s\S]*?Financial Information[\s\S]*?<\/h2>[\s\S]*?<\/div>/, '')
+                    .replace(/<h2>[\s\S]*?Financial Information[\s\S]*?<\/h2>[\s\S]*?<div class="info-grid">[\s\S]*?<\/div>/, '')
+                    // remove Application ID paragraph in footer
+                    .replace(/<p[^>]*>\s*Application ID:[\s\S]*?<\/p>/, '');
+                    try {
+                      const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                      const phone = esc(application.contactInfo.phone || '');
+                      const addr = esc(application.contactInfo.address || '');
+                      if (phone) html = html.replace(new RegExp(phone, 'g'), '');
+                      if (addr) html = html.replace(new RegExp(addr, 'g'), '');
+                    } catch { void 0; }
+                    const win = window.open('', '_blank');
+                    if (win) {
+                      win.document.open();
+                      win.document.write(html);
+                      win.document.close();
+                    }
+                  }}
+                  className="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50"
+                >
+                  Open in new window
+                </button>
+                <button
+                  onClick={() => setShowEmailPreview(false)}
+                  className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+                >
+                  Close Preview
+                </button>
+              </div>
             </div>
           </div>
         </div>
