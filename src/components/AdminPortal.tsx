@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Users, Building2, Settings, Plus, Edit, Trash2, Eye, Star, CheckCircle, Mail, XCircle, Search } from 'lucide-react';
-import { getLenders, createLender, updateLender, deleteLender, getApplications, getLenderSubmissions, updateApplication, deleteApplication, updateLenderSubmission, createLenderSubmissions, getUsersByRole, Lender as DBLender, Application as DBApplication, LenderSubmission as DBLenderSubmission, User as DBUser } from '../lib/supabase';
+import { supabase, getLenders, createLender, updateLender, deleteLender, getApplications, getLenderSubmissions, updateApplication, deleteApplication, updateLenderSubmission, createLenderSubmissions, getUsersByRole, Lender as DBLender, Application as DBApplication, LenderSubmission as DBLenderSubmission, User as DBUser } from '../lib/supabase';
 
 const AdminPortal: React.FC = () => {
   const [activeTab, setActiveTab] = useState<'applications' | 'lenders' | 'deal-users' | 'settings'>('applications');
@@ -80,6 +80,7 @@ Application ID: {{applicationId}}`;
   const [lenderFormData, setLenderFormData] = useState({
     name: '',
     contactEmail: '',
+    ccEmails: [] as string[],
     phone: '',
     status: 'active' as 'active' | 'inactive' | 'pending',
     rating: 4.0,
@@ -95,6 +96,7 @@ Application ID: {{applicationId}}`;
     approvalTime: '24 hours',
     features: [] as string[]
   });
+  const [ccEmailInput, setCcEmailInput] = useState('');
 
   const availableIndustries = [
     'All Industries', 'Retail', 'Restaurant', 'Healthcare', 'Professional Services',
@@ -115,27 +117,40 @@ Application ID: {{applicationId}}`;
     const loadData = async () => {
       try {
         setLoading(true);
+        // Load lenders and applications in parallel
         const [dbLenders, dbApplications] = await Promise.all([
           getLenders(),
           getApplications()
         ]);
-        
-        // Add matched lenders count to applications
-        const applicationsWithMatches = await Promise.all(
-          dbApplications.map(async (app) => {
-            const submissions = await getLenderSubmissions(app.id);
-            return {
-              ...app,
-              matchedLenders: submissions.length
-            };
-          })
-        );
-        
+
+        // Show apps immediately without per-app network calls
         setLenders(dbLenders);
-        setApplications(applicationsWithMatches);
+        setApplications(
+          dbApplications.map(app => ({ ...app, matchedLenders: 0 }))
+        );
+        setLoading(false);
+
+        // Background: batch fetch submission counts for visible apps
+        try {
+          const appIds = dbApplications.map(a => a.id);
+          if (appIds.length > 0) {
+            const { data: subs, error } = await supabase
+              .from('lender_submissions')
+              .select('application_id')
+              .in('application_id', appIds);
+            if (!error && subs) {
+              const counts: Record<string, number> = {};
+              (subs as { application_id: string }[]).forEach(s => {
+                counts[s.application_id] = (counts[s.application_id] || 0) + 1;
+              });
+              setApplications(prev => prev.map(a => ({ ...a, matchedLenders: counts[a.id] || 0 })));
+            }
+          }
+        } catch (bgErr) {
+          console.warn('Background submissions count fetch failed', bgErr);
+        }
       } catch (error) {
         console.error('Error loading data:', error);
-      } finally {
         setLoading(false);
       }
     };
@@ -282,6 +297,7 @@ Application ID: {{applicationId}}`;
     setLenderFormData({
       name: lender.name,
       contactEmail: lender.contact_email,
+      ccEmails: (lender.cc_emails as unknown as string[]) || [],
       phone: lender.phone || '',
       status: lender.status,
       rating: lender.rating,
@@ -312,6 +328,7 @@ Application ID: {{applicationId}}`;
     setLenderFormData({
       name: '',
       contactEmail: '',
+      ccEmails: [],
       phone: '',
       status: 'active',
       rating: 4.0,
@@ -329,6 +346,18 @@ Application ID: {{applicationId}}`;
     });
     setEditingLender(null);
     setShowLenderForm(true);
+  };
+
+  const addCcEmail = () => {
+    const email = ccEmailInput.trim();
+    const isValid = /.+@.+\..+/.test(email);
+    if (!email || !isValid) return;
+    setLenderFormData(prev => ({ ...prev, ccEmails: Array.from(new Set([...(prev.ccEmails || []), email])) }));
+    setCcEmailInput('');
+  };
+
+  const removeCcEmail = (email: string) => {
+    setLenderFormData(prev => ({ ...prev, ccEmails: (prev.ccEmails || []).filter(e => e !== email) }));
   };
 
   const handleIndustryToggle = (industry: string) => {
@@ -352,9 +381,11 @@ Application ID: {{applicationId}}`;
   const handleSaveLender = () => {
     const saveLenderAsync = async () => {
       try {
+        const ccPart = (lenderFormData.ccEmails || []).length ? { cc_emails: lenderFormData.ccEmails } : {};
         const lenderData = {
           name: lenderFormData.name,
           contact_email: lenderFormData.contactEmail,
+          ...ccPart,
           phone: lenderFormData.phone,
           status: lenderFormData.status,
           rating: lenderFormData.rating,
@@ -1081,7 +1112,14 @@ Application ID: {{applicationId}}`;
                     </div>
                     <div>
                       <h3 className="text-xl font-bold text-gray-900">{lender.name}</h3>
-                      <p className="text-gray-600">{lender.contact_email}</p>
+                      <p className="text-gray-600">
+                        {lender.contact_email}
+                        {Array.isArray(lender.cc_emails) && lender.cc_emails.length > 0 && (
+                          <span className="text-gray-500 text-sm ml-2">
+                            • CC: {lender.cc_emails.join(', ')}
+                          </span>
+                        )}
+                      </p>
                       <p className="text-gray-500 text-sm">{lender.phone}</p>
                     </div>
                   </div>
@@ -1262,6 +1300,45 @@ Application ID: {{applicationId}}`;
                         className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500"
                         placeholder="contact@lender.com"
                       />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-2">CC Emails</label>
+                      <div className="w-full">
+                        <div className="flex items-center gap-2 mb-2">
+                          <input
+                            type="email"
+                            value={ccEmailInput}
+                            onChange={(e) => setCcEmailInput(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter' || e.key === ',') {
+                                e.preventDefault();
+                                addCcEmail();
+                              }
+                            }}
+                            className="flex-1 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500"
+                            placeholder="cc@example.com"
+                          />
+                          <button
+                            type="button"
+                            onClick={addCcEmail}
+                            className="px-3 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 text-sm"
+                          >
+                            Add
+                          </button>
+                        </div>
+                        {(lenderFormData.ccEmails || []).length > 0 && (
+                          <div className="flex flex-wrap gap-2">
+                            {lenderFormData.ccEmails!.map(email => (
+                              <span key={email} className="inline-flex items-center gap-2 px-2 py-1 bg-gray-100 text-gray-700 rounded-full text-xs">
+                                {email}
+                                <button type="button" onClick={() => removeCcEmail(email)} className="text-gray-500 hover:text-gray-800">
+                                  ×
+                                </button>
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                      </div>
                     </div>
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-2">Phone</label>

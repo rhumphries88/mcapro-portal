@@ -1,6 +1,6 @@
 import React, { useRef, useState, useCallback } from 'react';
 import { Search, Eye, Download, DollarSign, Building2, Star, CheckCircle, XCircle, Clock, AlertTriangle, FileText, MoreVertical, Users } from 'lucide-react';
-import { supabase, getApplicationsForMember, getAllApplications, getLenderSubmissions, getUserApplicationAccessMap, getApplicationDocuments, getApplicationMTDByApplicationId, getUsersByRole, getApplicationAccessMapByApp, setApplicationAccess, deleteApplicationDocument, resolveAndDeleteApplicationMTD, insertApplicationMTD, updateApplication, Application as DBApplication, LenderSubmission as DBLenderSubmission, User as DBUser } from '../lib/supabase';
+import { supabase, getApplicationsByUserId, getAllApplications, getApplicationDocuments, getApplicationMTDByApplicationId, getUsersByRole, getApplicationAccessMapByApp, setApplicationAccess, deleteApplicationDocument, resolveAndDeleteApplicationMTD, insertApplicationMTD, updateApplication, Application as DBApplication, LenderSubmission as DBLenderSubmission, User as DBUser } from '../lib/supabase';
 import { useAuth } from '../App';
 
 // Use database types
@@ -38,7 +38,6 @@ const AllDealsPortal: React.FC<AllDealsPortalProps> = ({ onEditDeal, onViewQuali
     | null
   >(null);
   const [deals, setDeals] = useState<Deal[]>([]);
-  const [loading, setLoading] = useState(true);
   const [reloadToken, setReloadToken] = useState(0);
   const [openActionId, setOpenActionId] = useState<string | null>(null);
   const [showAccessModal, setShowAccessModal] = useState(false);
@@ -440,12 +439,11 @@ const AllDealsPortal: React.FC<AllDealsPortalProps> = ({ onEditDeal, onViewQuali
     const loadApplications = async () => {
       if (!user?.id) {
         console.log('No user ID available, skipping application load');
-        setLoading(false);
         return;
       }
 
       try {
-        setLoading(true);
+        // Do not block UI; load immediately and enrich in background
         
         // Check if user is admin
         const isAdmin = user.role === 'admin' || user.role === 'Admin';
@@ -458,41 +456,24 @@ const AllDealsPortal: React.FC<AllDealsPortalProps> = ({ onEditDeal, onViewQuali
           console.log('Found all applications:', dbApplications.length);
         } else {
           console.log('Loading applications for member user ID:', user.id);
-          // Member users see own + shared applications via access control
-          dbApplications = await getApplicationsForMember(user.id);
-
-          // Defensive client-side filter using access map (in case of legacy RLS or caching)
-          try {
-            const accessMap = await getUserApplicationAccessMap(user.id);
-            dbApplications = dbApplications.filter((app: DBApplication) => {
-              const isOwner = app.user_id === user.id;
-              const flag = accessMap[app.id];
-              // Keep own unless explicitly set to false; keep non-owned only if true
-              return isOwner ? (flag === undefined ? true : flag === true) : flag === true;
-            });
-          } catch (e) {
-            console.warn('Failed to fetch access map; proceeding without client-side filter', e);
-          }
-          console.log('Found applications for user:', dbApplications.length);
+          // Members: strictly query applications table only
+          dbApplications = await getApplicationsByUserId(user.id);
+          console.log('Found applications for user (applications table only):', dbApplications.length);
         }
-        
-        // Transform applications and load lender submissions
-        const dealsWithSubmissions = await Promise.all(
-          dbApplications.map(async (app) => {
-            const submissions = await getLenderSubmissions(app.id);
-            return {
-              ...app,
-              matchedLenders: submissions.length,
-              lenderSubmissions: submissions
-            };
-          })
+        // Show applications immediately with placeholder submission info
+        setDeals(
+          dbApplications.map((app: DBApplication) => ({
+            ...(app as Deal),
+            matchedLenders: 0,
+            lenderSubmissions: []
+          }))
         );
-        
-        setDeals(dealsWithSubmissions);
+
+        // Do not fetch lender_submissions to avoid delays; stay within applications table only
       } catch (error) {
         console.error('Error loading applications:', error);
       } finally {
-        setLoading(false);
+        // keep non-blocking; loading spinner removed
       }
     };
     loadApplications();
@@ -637,14 +618,7 @@ const AllDealsPortal: React.FC<AllDealsPortalProps> = ({ onEditDeal, onViewQuali
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-      {loading && (
-        <div className="flex items-center justify-center py-12">
-          <div className="text-center">
-            <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-purple-600 mx-auto mb-4"></div>
-            <p className="text-gray-600">Loading applications...</p>
-          </div>
-        </div>
-      )}
+      {/* Loading spinner removed to show content instantly */}
 
       {/* Enhanced Documents Modal */}
       {showDocs && selectedDeal && (
@@ -1075,7 +1049,6 @@ const AllDealsPortal: React.FC<AllDealsPortalProps> = ({ onEditDeal, onViewQuali
             >
               <option value="all">All Status ({statusCounts.all})</option>
               <option value="submitted">Submitted ({statusCounts.submitted})</option>
-              <option value="approved">Approved ({statusCounts.approved})</option>
               <option value="approved">Approved ({statusCounts.approved})</option>
               <option value="declined">Declined ({statusCounts.declined})</option>
             </select>

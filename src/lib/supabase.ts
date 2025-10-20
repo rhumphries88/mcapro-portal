@@ -508,6 +508,7 @@ export interface Lender {
   features: string[]
   created_at: string
   updated_at: string
+  cc_emails?: string[]
 }
 
 export interface LenderSubmission {

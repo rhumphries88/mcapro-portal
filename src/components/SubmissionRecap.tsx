@@ -321,31 +321,7 @@ const SubmissionRecap: React.FC<SubmissionRecapProps> = ({
                 </div>
             </div>
 
-            <div class="section">
-                <h2>💰 Financial Information</h2>
-                <div class="info-grid">
-                    <div class="info-card">
-                        <h3>Requested Amount</h3>
-                        <p style="color: #10b981; font-size: 20px;">$ {{requestedAmount}}</p>
-                    </div>
-                    <div class="info-card">
-                        <h3>Monthly Revenue</h3>
-                        <p>$ {{monthlyRevenue}}</p>
-                    </div>
-                    <div class="info-card">
-                        <h3>Annual Revenue</h3>
-                        <p>$ {{annualRevenue}}</p>
-                    </div>
-                    <div class="info-card">
-                        <h3>Credit Score</h3>
-                        <p>{{creditScore}}</p>
-                    </div>
-                    <div class="info-card">
-                        <h3>Existing Debt</h3>
-                        <p>$ {{existingDebt}}</p>
-                    </div>
-                </div>
-            </div>
+            
 
             <div class="documents">
                 <h3>📋 Attached Documents</h3>
@@ -630,12 +606,51 @@ const SubmissionRecap: React.FC<SubmissionRecapProps> = ({
         await createLenderSubmissions(application.id, selectedLenderIds);
       }
       
-      // Build lender emails array and consolidated email payload to our local email server
-      const lenderEmails = selectedLenders
+      // Build lender emails array including cc_emails per lender
+      const splitEmails = (raw?: unknown): string[] => {
+        if (!raw) return [];
+        const parse = (val: string) => val
+          .split(/[;,]/)
+          .map(e => e.trim())
+          .filter(e => e.length > 0);
+        if (Array.isArray(raw)) {
+          return raw.flatMap(v => parse(String(v)));
+        }
+        if (typeof raw === 'string') {
+          return parse(raw);
+        }
+        return [];
+      };
+      const dedupe = (arr: string[]) => Array.from(new Set(arr.map(e => e.toLowerCase()))).map(lower => arr.find(e => e.toLowerCase() === lower) as string);
+
+      const primaryEmails = selectedLenders
         .map(l => (l.contact_email || '').trim())
         .filter(e => e.length > 0);
-      const lenderIds = selectedLenders.map(l => l.id);
-      const lendersDetailed = selectedLenders.map(l => ({ id: l.id, email: (l.contact_email || '').trim() }));
+      const ccEmailsAll = selectedLenders.flatMap(l => {
+        const ccRaw = (l as { cc_emails?: string | string[] | null }).cc_emails ?? null;
+        return splitEmails(ccRaw);
+      });
+      const toEmails = dedupe(primaryEmails);
+      // ccEmails should not duplicate any primary email
+      const ccEmails = dedupe(ccEmailsAll.filter(e => !toEmails.map(x => x.toLowerCase()).includes(e.toLowerCase())));
+      // Back-compat combined list
+      const lenderEmails = dedupe([...toEmails, ...ccEmails]);
+
+      // Keep lenderIds as unique primary lender IDs
+      const lenderIds = Array.from(new Set(selectedLenders.map(l => l.id)));
+
+      // lendersDetailed includes primary + cc entries, cc rows reuse the same lender id
+      const lendersDetailed = selectedLenders.flatMap(l => {
+        const items: { id: string; email: string; role?: 'to' | 'cc' }[] = [];
+        const primary = (l.contact_email || '').trim();
+        if (primary) items.push({ id: l.id, email: primary, role: 'to' });
+        const ccs = (() => {
+          const ccRaw = (l as { cc_emails?: string | string[] | null }).cc_emails ?? null;
+          return splitEmails(ccRaw);
+        })();
+        for (const cc of ccs) items.push({ id: l.id, email: cc, role: 'cc' });
+        return items;
+      });
 
       // Subject/body from preview builder (use first lender for subject parsing, fall back to generic)
       const preview = selectedLenders[0] ? buildEmailPayloadForLender(selectedLenders[0]) : {
@@ -651,16 +666,45 @@ const SubmissionRecap: React.FC<SubmissionRecapProps> = ({
       };
 
       // Collect application documents as attachments when URLs are available
-      let attachments: { filename: string; url: string }[] = [];
+      let attachmentsUrl: { filename: string; url: string }[] = [];
       try {
         if (application?.id) {
           const docs: ApplicationDocument[] = await getApplicationDocuments(application.id);
-          attachments = (docs || [])
+          attachmentsUrl = (docs || [])
             .filter((d) => Boolean(d.file_url))
             .map((d) => ({ filename: d.file_name, url: d.file_url as string }));
         }
       } catch (err) {
         console.warn('Failed to load application documents for attachments:', err);
+      }
+
+      // Convert attachments to binary (base64) for the webhook
+      const fetchAsBase64 = async (url: string): Promise<{ base64: string; contentType: string } | null> => {
+        try {
+          const resp = await fetch(url);
+          if (!resp.ok) return null;
+          const blob = await resp.blob();
+          const buf = await blob.arrayBuffer();
+          let binary = '';
+          const bytes = new Uint8Array(buf);
+          const chunkSize = 0x8000;
+          for (let i = 0; i < bytes.length; i += chunkSize) {
+            binary += String.fromCharCode.apply(null as unknown as number[], bytes.subarray(i, i + chunkSize) as unknown as number[]);
+          }
+          const base64 = btoa(binary);
+          return { base64, contentType: blob.type || 'application/octet-stream' };
+        } catch (e) {
+          console.warn('Failed to fetch attachment for base64:', url, e);
+          return null;
+        }
+      };
+
+      const attachmentsBinary: { filename: string; contentBase64: string; contentType: string }[] = [];
+      for (const a of attachmentsUrl) {
+        const res = await fetchAsBase64(a.url);
+        if (res?.base64) {
+          attachmentsBinary.push({ filename: a.filename, contentBase64: res.base64, contentType: res.contentType });
+        }
       }
 
       // Get HTML content for each lender
@@ -694,13 +738,15 @@ const SubmissionRecap: React.FC<SubmissionRecapProps> = ({
       // Build webhook payload and send (fire-and-forget)
       const webhookPayload = {
         applicationId: application?.id,
-        lenders: lenderEmails,
+        lenders: lenderEmails, // legacy combined
+        toEmails: toEmails,
+        ccEmails: ccEmails,
         lenderIds,
         lendersDetailed,
         subject: preview.subject,
         body: previewHtml,
         bodyHtml: previewHtml,
-        attachments,
+        attachments: attachmentsBinary,
         smtpSettingsId: savedSmtpId || smtpSettingsId || null,
         context: {
           businessName: application?.businessName,
@@ -722,12 +768,14 @@ const SubmissionRecap: React.FC<SubmissionRecapProps> = ({
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             applicationId: application?.id,
-            lenders: lenderEmails,
+            lenders: lenderEmails, // legacy combined
+            toEmails: toEmails,
+            ccEmails: ccEmails,
             lenderIds,
             lendersDetailed,
             subject: preview.subject,
             body: previewHtml,
-            attachments,
+            attachments: attachmentsUrl,
           }),
         });
         if (!resp.ok) {
