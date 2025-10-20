@@ -1,6 +1,6 @@
 import React, { useRef, useState, useCallback } from 'react';
 import { Search, Eye, Download, DollarSign, Building2, Star, CheckCircle, XCircle, Clock, AlertTriangle, FileText, MoreVertical, Users } from 'lucide-react';
-import { supabase, getApplicationsByUserId, getAllApplications, getApplicationDocuments, getApplicationMTDByApplicationId, getUsersByRole, getApplicationAccessMapByApp, setApplicationAccess, deleteApplicationDocument, resolveAndDeleteApplicationMTD, insertApplicationMTD, updateApplication, Application as DBApplication, LenderSubmission as DBLenderSubmission, User as DBUser } from '../lib/supabase';
+import { supabase, getAllApplications, getApplicationDocuments, getApplicationMTDByApplicationId, getUsersByRole, getApplicationAccessMapByApp, setApplicationAccess, deleteApplicationDocument, resolveAndDeleteApplicationMTD, insertApplicationMTD, updateApplication, getLenderSubmissions, getApplicationsForMember, Application as DBApplication, LenderSubmission as DBLenderSubmission, User as DBUser } from '../lib/supabase';
 import { useAuth } from '../App';
 
 // Use database types
@@ -456,9 +456,9 @@ const AllDealsPortal: React.FC<AllDealsPortalProps> = ({ onEditDeal, onViewQuali
           console.log('Found all applications:', dbApplications.length);
         } else {
           console.log('Loading applications for member user ID:', user.id);
-          // Members: strictly query applications table only
-          dbApplications = await getApplicationsByUserId(user.id);
-          console.log('Found applications for user (applications table only):', dbApplications.length);
+          // Members: load own applications plus those granted via application_access
+          dbApplications = await getApplicationsForMember(user.id);
+          console.log('Found applications visible to member (own + access):', dbApplications.length);
         }
         // Show applications immediately with placeholder submission info
         setDeals(
@@ -469,7 +469,28 @@ const AllDealsPortal: React.FC<AllDealsPortalProps> = ({ onEditDeal, onViewQuali
           }))
         );
 
-        // Do not fetch lender_submissions to avoid delays; stay within applications table only
+        // Enrich with lender_submissions in background (non-blocking)
+        try {
+          const subs = await Promise.allSettled(
+            dbApplications.map(async (app: DBApplication) => {
+              const rows = await getLenderSubmissions(app.id);
+              return { appId: app.id, rows: (rows || []) as (DBLenderSubmission & { lender: { name: string } })[] };
+            })
+          );
+          const byId: Record<string, (DBLenderSubmission & { lender: { name: string } })[]> = {};
+          for (const r of subs) {
+            if (r.status === 'fulfilled') {
+              byId[r.value.appId] = r.value.rows;
+            }
+          }
+          setDeals(prev => prev.map(d => ({
+            ...d,
+            lenderSubmissions: byId[d.id] || [],
+            matchedLenders: (byId[d.id] || []).length,
+          })) as Deal[]);
+        } catch (e) {
+          console.warn('Failed to enrich lender submissions:', e);
+        }
       } catch (error) {
         console.error('Error loading applications:', error);
       } finally {
