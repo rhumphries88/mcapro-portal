@@ -665,7 +665,7 @@ const SubmissionRecap: React.FC<SubmissionRecapProps> = ({
         return parts.length > 1 ? parts.slice(1).join('\n\n') : emailContent;
       };
 
-      // Collect application documents as attachments when URLs are available
+      // Collect application documents as attachments when URLs are available (includes application_documents, application_form, and application_mtd)
       let attachmentsUrl: { filename: string; url: string }[] = [];
       try {
         if (application?.id) {
@@ -682,6 +682,16 @@ const SubmissionRecap: React.FC<SubmissionRecapProps> = ({
             attachmentsUrl = [...attachmentsUrl, ...formAttachments];
           } catch (err) {
             console.warn('Failed to load application_form documents for attachments:', err);
+          }
+          // Include MTD files from application_mtd table (e.g., Funder MTD)
+          try {
+            const mtdRows: ApplicationMTD[] = await getApplicationMTDByApplicationId(application.id);
+            const mtdAttachments = (mtdRows || [])
+              .filter((m) => Boolean(m.file_url))
+              .map((m) => ({ filename: m.file_name || 'MTD File', url: String(m.file_url) }));
+            attachmentsUrl = [...attachmentsUrl, ...mtdAttachments];
+          } catch (err) {
+            console.warn('Failed to load application_mtd documents for attachments:', err);
           }
         }
       } catch (err) {
