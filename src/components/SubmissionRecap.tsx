@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { ArrowLeft, Send, Settings, CheckCircle, FileText, Loader, Eye, EyeOff, Server, Hash, AtSign, KeyRound, ShieldCheck } from 'lucide-react';
-import { getLenders, createLenderSubmissions, Lender as DBLender, getApplicationDocuments, type ApplicationDocument, qualifyLenders, type Application as DBApplication, ApplicationMTD, getApplicationMTDByApplicationId } from '../lib/supabase';
+import { getLenders, createLenderSubmissions, Lender as DBLender, getApplicationDocuments, type ApplicationDocument, qualifyLenders, type Application as DBApplication, ApplicationMTD, getApplicationMTDByApplicationId, getApplicationFormByApplicationId, type ApplicationFormRow } from '../lib/supabase';
 
 interface Application {
   id: string;
@@ -673,39 +673,23 @@ const SubmissionRecap: React.FC<SubmissionRecapProps> = ({
           attachmentsUrl = (docs || [])
             .filter((d) => Boolean(d.file_url))
             .map((d) => ({ filename: d.file_name, url: d.file_url as string }));
+          // Also include completed application form files from application_form table
+          try {
+            const forms: ApplicationFormRow[] = await getApplicationFormByApplicationId(application.id);
+            const formAttachments = (forms || [])
+              .filter((f) => Boolean(f.file_url))
+              .map((f) => ({ filename: f.file_name || 'Application Form', url: String(f.file_url) }));
+            attachmentsUrl = [...attachmentsUrl, ...formAttachments];
+          } catch (err) {
+            console.warn('Failed to load application_form documents for attachments:', err);
+          }
         }
       } catch (err) {
         console.warn('Failed to load application documents for attachments:', err);
       }
 
-      // Convert attachments to binary (base64) for the webhook
-      const fetchAsBase64 = async (url: string): Promise<{ base64: string; contentType: string } | null> => {
-        try {
-          const resp = await fetch(url);
-          if (!resp.ok) return null;
-          const blob = await resp.blob();
-          const buf = await blob.arrayBuffer();
-          let binary = '';
-          const bytes = new Uint8Array(buf);
-          const chunkSize = 0x8000;
-          for (let i = 0; i < bytes.length; i += chunkSize) {
-            binary += String.fromCharCode.apply(null as unknown as number[], bytes.subarray(i, i + chunkSize) as unknown as number[]);
-          }
-          const base64 = btoa(binary);
-          return { base64, contentType: blob.type || 'application/octet-stream' };
-        } catch (e) {
-          console.warn('Failed to fetch attachment for base64:', url, e);
-          return null;
-        }
-      };
-
-      const attachmentsBinary: { filename: string; contentBase64: string; contentType: string }[] = [];
-      for (const a of attachmentsUrl) {
-        const res = await fetchAsBase64(a.url);
-        if (res?.base64) {
-          attachmentsBinary.push({ filename: a.filename, contentBase64: res.base64, contentType: res.contentType });
-        }
-      }
+      // Use filename+URL only (no base64 payload)
+      const attachmentsForWebhook: { filename: string; url: string }[] = attachmentsUrl;
 
       // Get HTML content for each lender
       const htmlContent = selectedLenders[0] ? extractHtmlBody(generateEmailContent(selectedLenders[0])) : '';
@@ -746,7 +730,7 @@ const SubmissionRecap: React.FC<SubmissionRecapProps> = ({
         subject: preview.subject,
         body: previewHtml,
         bodyHtml: previewHtml,
-        attachments: attachmentsBinary,
+        attachments: attachmentsForWebhook,
         smtpSettingsId: savedSmtpId || smtpSettingsId || null,
         context: {
           businessName: application?.businessName,

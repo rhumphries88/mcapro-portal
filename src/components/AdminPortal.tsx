@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Users, Building2, Settings, Plus, Edit, Trash2, Eye, Star, CheckCircle, Mail, XCircle, Search } from 'lucide-react';
+import { Building2, Users, Settings, FileText, Plus, Edit, Trash2, Eye, CheckCircle, XCircle, AlertCircle, Search, Phone, Mail, DollarSign, Building, Briefcase, Star } from 'lucide-react';
 import { supabase, getLenders, createLender, updateLender, deleteLender, getApplications, getLenderSubmissions, updateApplication, deleteApplication, updateLenderSubmission, createLenderSubmissions, getUsersByRole, Lender as DBLender, Application as DBApplication, LenderSubmission as DBLenderSubmission, User as DBUser } from '../lib/supabase';
 
 const AdminPortal: React.FC = () => {
@@ -70,6 +70,12 @@ Application ID: {{applicationId}}`;
   const [showEditApplication, setShowEditApplication] = useState(false);
   const [applicationSubmissions, setApplicationSubmissions] = useState<(DBLenderSubmission & { lender: DBLender })[]>([]);
   const [showAddSubmission, setShowAddSubmission] = useState(false);
+  // Per-submission validation flags
+  const [submissionValidation, setSubmissionValidation] = useState<Record<string, { responseRequired?: boolean; offeredRequired?: boolean; factorRequired?: boolean; termsRequired?: boolean }>>({});
+  // Toast notification state
+  const [showToast, setShowToast] = useState(false);
+  const [toastMessage, setToastMessage] = useState('');
+  const [toastVariant, setToastVariant] = useState<'error' | 'success' | 'warning'>('error');
   // Deal Users (members)
   const [dealUsers, setDealUsers] = useState<DBUser[]>([]);
   const [dealUsersLoading, setDealUsersLoading] = useState(false);
@@ -216,6 +222,52 @@ Application ID: {{applicationId}}`;
     if (!editingApplication) return;
 
     try {
+      // Validate lender submissions before saving application
+      const validation: Record<string, { responseRequired?: boolean; offeredRequired?: boolean; factorRequired?: boolean; termsRequired?: boolean }> = {};
+      let hasErrors = false;
+      applicationSubmissions.forEach((s) => {
+        const mapped = mapUiStatusToDb((s.status || '').toString());
+        const isDeclined = mapped === 'rejected';
+        const isApproved = mapped === 'approved';
+        const isCounter = mapped === 'responded';
+        const isPending = mapped === 'pending';
+        const respEmpty = !s.response || (typeof s.response === 'string' && s.response.trim() === '');
+        const amountEmpty = s.offered_amount == null || (typeof s.offered_amount === 'number' && Number.isNaN(s.offered_amount));
+        const factorEmpty = !s.factor_rate || (typeof s.factor_rate === 'string' && s.factor_rate.trim() === '');
+        const termsEmpty = !s.terms || (typeof s.terms === 'string' && s.terms.trim() === '');
+        if ((isDeclined || isPending) && respEmpty) {
+          validation[s.id] = { ...(validation[s.id] || {}), responseRequired: true };
+          hasErrors = true;
+        }
+        if ((isApproved || isCounter) && (amountEmpty || factorEmpty || termsEmpty)) {
+          validation[s.id] = { ...(validation[s.id] || {}), ...(amountEmpty ? { offeredRequired: true } : {}), ...(factorEmpty ? { factorRequired: true } : {}), ...(termsEmpty ? { termsRequired: true } : {}) };
+          hasErrors = true;
+        }
+      });
+      setSubmissionValidation(validation);
+      if (hasErrors) {
+        // Prevent save and show toast notification
+        const hasResponseIssue = Object.values(validation).some(v => v.responseRequired);
+        const hasApproveIssue = Object.values(validation).some(v => v.offeredRequired || v.factorRequired || v.termsRequired);
+        if (hasResponseIssue) {
+          // Determine if any pending; otherwise treat as declined
+          const anyPending = applicationSubmissions.some(s => mapUiStatusToDb((s.status || '').toString()) === 'pending' && (!s.response || (typeof s.response === 'string' && s.response.trim() === '')));
+          if (anyPending) {
+            setToastMessage('Please provide a Response for submissions marked Pending.');
+            setToastVariant('warning');
+          } else {
+            setToastMessage('Please provide a Response explaining why a submission is Declined.');
+            setToastVariant('error');
+          }
+        } else if (hasApproveIssue) {
+          setToastMessage('Please fill in Offered Amount, Factor Rate, and Terms for Approved or Counter Offer submissions.');
+          setToastVariant('success');
+        }
+        setShowToast(true);
+        setTimeout(() => setShowToast(false), 4000);
+        return;
+      }
+
       const dbUpdateData: Partial<DBApplication> = {
         business_name: editingApplication.business_name,
         owner_name: editingApplication.owner_name,
@@ -481,12 +533,28 @@ Application ID: {{applicationId}}`;
   const persistSubmissionChange = async (submissionId: string, updates: Partial<DBLenderSubmission>) => {
     try {
       // Map UI status to DB-allowed values prior to persisting
-      const dbPatch: Partial<DBLenderSubmission> = { ...updates };
+      const dbPatch: Partial<Record<keyof DBLenderSubmission, unknown>> = { ...(updates as Partial<Record<keyof DBLenderSubmission, unknown>>) };
+      // If a field is explicitly cleared in the UI, persist it as null
+      const nullableFields: (keyof DBLenderSubmission)[] = [
+        'offered_amount',
+        'factor_rate',
+        'terms',
+        'response',
+        'notes',
+      ];
+      nullableFields.forEach((key) => {
+        if (Object.prototype.hasOwnProperty.call(updates, key)) {
+          const v = (updates as Partial<Record<keyof DBLenderSubmission, unknown>>)[key];
+          if (v === undefined || v === '') {
+            (dbPatch as Partial<Record<keyof DBLenderSubmission, unknown>>)[key] = null;
+          }
+        }
+      });
       if (Object.prototype.hasOwnProperty.call(updates, 'status')) {
         const dbStatus = mapUiStatusToDb(updates.status as string | null | undefined);
-        if (dbStatus) dbPatch.status = dbStatus as DBLenderSubmission['status'];
+        if (dbStatus) (dbPatch as Partial<Record<keyof DBLenderSubmission, unknown>>).status = dbStatus as DBLenderSubmission['status'];
       }
-      const updatedSubmission = await updateLenderSubmission(submissionId, dbPatch);
+      const updatedSubmission = await updateLenderSubmission(submissionId, dbPatch as unknown as Partial<DBLenderSubmission>);
       // Normalize status back to the canonical values used by the UI options
       const normalizedStatus = canonicalizeSubmissionStatus(updatedSubmission.status as DBLenderSubmission['status']);
       setApplicationSubmissions(prev =>
@@ -1826,168 +1894,246 @@ Application ID: {{applicationId}}`;
 
       {/* Edit Application Modal */}
       {showEditApplication && editingApplication && (
-        <div className="fixed inset-0 bg-gray-600 bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-xl shadow-xl max-w-6xl w-full mx-4 max-h-[95vh] overflow-y-auto">
-            <div className="p-6 border-b border-gray-200">
-              <div className="flex items-center justify-between">
-                <h3 className="text-xl font-medium text-gray-900">
-                  Edit Application - {editingApplication.business_name}
-                </h3>
+        <div className="fixed inset-0 bg-black bg-opacity-60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl shadow-2xl max-w-7xl w-full max-h-[95vh] overflow-hidden border border-gray-200">
+            {/* Professional Header */}
+            <div className="bg-gradient-to-r from-blue-600 via-blue-700 to-indigo-700 px-8 py-6 relative overflow-hidden">
+              <div className="absolute inset-0 bg-gradient-to-r from-blue-600/90 to-indigo-700/90"></div>
+              <div className="relative flex items-center justify-between">
+                <div className="flex items-center space-x-4">
+                  <div className="bg-white/20 p-3 rounded-xl backdrop-blur-sm">
+                    <Building2 className="w-6 h-6 text-white" />
+                  </div>
+                  <div>
+                    <h3 className="text-2xl font-bold text-white mb-1">
+                      Edit Application
+                    </h3>
+                    <p className="text-blue-100 text-sm font-medium">
+                      {editingApplication.business_name} • Bank Statement Processing
+                    </p>
+                  </div>
+                </div>
                 <button
                   onClick={() => {
                     setShowEditApplication(false);
                     setEditingApplication(null);
                   }}
-                  className="text-gray-400 hover:text-gray-600"
+                  className="bg-white/10 hover:bg-white/20 p-2 rounded-xl transition-all duration-200 backdrop-blur-sm"
                 >
-                  <XCircle className="w-6 h-6" />
+                  <XCircle className="w-6 h-6 text-white" />
                 </button>
               </div>
             </div>
             
-            <div className="p-6">
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-                {/* Application Details Form */}
-                <div>
-                  <h4 className="text-lg font-medium text-gray-900 mb-4">Application Details</h4>
-                  <form onSubmit={handleUpdateApplication} className="space-y-4">
-                    <div className="grid grid-cols-2 gap-4">
-                      <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-1">Business Name</label>
-                        <input
-                          type="text"
-                          value={editingApplication.business_name}
-                          onChange={(e) => setEditingApplication(prev => prev ? { ...prev, business_name: e.target.value } : null)}
-                          className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-1">Owner Name</label>
-                        <input
-                          type="text"
-                          value={editingApplication.owner_name}
-                          onChange={(e) => setEditingApplication(prev => prev ? { ...prev, owner_name: e.target.value } : null)}
-                          className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-1">Email</label>
-                        <input
-                          type="email"
-                          value={editingApplication.email}
-                          onChange={(e) => setEditingApplication(prev => prev ? { ...prev, email: e.target.value } : null)}
-                          className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-1">Phone</label>
-                        <input
-                          type="tel"
-                          value={editingApplication.phone || ''}
-                          onChange={(e) => setEditingApplication(prev => prev ? { ...prev, phone: e.target.value } : null)}
-                          className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-1">Industry</label>
-                        <select
-                          value={editingApplication.industry || ''}
-                          onChange={(e) => setEditingApplication(prev => prev ? { ...prev, industry: e.target.value } : null)}
-                          className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
-                        >
-                          <option value="">Select Industry</option>
-                          <option value="Retail">Retail</option>
-                          <option value="Restaurant">Restaurant</option>
-                          <option value="Healthcare">Healthcare</option>
-                          <option value="Construction">Construction</option>
-                          <option value="Professional Services">Professional Services</option>
-                          <option value="Transportation">Transportation</option>
-                          <option value="Manufacturing">Manufacturing</option>
-                          <option value="Technology">Technology</option>
-                          <option value="Real Estate">Real Estate</option>
-                          <option value="Other">Other</option>
-                        </select>
-                      </div>
-                      <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-1">Status</label>
-                        <select
-                          value={editingApplication.status}
-                          onChange={(e) => setEditingApplication(prev => (prev ? { ...prev, status: e.target.value as DBApplication['status'] } : prev))}
-                          className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
-                        >
-                          <option value="draft">Draft</option>
-                          <option value="submitted">Submitted</option>
-                          <option value="under-review">Under Review</option>
-                          <option value="approved">Approved</option>
-                          <option value="funded">Funded</option>
-                          <option value="declined">Declined</option>
-                        </select>
-                      </div>
-                      <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-1">Requested Amount</label>
-                        <input
-                          type="number"
-                          value={editingApplication.requested_amount}
-                          onChange={(e) => setEditingApplication(prev => (prev ? { ...prev, requested_amount: Number(e.target.value) } : prev))}
-                          className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-1">Monthly Revenue</label>
-                        <input
-                          type="number"
-                          value={editingApplication.monthly_revenue}
-                          onChange={(e) => setEditingApplication(prev => (prev ? { ...prev, monthly_revenue: Number(e.target.value) } : prev))}
-                          className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-1">Credit Score</label>
-                        <input
-                          type="number"
-                          value={editingApplication.credit_score}
-                          onChange={(e) => setEditingApplication(prev => (prev ? { ...prev, credit_score: Number(e.target.value) } : prev))}
-                          className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
-                          min="300"
-                          max="850"
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-1">Years in Business</label>
-                        <input
-                          type="number"
-                          value={editingApplication.years_in_business}
-                          onChange={(e) => setEditingApplication(prev => (prev ? { ...prev, years_in_business: Number(e.target.value) } : prev))}
-                          className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
-                          min="0"
-                        />
+            <div className="overflow-y-auto max-h-[calc(95vh-120px)]">
+              <div className="p-8">
+                <div className="grid grid-cols-1 xl:grid-cols-2 gap-10">
+                  {/* Application Details Form */}
+                  <div className="bg-gradient-to-br from-gray-50 to-white rounded-2xl border border-gray-200 shadow-sm">
+                    <div className="bg-gradient-to-r from-gray-600 to-gray-700 px-6 py-4 rounded-t-2xl">
+                      <div className="flex items-center space-x-3">
+                        <FileText className="w-5 h-5 text-white" />
+                        <h4 className="text-lg font-semibold text-white">Application Details</h4>
                       </div>
                     </div>
-                    
-                    <div className="flex justify-end pt-4">
-                      <button
-                        type="submit"
-                        className="bg-blue-600 text-white px-6 py-2 rounded-lg hover:bg-blue-700 flex items-center"
-                      >
-                        <CheckCircle className="w-4 h-4 mr-2" />
-                        Save Changes
-                      </button>
+                    <div className="p-6">
+                      <form onSubmit={handleUpdateApplication} className="space-y-6">
+                        {/* Business Information Section */}
+                        <div className="bg-blue-50/50 rounded-xl p-4 border border-blue-100">
+                          <h5 className="text-sm font-semibold text-blue-800 mb-3 flex items-center">
+                            <Building className="w-4 h-4 mr-2" />
+                            Business Information
+                          </h5>
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            <div>
+                              <label className="block text-sm font-semibold text-gray-700 mb-2">Business Name *</label>
+                              <input
+                                type="text"
+                                value={editingApplication.business_name}
+                                onChange={(e) => setEditingApplication(prev => prev ? { ...prev, business_name: e.target.value } : null)}
+                                className="w-full px-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white shadow-sm transition-all duration-200"
+                                placeholder="Enter business name"
+                              />
+                            </div>
+                            <div>
+                              <label className="block text-sm font-semibold text-gray-700 mb-2">Owner Name *</label>
+                              <input
+                                type="text"
+                                value={editingApplication.owner_name}
+                                onChange={(e) => setEditingApplication(prev => prev ? { ...prev, owner_name: e.target.value } : null)}
+                                className="w-full px-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white shadow-sm transition-all duration-200"
+                                placeholder="Enter owner name"
+                              />
+                            </div>
+                          </div>
+                        </div>
+                        
+                        {/* Contact Information Section */}
+                        <div className="bg-green-50/50 rounded-xl p-4 border border-green-100">
+                          <h5 className="text-sm font-semibold text-green-800 mb-3 flex items-center">
+                            <Phone className="w-4 h-4 mr-2" />
+                            Contact Information
+                          </h5>
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            <div>
+                              <label className="block text-sm font-semibold text-gray-700 mb-2">Email Address *</label>
+                              <input
+                                type="email"
+                                value={editingApplication.email}
+                                onChange={(e) => setEditingApplication(prev => prev ? { ...prev, email: e.target.value } : null)}
+                                className="w-full px-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-green-500 focus:border-green-500 bg-white shadow-sm transition-all duration-200"
+                                placeholder="business@example.com"
+                              />
+                            </div>
+                            <div>
+                              <label className="block text-sm font-semibold text-gray-700 mb-2">Phone Number</label>
+                              <input
+                                type="tel"
+                                value={editingApplication.phone || ''}
+                                onChange={(e) => setEditingApplication(prev => prev ? { ...prev, phone: e.target.value } : null)}
+                                className="w-full px-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-green-500 focus:border-green-500 bg-white shadow-sm transition-all duration-200"
+                                placeholder="(555) 123-4567"
+                              />
+                            </div>
+                          </div>
+                        </div>
+                        
+                        {/* Business Classification Section */}
+                        <div className="bg-purple-50/50 rounded-xl p-4 border border-purple-100">
+                          <h5 className="text-sm font-semibold text-purple-800 mb-3 flex items-center">
+                            <Briefcase className="w-4 h-4 mr-2" />
+                            Business Classification
+                          </h5>
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            <div>
+                              <label className="block text-sm font-semibold text-gray-700 mb-2">Industry *</label>
+                              <select
+                                value={editingApplication.industry || ''}
+                                onChange={(e) => setEditingApplication(prev => prev ? { ...prev, industry: e.target.value } : null)}
+                                className="w-full px-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-purple-500 focus:border-purple-500 bg-white shadow-sm transition-all duration-200"
+                              >
+                                <option value="">Select Industry</option>
+                                <option value="Retail">Retail</option>
+                                <option value="Restaurant">Restaurant</option>
+                                <option value="Healthcare">Healthcare</option>
+                                <option value="Construction">Construction</option>
+                                <option value="Professional Services">Professional Services</option>
+                                <option value="Transportation">Transportation</option>
+                                <option value="Manufacturing">Manufacturing</option>
+                                <option value="Technology">Technology</option>
+                                <option value="Real Estate">Real Estate</option>
+                                <option value="Other">Other</option>
+                              </select>
+                            </div>
+                            <div>
+                              <label className="block text-sm font-semibold text-gray-700 mb-2">Application Status</label>
+                              <select
+                                value={editingApplication.status}
+                                onChange={(e) => setEditingApplication(prev => (prev ? { ...prev, status: e.target.value as DBApplication['status'] } : prev))}
+                                className="w-full px-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-purple-500 focus:border-purple-500 bg-white shadow-sm transition-all duration-200"
+                              >
+                                <option value="draft">Draft</option>
+                                <option value="submitted">Submitted</option>
+                                <option value="under-review">Under Review</option>
+                                <option value="approved">Approved</option>
+                                <option value="funded">Funded</option>
+                                <option value="declined">Declined</option>
+                              </select>
+                            </div>
+                          </div>
+                        </div>
+                        
+                        {/* Financial Information Section */}
+                        <div className="bg-orange-50/50 rounded-xl p-4 border border-orange-100">
+                          <h5 className="text-sm font-semibold text-orange-800 mb-3 flex items-center">
+                            <DollarSign className="w-4 h-4 mr-2" />
+                            Financial Information
+                          </h5>
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            <div>
+                              <label className="block text-sm font-semibold text-gray-700 mb-2">Requested Amount *</label>
+                              <div className="relative">
+                                <span className="absolute left-4 top-1/2 transform -translate-y-1/2 text-gray-500 font-medium">$</span>
+                                <input
+                                  type="number"
+                                  value={editingApplication.requested_amount}
+                                  onChange={(e) => setEditingApplication(prev => (prev ? { ...prev, requested_amount: Number(e.target.value) } : prev))}
+                                  className="w-full pl-8 pr-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-orange-500 focus:border-orange-500 bg-white shadow-sm transition-all duration-200"
+                                  placeholder="100,000"
+                                />
+                              </div>
+                            </div>
+                            <div>
+                              <label className="block text-sm font-semibold text-gray-700 mb-2">Monthly Revenue</label>
+                              <div className="relative">
+                                <span className="absolute left-4 top-1/2 transform -translate-y-1/2 text-gray-500 font-medium">$</span>
+                                <input
+                                  type="number"
+                                  value={editingApplication.monthly_revenue}
+                                  onChange={(e) => setEditingApplication(prev => (prev ? { ...prev, monthly_revenue: Number(e.target.value) } : prev))}
+                                  className="w-full pl-8 pr-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-orange-500 focus:border-orange-500 bg-white shadow-sm transition-all duration-200"
+                                  placeholder="25,000"
+                                />
+                              </div>
+                            </div>
+                            <div>
+                              <label className="block text-sm font-semibold text-gray-700 mb-2">Credit Score</label>
+                              <input
+                                type="number"
+                                value={editingApplication.credit_score}
+                                onChange={(e) => setEditingApplication(prev => (prev ? { ...prev, credit_score: Number(e.target.value) } : prev))}
+                                className="w-full px-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-orange-500 focus:border-orange-500 bg-white shadow-sm transition-all duration-200"
+                                min="300"
+                                max="850"
+                                placeholder="650"
+                              />
+                            </div>
+                            <div>
+                              <label className="block text-sm font-semibold text-gray-700 mb-2">Years in Business</label>
+                              <input
+                                type="number"
+                                value={editingApplication.years_in_business}
+                                onChange={(e) => setEditingApplication(prev => (prev ? { ...prev, years_in_business: Number(e.target.value) } : prev))}
+                                className="w-full px-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-orange-500 focus:border-orange-500 bg-white shadow-sm transition-all duration-200"
+                                min="0"
+                                placeholder="5"
+                              />
+                            </div>
+                          </div>
+                        </div>
+                        
+                        {/* Action Buttons */}
+                        <div className="flex justify-end pt-6 border-t border-gray-200">
+                          <button
+                            type="submit"
+                            className="bg-gradient-to-r from-blue-600 to-blue-700 hover:from-blue-700 hover:to-blue-800 text-white px-8 py-3 rounded-xl font-semibold flex items-center shadow-lg hover:shadow-xl transition-all duration-200"
+                          >
+                            <CheckCircle className="w-5 h-5 mr-2" />
+                            Save Changes
+                          </button>
+                        </div>
+                      </form>
                     </div>
-                  </form>
-                </div>
+                  </div>
 
                 {/* Lender Submissions Management */}
-                <div>
-                  <div className="flex items-center justify-between mb-4">
-                    <h4 className="text-lg font-medium text-gray-900">Lender Submissions</h4>
-                    <button
-                      onClick={() => setShowAddSubmission(true)}
-                      className="bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700 flex items-center text-sm"
-                    >
-                      <Plus className="w-4 h-4 mr-1" />
-                      Add Lender
-                    </button>
+                <div className="bg-gradient-to-br from-indigo-50 to-white rounded-2xl border border-indigo-200 shadow-sm">
+                  <div className="bg-gradient-to-r from-indigo-600 to-indigo-700 px-6 py-4 rounded-t-2xl">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center space-x-3">
+                        <Building2 className="w-5 h-5 text-white" />
+                        <h4 className="text-lg font-semibold text-white">Lender Submissions</h4>
+                      </div>
+                      <button
+                        onClick={() => setShowAddSubmission(true)}
+                        className="bg-white/20 hover:bg-white/30 text-white px-4 py-2 rounded-xl font-medium flex items-center text-sm transition-all duration-200 backdrop-blur-sm"
+                      >
+                        <Plus className="w-4 h-4 mr-2" />
+                        Add Lender
+                      </button>
+                    </div>
                   </div>
+                  <div className="p-6">
                   <div className="space-y-4 max-h-96 overflow-y-auto">
                     {applicationSubmissions.map((submission) => (
                       <div key={submission.id} className="bg-gray-50 rounded-lg p-4">
@@ -2000,8 +2146,54 @@ Application ID: {{applicationId}}`;
                           </div>
                           <select
                             value={submission.status}
-                            onChange={(e) => updateSubmissionLocal(submission.id, { status: e.target.value as DBLenderSubmission['status'] })}
-                            onBlur={(e) => persistSubmissionChange(submission.id, { status: e.target.value as DBLenderSubmission['status'] })}
+                            onChange={(e) => {
+                              const raw = e.target.value;
+                              const isDeclined = raw === 'rejected' || raw === 'declined' || raw === 'decline';
+                              const isApproved = raw === 'approved' || raw === 'funded' || raw === 'approve';
+                              const isCounter = raw === 'responded' || raw === 'counter-offer' || raw === 'respond';
+                              const isPending = raw === 'pending';
+                              if (isDeclined) {
+                                updateSubmissionLocal(submission.id, {
+                                  status: raw as DBLenderSubmission['status'],
+                                  offered_amount: undefined,
+                                  factor_rate: undefined,
+                                  terms: undefined,
+                                });
+                                const respEmpty = !submission.response || (typeof submission.response === 'string' && submission.response.trim() === '');
+                                if (respEmpty) {
+                                  setSubmissionValidation(prev => ({ ...prev, [submission.id]: { responseRequired: true } }));
+                                }
+                              } else if (isApproved || isCounter) {
+                                updateSubmissionLocal(submission.id, { status: raw as DBLenderSubmission['status'] });
+                                const amountEmpty = submission.offered_amount == null || (typeof submission.offered_amount === 'number' && Number.isNaN(submission.offered_amount));
+                                const factorEmpty = !submission.factor_rate || (typeof submission.factor_rate === 'string' && submission.factor_rate.trim() === '');
+                                const termsEmpty = !submission.terms || (typeof submission.terms === 'string' && submission.terms.trim() === '');
+                                if (amountEmpty || factorEmpty || termsEmpty) {
+                                  setSubmissionValidation(prev => ({
+                                    ...prev,
+                                    [submission.id]: { ...(prev[submission.id] || {}), ...(amountEmpty ? { offeredRequired: true } : {}), ...(factorEmpty ? { factorRequired: true } : {}), ...(termsEmpty ? { termsRequired: true } : {}) }
+                                  }));
+                                } else {
+                                  setSubmissionValidation(prev => ({ ...prev, [submission.id]: { ...(prev[submission.id] || {}), offeredRequired: false, factorRequired: false, termsRequired: false } }));
+                                }
+                              } else if (isPending) {
+                                updateSubmissionLocal(submission.id, { status: raw as DBLenderSubmission['status'] });
+                                const respEmpty2 = !submission.response || (typeof submission.response === 'string' && submission.response.trim() === '');
+                                setSubmissionValidation(prev => ({ ...prev, [submission.id]: { ...(prev[submission.id] || {}), responseRequired: respEmpty2 } }));
+                              } else {
+                                updateSubmissionLocal(submission.id, { status: raw as DBLenderSubmission['status'] });
+                                setSubmissionValidation(prev => { const next = { ...prev }; delete next[submission.id]; return next; });
+                              }
+                            }}
+                            onBlur={(e) => {
+                              const raw = e.target.value;
+                              const isDeclined = raw === 'rejected' || raw === 'declined' || raw === 'decline';
+                              if (isDeclined) {
+                                persistSubmissionChange(submission.id, { status: raw as DBLenderSubmission['status'], offered_amount: undefined, factor_rate: undefined, terms: undefined });
+                              } else {
+                                persistSubmissionChange(submission.id, { status: raw as DBLenderSubmission['status'] });
+                              }
+                            }}
                             className="px-3 py-1 rounded-full text-xs font-medium border border-gray-300 bg-white text-gray-700 focus:outline-none focus:ring-1 focus:ring-blue-500"
                           >
                             <option value="pending">Pending</option>
@@ -2018,22 +2210,70 @@ Application ID: {{applicationId}}`;
                             <input
                               type="number"
                               value={submission.offered_amount || ''}
-                              onChange={(e) => updateSubmissionLocal(submission.id, { offered_amount: e.target.value === '' ? undefined : Number(e.target.value) })}
+                              onChange={(e) => {
+                                updateSubmissionLocal(submission.id, { offered_amount: e.target.value === '' ? undefined : Number(e.target.value) });
+                                if (e.target.value.trim() !== '' && submissionValidation[submission.id]?.offeredRequired) {
+                                  setSubmissionValidation(prev => ({ ...prev, [submission.id]: { ...(prev[submission.id] || {}), offeredRequired: false } }));
+                                }
+                              }}
                               onBlur={(e) => persistSubmissionChange(submission.id, { offered_amount: e.target.value === '' ? undefined : Number(e.target.value) })}
-                              className="w-full px-2 py-1 text-sm border border-gray-300 rounded focus:ring-1 focus:ring-blue-500"
+                              className={`w-full px-3 py-2 text-sm border rounded-lg transition-all duration-200 ${
+                                mapUiStatusToDb(submission.status as string) === 'rejected'
+                                  ? 'border-red-400 bg-red-50 placeholder-red-400 focus:ring-2 focus:ring-red-200 focus:border-red-500'
+                                  : mapUiStatusToDb(submission.status as string) === 'approved'
+                                  ? 'border-green-400 bg-green-50 placeholder-green-400 focus:ring-2 focus:ring-green-200 focus:border-green-500'
+                                  : 'border-gray-300 focus:ring-2 focus:ring-blue-200 focus:border-blue-500'
+                              }`}
                               placeholder="Amount"
                             />
+                            {submissionValidation[submission.id]?.offeredRequired && (
+                              <div className="mt-2 p-3 bg-green-50 border border-green-200 rounded-lg">
+                                <div className="flex items-center">
+                                  <div className="flex-shrink-0">
+                                    <CheckCircle className="h-4 w-4 text-green-500" />
+                                  </div>
+                                  <div className="ml-2">
+                                    <p className="text-sm font-medium text-green-800">Offered Amount Required</p>
+                                    <p className="text-xs text-green-700 mt-1">Provide an offered amount for Approved or Counter Offer.</p>
+                                  </div>
+                                </div>
+                              </div>
+                            )}
                           </div>
                           <div>
                             <label className="block text-xs font-medium text-gray-700 mb-1">Factor Rate</label>
                             <input
                               type="text"
                               value={submission.factor_rate || ''}
-                              onChange={(e) => updateSubmissionLocal(submission.id, { factor_rate: e.target.value === '' ? undefined : e.target.value })}
+                              onChange={(e) => {
+                                updateSubmissionLocal(submission.id, { factor_rate: e.target.value === '' ? undefined : e.target.value });
+                                if (e.target.value.trim() !== '' && submissionValidation[submission.id]?.factorRequired) {
+                                  setSubmissionValidation(prev => ({ ...prev, [submission.id]: { ...(prev[submission.id] || {}), factorRequired: false } }));
+                                }
+                              }}
                               onBlur={(e) => persistSubmissionChange(submission.id, { factor_rate: e.target.value === '' ? undefined : e.target.value })}
-                              className="w-full px-2 py-1 text-sm border border-gray-300 rounded focus:ring-1 focus:ring-blue-500"
+                              className={`w-full px-3 py-2 text-sm border rounded-lg transition-all duration-200 ${
+                                mapUiStatusToDb(submission.status as string) === 'rejected'
+                                  ? 'border-red-400 bg-red-50 placeholder-red-400 focus:ring-2 focus:ring-red-200 focus:border-red-500'
+                                  : mapUiStatusToDb(submission.status as string) === 'approved'
+                                  ? 'border-green-400 bg-green-50 placeholder-green-400 focus:ring-2 focus:ring-green-200 focus:border-green-500'
+                                  : 'border-gray-300 focus:ring-2 focus:ring-blue-200 focus:border-blue-500'
+                              }`}
                               placeholder="1.2"
                             />
+                            {submissionValidation[submission.id]?.factorRequired && (
+                              <div className="mt-2 p-3 bg-green-50 border border-green-200 rounded-lg">
+                                <div className="flex items-center">
+                                  <div className="flex-shrink-0">
+                                    <CheckCircle className="h-4 w-4 text-green-500" />
+                                  </div>
+                                  <div className="ml-2">
+                                    <p className="text-sm font-medium text-green-800">Factor Rate Required</p>
+                                    <p className="text-xs text-green-700 mt-1">Provide a factor rate for Approved or Counter Offer.</p>
+                                  </div>
+                                </div>
+                              </div>
+                            )}
                           </div>
                         </div>
                         
@@ -2042,23 +2282,76 @@ Application ID: {{applicationId}}`;
                           <input
                             type="text"
                             value={submission.terms || ''}
-                            onChange={(e) => updateSubmissionLocal(submission.id, { terms: e.target.value === '' ? undefined : e.target.value })}
+                            onChange={(e) => {
+                              updateSubmissionLocal(submission.id, { terms: e.target.value === '' ? undefined : e.target.value });
+                              if (e.target.value.trim() !== '' && submissionValidation[submission.id]?.termsRequired) {
+                                setSubmissionValidation(prev => ({ ...prev, [submission.id]: { ...(prev[submission.id] || {}), termsRequired: false } }));
+                              }
+                            }}
                             onBlur={(e) => persistSubmissionChange(submission.id, { terms: e.target.value === '' ? undefined : e.target.value })}
-                            className="w-full px-2 py-1 text-sm border border-gray-300 rounded focus:ring-1 focus:ring-blue-500"
+                            className={`w-full px-3 py-2 text-sm border rounded-lg transition-all duration-200 ${
+                              mapUiStatusToDb(submission.status as string) === 'rejected'
+                                ? 'border-red-400 bg-red-50 placeholder-red-400 focus:ring-2 focus:ring-red-200 focus:border-red-500'
+                                : mapUiStatusToDb(submission.status as string) === 'approved'
+                                ? 'border-green-400 bg-green-50 placeholder-green-400 focus:ring-2 focus:ring-green-200 focus:border-green-500'
+                                : 'border-gray-300 focus:ring-2 focus:ring-blue-200 focus:border-blue-500'
+                            }`}
                             placeholder="12 months"
                           />
+                          {submissionValidation[submission.id]?.termsRequired && (
+                            <div className="mt-2 p-3 bg-green-50 border border-green-200 rounded-lg">
+                              <div className="flex items-center">
+                                <div className="flex-shrink-0">
+                                  <CheckCircle className="h-4 w-4 text-green-500" />
+                                </div>
+                                <div className="ml-2">
+                                  <p className="text-sm font-medium text-green-800">Terms Required</p>
+                                  <p className="text-xs text-green-700 mt-1">Provide terms for Approved or Counter Offer.</p>
+                                </div>
+                              </div>
+                            </div>
+                          )}
                         </div>
                         
                         <div className="mb-3">
                           <label className="block text-xs font-medium text-gray-700 mb-1">Response</label>
                           <textarea
                             value={submission.response || ''}
-                            onChange={(e) => updateSubmissionLocal(submission.id, { response: e.target.value === '' ? undefined : e.target.value })}
+                            onChange={(e) => {
+                              updateSubmissionLocal(submission.id, { response: e.target.value === '' ? undefined : e.target.value });
+                              // Clear validation when user starts typing response
+                              if (e.target.value.trim() !== '' && submissionValidation[submission.id]?.responseRequired) {
+                                setSubmissionValidation(prev => {
+                                  const newValidation = { ...prev };
+                                  delete newValidation[submission.id];
+                                  return newValidation;
+                                });
+                              }
+                            }}
                             onBlur={(e) => persistSubmissionChange(submission.id, { response: e.target.value === '' ? undefined : e.target.value })}
-                            className="w-full px-2 py-1 text-sm border border-gray-300 rounded focus:ring-1 focus:ring-blue-500"
-                            rows={2}
-                            placeholder="Lender response..."
+                            className={`w-full px-3 py-2 text-sm border rounded-lg transition-all duration-200 resize-none ${submissionValidation[submission.id]?.responseRequired ? (mapUiStatusToDb(submission.status as string) === 'rejected' ? 'border-red-400 bg-red-50 placeholder-red-400 focus:ring-2 focus:ring-red-200 focus:border-red-500' : 'border-amber-400 bg-amber-50 placeholder-amber-400 focus:ring-2 focus:ring-amber-200 focus:border-amber-500') : 'border-gray-300 focus:ring-2 focus:ring-blue-200 focus:border-blue-500'}`}
+                            rows={3}
+                            placeholder="Explain the lender's response..."
                           />
+                          {submissionValidation[submission.id]?.responseRequired && (
+                            <div className={`mt-2 p-3 rounded-lg border ${mapUiStatusToDb(submission.status as string) === 'rejected' ? 'bg-red-50 border-red-200' : 'bg-amber-50 border-amber-200'}`}>
+                              <div className="flex items-center">
+                                <div className="flex-shrink-0">
+                                  {mapUiStatusToDb(submission.status as string) === 'rejected' ? (
+                                    <XCircle className="h-4 w-4 text-red-400" />
+                                  ) : (
+                                    <AlertCircle className="h-4 w-4 text-amber-500" />
+                                  )}
+                                </div>
+                                <div className="ml-2">
+                                  <p className={`text-sm font-medium ${mapUiStatusToDb(submission.status as string) === 'rejected' ? 'text-red-800' : 'text-amber-800'}`}>Response Required</p>
+                                  <p className={`text-xs mt-1 ${mapUiStatusToDb(submission.status as string) === 'rejected' ? 'text-red-600' : 'text-amber-700'}`}>
+                                    {mapUiStatusToDb(submission.status as string) === 'rejected' ? 'Please explain why this submission is declined.' : 'Please provide a response while status is Pending.'}
+                                  </p>
+                                </div>
+                              </div>
+                            </div>
+                          )}
                         </div>
                         
                         <div>
@@ -2067,7 +2360,7 @@ Application ID: {{applicationId}}`;
                             value={submission.notes || ''}
                             onChange={(e) => updateSubmissionLocal(submission.id, { notes: e.target.value === '' ? undefined : e.target.value })}
                             onBlur={(e) => persistSubmissionChange(submission.id, { notes: e.target.value === '' ? undefined : e.target.value })}
-                            className="w-full px-2 py-1 text-sm border border-gray-300 rounded focus:ring-1 focus:ring-blue-500"
+                            className={`w-full px-3 py-2 text-sm border rounded-lg transition-all duration-200 resize-none border-gray-300 focus:ring-2 focus:ring-blue-200 focus:border-blue-500`}
                             rows={2}
                             placeholder="Internal notes..."
                           />
@@ -2083,6 +2376,8 @@ Application ID: {{applicationId}}`;
                       </div>
                     )}
                   </div>
+                  </div>
+                </div>
                 </div>
               </div>
             </div>
@@ -2317,6 +2612,39 @@ Application ID: {{applicationId}}`;
                   className="px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors"
                 >
                   Save Template
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Toast Notification */}
+      {showToast && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className={`${toastVariant === 'error' ? 'bg-red-600 border-red-700' : 'bg-green-600 border-green-700'} text-white px-6 py-4 rounded-xl shadow-2xl border max-w-md w-full`}> 
+            <div className="flex items-center">
+              <div className="flex-shrink-0">
+                {toastVariant === 'error' ? (
+                  <XCircle className="h-5 w-5 text-red-200" />
+                ) : (
+                  <CheckCircle className="h-5 w-5 text-green-200" />
+                )}
+              </div>
+              <div className="ml-3 flex-1">
+                <p className="text-sm font-medium">{toastVariant === 'error' ? 'Validation Error' : 'Action Required'}</p>
+                <p className={`text-xs mt-1 ${toastVariant === 'error' ? 'text-red-100' : 'text-green-100'}`}>{toastMessage}</p>
+              </div>
+              <div className="ml-4 flex-shrink-0">
+                <button
+                  onClick={() => setShowToast(false)}
+                  className={`${toastVariant === 'error' ? 'text-red-200 hover:text-white' : 'text-green-200 hover:text-white'} inline-flex focus:outline-none transition-colors duration-200`}
+                >
+                  {toastVariant === 'error' ? (
+                    <XCircle className="h-4 w-4" />
+                  ) : (
+                    <CheckCircle className="h-4 w-4" />
+                  )}
                 </button>
               </div>
             </div>

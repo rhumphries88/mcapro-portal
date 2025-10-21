@@ -28,6 +28,120 @@ if (!supabaseUrl || !supabaseAnonKey) {
   )
 }
 
+// Fetch application_form rows linked to a specific application_id
+export const getApplicationFormByApplicationId = async (
+  applicationId: string
+): Promise<ApplicationFormRow[]> => {
+  const { data, error } = await supabase
+    .from('application_form')
+    .select('*')
+    .eq('application_id', applicationId)
+    .order('created_at', { ascending: false })
+
+  if (error) throw error
+  return (data || []) as ApplicationFormRow[]
+}
+
+// Fetch the latest application_form row for a user that hasn't been linked to an application yet
+export const getLatestPendingApplicationForm = async (
+  userId: string
+): Promise<ApplicationFormRow | null> => {
+  const { data, error } = await supabase
+    .from('application_form')
+    .select('*')
+    .eq('user_id', userId)
+    .is('application_id', null)
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle()
+
+  if (error && error.code !== 'PGRST116') throw error
+  return data as ApplicationFormRow | null
+}
+
+// Application form uploads (the initial completed application PDF/DOC)
+export interface ApplicationFormRow {
+  id?: string
+  application_id?: string | null
+  user_id?: string | null
+  file_name: string
+  file_size?: number | null
+  file_type?: string | null
+  file_url?: string | null
+  created_at?: string
+  description?: string | null
+}
+
+// Insert a row into application_form
+export const insertApplicationForm = async (row: ApplicationFormRow) => {
+  // Build payload conditionally to avoid referencing columns that may not exist (e.g., application_id)
+  const payload: Record<string, unknown> = {
+    file_name: row.file_name,
+  }
+  if (row.user_id !== undefined) payload.user_id = row.user_id
+  if (row.file_size !== undefined) payload.file_size = row.file_size
+  if (row.file_type !== undefined) payload.file_type = row.file_type
+  if (row.file_url !== undefined) payload.file_url = row.file_url
+  if (row.description !== undefined) payload.description = row.description
+
+  const { data, error } = await supabase
+    .from('application_form')
+    .insert([payload])
+    .select()
+    .single()
+
+  if (error) throw error
+  return data as ApplicationFormRow
+}
+
+// Upload application form file to Storage and return public URL
+export const uploadApplicationFormFile = async (
+  file: File,
+  opts?: { applicationId?: string | null; userId?: string | null }
+): Promise<{ publicUrl: string | null; storagePath: string }> => {
+  // Reuse existing bucket to avoid missing-bucket errors; namespace under forms/
+  const appId = opts?.applicationId || opts?.userId || 'unassigned'
+  // Use 'docs/' prefix to match existing policies used elsewhere in the app
+  const storagePath = `docs/${appId}/${Date.now()}-${file.name}`
+  const { error: uploadError } = await supabase.storage
+    .from('application_documents')
+    .upload(storagePath, file, {
+      upsert: true,
+      contentType: file.type || 'application/octet-stream',
+      cacheControl: '3600',
+    })
+
+  if (uploadError) throw uploadError
+
+  const { data: pub } = supabase.storage
+    .from('application_documents')
+    .getPublicUrl(storagePath)
+  let publicUrl: string | null = pub?.publicUrl ?? null
+  if (!publicUrl) {
+    // Fallback to signed URL if bucket isn't public
+    const { data: signed } = await supabase.storage
+      .from('application_documents')
+      .createSignedUrl(storagePath, 60 * 60) // 1 hour
+    publicUrl = (signed && typeof signed.signedUrl === 'string') ? signed.signedUrl : null
+  }
+  return { publicUrl, storagePath: `application_documents/${storagePath}` }
+}
+
+// Update application_form row by id
+export const updateApplicationForm = async (
+  id: string,
+  updates: Partial<ApplicationFormRow>
+): Promise<ApplicationFormRow> => {
+  const { data, error } = await supabase
+    .from('application_form')
+    .update(updates)
+    .eq('id', id)
+    .select()
+    .single()
+  if (error) throw error
+  return data as ApplicationFormRow
+}
+
 // Fetch an application's access map across users: user_id -> can_access
 export const getApplicationAccessMapByApp = async (
   applicationId: string

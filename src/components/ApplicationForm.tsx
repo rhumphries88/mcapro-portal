@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { DollarSign, Building2, User, CheckCircle, FileCheck, Loader } from 'lucide-react';
 
-import { createApplication, updateApplication, Application as DBApplication } from '../lib/supabase';
+import { createApplication, updateApplication, Application as DBApplication, uploadApplicationFormFile, insertApplicationForm, updateApplicationForm, getLatestPendingApplicationForm } from '../lib/supabase';
 import { extractDataFromPDF } from '../lib/pdfExtractor';
 import { useAuth } from '../App';
 
@@ -279,6 +279,7 @@ const ApplicationForm: React.FC<ApplicationFormProps> = ({ onSubmit, initialStep
   const [lastWebhookValues, setLastWebhookValues] = useState<Record<string, string>>({});
   const [errors, setErrors] = useState<{ [key: string]: string }>({});
   const [applicationDocument, setApplicationDocument] = useState<File | null>(null);
+  const [appFormRowId, setAppFormRowId] = useState<string | null>(null);
 
   // Manual mode: set to true when user clicks "Skip and fill form manually"
   const [manualMode] = useState(false);
@@ -763,11 +764,30 @@ const ApplicationForm: React.FC<ApplicationFormProps> = ({ onSubmit, initialStep
     }
   };
 
+  // Upload to Storage + insert application_form row, then extract
   const handleDocumentUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
       setApplicationDocument(file);
-      await extractDataFromDocument(file);
+      // Kick off extraction immediately for UI loading
+      void extractDataFromDocument(file);
+      // Persist to Supabase in the background
+      (async () => {
+        try {
+          const { publicUrl } = await uploadApplicationFormFile(file, { applicationId: null, userId: user?.id || null });
+          const inserted = await insertApplicationForm({
+            user_id: user?.id || null,
+            file_name: file.name,
+            file_size: file.size,
+            file_type: file.type || 'application/octet-stream',
+            file_url: publicUrl || null,
+          });
+          console.log('[ApplicationForm] Inserted application_form row', { id: inserted.id, user_id: inserted.user_id, file_name: inserted.file_name });
+          setAppFormRowId(inserted.id || null);
+        } catch (err) {
+          console.warn('Failed to persist application form before extraction:', err);
+        }
+      })();
     }
   };
 
@@ -804,7 +824,25 @@ const ApplicationForm: React.FC<ApplicationFormProps> = ({ onSubmit, initialStep
     const ok = name.endsWith('.pdf') || name.endsWith('.doc') || name.endsWith('.docx') || file.type === 'application/pdf';
     if (!ok) return;
     setApplicationDocument(file);
-    await extractDataFromDocument(file);
+    // Start extraction immediately
+    void extractDataFromDocument(file);
+    // Persist to Supabase in background
+    (async () => {
+      try {
+        const { publicUrl } = await uploadApplicationFormFile(file, { applicationId: null, userId: null });
+        const inserted = await insertApplicationForm({
+          user_id: user?.id || null,
+          file_name: file.name,
+          file_size: file.size,
+          file_type: file.type || 'application/octet-stream',
+          file_url: publicUrl || null,
+        });
+        console.log('[ApplicationForm] Inserted application_form row (drop)', { id: inserted.id, user_id: inserted.user_id, file_name: inserted.file_name });
+        setAppFormRowId(inserted.id || null);
+      } catch (err) {
+        console.warn('Failed to persist application form on drop:', err);
+      }
+    })();
   };
 
   const validateForm = () => {
@@ -913,6 +951,28 @@ const ApplicationForm: React.FC<ApplicationFormProps> = ({ onSubmit, initialStep
           } catch (e) {
             console.warn('Failed to backfill dateBirth via update:', e);
           }
+        }
+        // If we inserted into application_form earlier, backfill application_id now.
+        // Fallback: if appFormRowId is not set (race), link the latest pending row for this user.
+        try {
+          console.log('[ApplicationForm] Linking application_form -> application', {
+            appFormRowId,
+            userId: user?.id || null,
+            applicationId: savedApplication.id,
+          });
+          if (appFormRowId) {
+            const updated = await updateApplicationForm(appFormRowId, { application_id: savedApplication.id });
+            console.log('[ApplicationForm] Linked via appFormRowId', { id: updated.id, application_id: updated.application_id });
+          } else if (user?.id) {
+            const pending = await getLatestPendingApplicationForm(user.id);
+            console.log('[ApplicationForm] Latest pending application_form for user', { userId: user.id, found: !!pending, id: pending?.id });
+            if (pending?.id) {
+              const updated = await updateApplicationForm(pending.id, { application_id: savedApplication.id });
+              console.log('[ApplicationForm] Linked via latest pending', { id: updated.id, application_id: updated.application_id });
+            }
+          }
+        } catch (e) {
+          console.warn('Failed to update application_form with application_id:', e);
         }
         
         // Convert to component format for compatibility
