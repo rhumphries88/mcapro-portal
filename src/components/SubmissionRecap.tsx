@@ -670,6 +670,19 @@ const SubmissionRecap: React.FC<SubmissionRecapProps> = ({
       try {
         if (application?.id) {
           const docs: ApplicationDocument[] = await getApplicationDocuments(application.id);
+          // Build a normalized filename=>url map to help resolve URLs for MTD rows without file_url
+          const normalize = (s: string) => s
+            .toLowerCase()
+            .replace(/%20/g, ' ')
+            .replace(/\s+/g, ' ')
+            .replace(/\.pdf$/i, '')
+            .trim();
+          const docUrlByName: Record<string, string> = {};
+          (docs || []).forEach(d => {
+            if (d.file_name && d.file_url) {
+              docUrlByName[normalize(d.file_name)] = String(d.file_url);
+            }
+          });
           attachmentsUrl = (docs || [])
             .filter((d) => Boolean(d.file_url))
             .map((d) => ({ filename: d.file_name, url: d.file_url as string }));
@@ -686,10 +699,31 @@ const SubmissionRecap: React.FC<SubmissionRecapProps> = ({
           // Include MTD files from application_mtd table (e.g., Funder MTD)
           try {
             const mtdRows: ApplicationMTD[] = await getApplicationMTDByApplicationId(application.id);
-            const mtdAttachments = (mtdRows || [])
-              .filter((m) => Boolean(m.file_url))
-              .map((m) => ({ filename: m.file_name || 'MTD File', url: String(m.file_url) }));
+            const mtdAttachments = (mtdRows || []).map((m) => {
+              // Prefer direct URL from application_mtd
+              let url = m.file_url ? String(m.file_url) : '';
+              // If missing, try to find same file_name in application_documents we already fetched
+              if (!url && m.file_name) {
+                const key = normalize(m.file_name);
+                if (docUrlByName[key]) {
+                  url = docUrlByName[key];
+                } else {
+                  // Try loose contains match (handles suffixes like "(1)")
+                  const hit = (docs || []).find(d => normalize(d.file_name).includes(key) || key.includes(normalize(d.file_name)));
+                  if (hit?.file_url) url = String(hit.file_url);
+                }
+              }
+              return { filename: m.file_name || 'MTD File', url };
+            }).filter(a => a.url);
             attachmentsUrl = [...attachmentsUrl, ...mtdAttachments];
+            // De-duplicate by filename+url combo
+            const seenKey = new Set<string>();
+            attachmentsUrl = attachmentsUrl.filter(a => {
+              const key = `${a.filename}::${a.url}`.toLowerCase();
+              if (seenKey.has(key)) return false;
+              seenKey.add(key);
+              return true;
+            });
           } catch (err) {
             console.warn('Failed to load application_mtd documents for attachments:', err);
           }
