@@ -1,6 +1,6 @@
 import React, { useRef, useState, useCallback } from 'react';
 import { Search, Eye, Download, DollarSign, Building2, Star, CheckCircle, XCircle, Clock, AlertTriangle, FileText, MoreVertical, Users } from 'lucide-react';
-import { supabase, getAllApplications, getApplicationDocuments, getApplicationMTDByApplicationId, getUsersByRole, getApplicationAccessMapByApp, setApplicationAccess, deleteApplicationDocument, resolveAndDeleteApplicationMTD, insertApplicationMTD, updateApplication, getLenderSubmissions, getApplicationsForMember, Application as DBApplication, LenderSubmission as DBLenderSubmission, User as DBUser } from '../lib/supabase';
+import { supabase, getAllApplications, getApplicationDocuments, getApplicationMTDByApplicationId, getUsersByRole, getApplicationAccessMapByApp, setApplicationAccess, deleteApplicationDocument, resolveAndDeleteApplicationMTD, insertApplicationMTD, updateApplication, getLenderSubmissions, getApplicationsForMember, getLenderNotes, addLenderNote, updateLenderNote, deleteLenderNote, Application as DBApplication, LenderSubmission as DBLenderSubmission, LenderNote as DBLenderNote, User as DBUser } from '../lib/supabase';
 import { useAuth } from '../App';
 
 // Use database types
@@ -88,6 +88,14 @@ const AllDealsPortal: React.FC<AllDealsPortalProps> = ({ onEditDeal, onViewQuali
     phone: '',
     address: '',
   });
+  const [detailsTab, setDetailsTab] = useState<'submissions' | 'notes'>('submissions');
+  const [notesLoading, setNotesLoading] = useState(false);
+  const [lenderNotes, setLenderNotes] = useState<DBLenderNote[]>([]);
+  const [newNote, setNewNote] = useState('');
+  const [savingNote, setSavingNote] = useState(false);
+  const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
+  const [editNoteText, setEditNoteText] = useState('');
+  const [deletingNoteId, setDeletingNoteId] = useState<string | null>(null);
 
   React.useEffect(() => {
     if (selectedDeal) {
@@ -622,6 +630,20 @@ const AllDealsPortal: React.FC<AllDealsPortalProps> = ({ onEditDeal, onViewQuali
   const handleViewDetails = (deal: Deal) => {
     setSelectedDeal(deal);
     setShowDetails(true);
+    setDetailsTab('submissions');
+    // Preload notes in background so Notes tab is instant
+    (async () => {
+      try {
+        setNotesLoading(true);
+        const notes = await getLenderNotes(deal.id);
+        setLenderNotes(notes || []);
+      } catch (e) {
+        console.warn('Failed to load lender notes:', e);
+        setLenderNotes([]);
+      } finally {
+        setNotesLoading(false);
+      }
+    })();
   };
 
   const handleViewDocuments = async (deal: Deal) => {
@@ -665,8 +687,14 @@ const AllDealsPortal: React.FC<AllDealsPortalProps> = ({ onEditDeal, onViewQuali
 
       {/* Enhanced Documents Modal */}
       {showDocs && selectedDeal && (
-        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-3xl shadow-2xl max-w-6xl w-full max-h-[95vh] overflow-hidden border border-gray-100">
+        <div
+          className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4"
+          onClick={() => setShowDocs(false)}
+        >
+          <div
+            className="bg-white rounded-3xl shadow-2xl max-w-6xl w-full max-h-[95vh] overflow-hidden border border-gray-100"
+            onClick={(e) => e.stopPropagation()}
+          >
             {/* Enhanced Header */}
             <div className="px-8 py-6 bg-gradient-to-br from-blue-600 via-blue-700 to-indigo-700 text-white relative overflow-hidden">
               <div className="absolute inset-0 bg-gradient-to-r from-white/10 to-transparent"></div>
@@ -685,18 +713,13 @@ const AllDealsPortal: React.FC<AllDealsPortalProps> = ({ onEditDeal, onViewQuali
                       </div>
                     </div>
                   </div>
-                  <button 
-                    onClick={() => setShowDocs(false)} 
-                    className="w-10 h-10 rounded-xl bg-white/20 hover:bg-white/30 border border-white/20 flex items-center justify-center text-white transition-all duration-200 shadow-sm hover:shadow-md"
-                  >
-                    <XCircle className="w-5 h-5" />
-                  </button>
+                  {/* Top-right close button removed by request; backdrop click closes modal */}
                 </div>
               </div>
             </div>
 
             {/* Enhanced Modal Body */}
-            <div className="p-8 overflow-y-auto max-h-[calc(95vh-200px)]">
+            <div className="p-8">
               <div className="text-gray-600 mb-6 text-center">
                 <div className="text-sm font-medium">Manage application documents and bank statements</div>
                 <div className="text-xs text-gray-500 mt-1">Upload, view, and delete documents for this application</div>
@@ -757,15 +780,32 @@ const AllDealsPortal: React.FC<AllDealsPortalProps> = ({ onEditDeal, onViewQuali
                       <div className="text-center py-6 text-sm text-gray-500">No files uploaded yet</div>
                     ) : (
                       <div className={`space-y-3 rounded-lg ${docDragOver ? 'ring-2 ring-blue-300 ring-offset-0' : ''}`}>
-                        {unifiedFiles.map((doc, index) => (
+                        {unifiedFiles.map((doc) => (
                           <div key={`${doc.kind}-${doc.id}`} className="bg-white/80 backdrop-blur-sm rounded-xl p-5 border border-white/60 shadow-sm hover:shadow-md transition-all duration-200 group">
                             <div className="flex items-center justify-between">
                               <div className="flex items-center gap-4 flex-1">
-                                <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-blue-500 to-blue-600 flex items-center justify-center shadow-sm">
-                                  <span className="text-white font-bold text-sm">
-                                    {(index + 1).toString().padStart(2, '0')}
-                                  </span>
-                                </div>
+                                {(() => {
+                                  const isPdf = /\.pdf$/i.test(doc.file_name) || (doc.file_type || '').toLowerCase().includes('pdf');
+                                  const ext = (doc.file_type?.split('/')[1] || doc.file_name.split('.').pop() || 'FILE').toUpperCase();
+                                  return (
+                                    <div className="w-20 h-20 rounded-xl overflow-hidden border border-gray-200 bg-white flex items-center justify-center shadow-sm">
+                                      {isPdf && doc.file_url ? (
+                                        <iframe
+                                          src={`${doc.file_url}#view=FitH`}
+                                          title={`Preview ${doc.file_name}`}
+                                          className="w-full h-full"
+                                          allow="fullscreen"
+                                          allowFullScreen
+                                          loading="lazy"
+                                        />
+                                      ) : (
+                                        <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-gray-50 to-gray-100 text-gray-600 text-xs font-semibold">
+                                          {ext}
+                                        </div>
+                                      )}
+                                    </div>
+                                  );
+                                })()}
                                 <div className="flex-1 min-w-0">
                                   <div className="flex items-center gap-2 mb-1">
                                     <h5 className="text-sm font-semibold text-gray-900 truncate">{doc.file_name}</h5>
@@ -773,7 +813,7 @@ const AllDealsPortal: React.FC<AllDealsPortalProps> = ({ onEditDeal, onViewQuali
                                       <span className="inline-flex px-2.5 py-1 text-xs font-semibold bg-purple-100 text-purple-800 rounded-full">MTD</span>
                                     ) : (
                                       <span className="inline-flex px-2.5 py-1 text-xs font-semibold bg-blue-100 text-blue-800 rounded-full">
-                                        {doc.file_type?.split('/')[1]?.toUpperCase() || 'FILE'}
+                                        {(doc.file_type?.split('/')[1] || doc.file_name.split('.').pop() || 'FILE')?.toUpperCase()}
                                       </span>
                                     )}
                                   </div>
@@ -1405,8 +1445,14 @@ const AllDealsPortal: React.FC<AllDealsPortalProps> = ({ onEditDeal, onViewQuali
 
       {/* Enhanced Deal Details Modal */}
       {showDetails && selectedDeal && (
-        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-3xl shadow-2xl max-w-5xl w-full max-h-[95vh] overflow-hidden border border-gray-100">
+        <div
+          className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4"
+          onClick={() => setShowDetails(false)}
+        >
+          <div
+            className="bg-white rounded-3xl shadow-2xl max-w-5xl w-full max-h-[95vh] overflow-hidden border border-gray-100"
+            onClick={(e) => e.stopPropagation()}
+          >
             {/* Enhanced Header */}
             <div className="px-8 py-6 bg-gradient-to-br from-slate-50 via-blue-50 to-indigo-50 border-b border-gray-200/80 relative overflow-hidden">
               <div className="absolute inset-0 bg-gradient-to-r from-white/40 to-transparent"></div>
@@ -1430,13 +1476,8 @@ const AllDealsPortal: React.FC<AllDealsPortalProps> = ({ onEditDeal, onViewQuali
                     </div>
                   </div>
                 </div>
-                <button
-                  onClick={() => setShowDetails(false)}
-                  className="w-10 h-10 rounded-xl bg-white/80 hover:bg-white border border-gray-200 flex items-center justify-center text-gray-500 hover:text-gray-700 transition-all duration-200 shadow-sm hover:shadow-md"
-                >
-                  ×
-                </button>
               </div>
+              {/* Top-right close button removed by request */}
             </div>
 
             {/* Enhanced Body */}
@@ -1597,7 +1638,6 @@ const AllDealsPortal: React.FC<AllDealsPortalProps> = ({ onEditDeal, onViewQuali
                 </div>
               </div>
               
-              {/* Enhanced Lender Submissions Section */}
               <div className="bg-gradient-to-br from-purple-50 to-pink-50/50 rounded-2xl p-6 border border-purple-200/50">
                 <div className="flex items-center gap-3 mb-6">
                   <div className="w-8 h-8 rounded-lg bg-purple-100 flex items-center justify-center">
@@ -1609,87 +1649,270 @@ const AllDealsPortal: React.FC<AllDealsPortalProps> = ({ onEditDeal, onViewQuali
                     <h4 className="text-lg font-bold text-gray-900">Lender Submissions</h4>
                     <p className="text-sm text-gray-600">Track all lender responses and offers</p>
                   </div>
-                  <div className="px-3 py-1 bg-purple-100 text-purple-700 rounded-full text-sm font-semibold">
+                  <div className="hidden sm:block px-3 py-1 bg-purple-100 text-purple-700 rounded-full text-sm font-semibold">
                     {selectedDeal.lenderSubmissions.length} Submissions
                   </div>
                 </div>
 
-                {selectedDeal.lenderSubmissions.length === 0 ? (
-                  <div className="text-center py-12 bg-white/60 rounded-xl border-2 border-dashed border-purple-200">
-                    <svg className="w-12 h-12 text-purple-300 mx-auto mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                    </svg>
-                    <div className="text-sm font-medium text-gray-600">No lender submissions yet</div>
-                    <div className="text-xs text-gray-400 mt-1">Submissions will appear here once lenders respond</div>
+                <div className="flex items-center justify-between mb-4">
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => setDetailsTab('submissions')}
+                      className={`px-4 py-2 text-sm font-semibold rounded-lg border ${detailsTab === 'submissions' ? 'bg-purple-600 text-white border-purple-600' : 'bg-white text-purple-700 border-purple-200 hover:bg-purple-50'}`}
+                    >
+                      Submissions
+                    </button>
+                    <button
+                      onClick={() => setDetailsTab('notes')}
+                      className={`px-4 py-2 text-sm font-semibold rounded-lg border ${detailsTab === 'notes' ? 'bg-purple-600 text-white border-purple-600' : 'bg-white text-purple-700 border-purple-200 hover:bg-purple-50'}`}
+                    >
+                      Notes for Lenders
+                    </button>
                   </div>
-                ) : (
-                  <div className="space-y-4">
-                    {selectedDeal.lenderSubmissions.map((submission, index) => (
-                      <div key={index} className="bg-white/80 backdrop-blur-sm rounded-xl p-5 border border-white/60 shadow-sm hover:shadow-md transition-all duration-200">
-                        <div className="flex items-start justify-between mb-4">
-                          <div className="flex items-center gap-3">
-                            <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center shadow-sm">
-                              <span className="text-white font-bold text-sm">
-                                {submission.lender.name.charAt(0).toUpperCase()}
-                              </span>
+                  <div className="sm:hidden px-3 py-1 bg-purple-100 text-purple-700 rounded-full text-xs font-semibold">
+                    {selectedDeal.lenderSubmissions.length} Submissions
+                  </div>
+                </div>
+
+                {detailsTab === 'submissions' ? (
+                  selectedDeal.lenderSubmissions.length === 0 ? (
+                    <div className="text-center py-12 bg-white/60 rounded-xl border-2 border-dashed border-purple-200">
+                      <svg className="w-12 h-12 text-purple-300 mx-auto mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2 2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                      </svg>
+                      <div className="text-sm font-medium text-gray-600">No lender submissions yet</div>
+                      <div className="text-xs text-gray-400 mt-1">Submissions will appear here once lenders respond</div>
+                    </div>
+                  ) : (
+                    <div className="space-y-4">
+                      {selectedDeal.lenderSubmissions.map((submission, index) => (
+                        <div key={index} className="bg-white/80 backdrop-blur-sm rounded-xl p-5 border border-white/60 shadow-sm hover:shadow-md transition-all duration-200">
+                          <div className="flex items-start justify-between mb-4">
+                            <div className="flex items-center gap-3">
+                              <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center shadow-sm">
+                                <span className="text-white font-bold text-sm">
+                                  {submission.lender.name.charAt(0).toUpperCase()}
+                                </span>
+                              </div>
+                              <div>
+                                <h5 className="font-bold text-gray-900">{submission.lender.name}</h5>
+                                <p className="text-xs text-gray-500 flex items-center gap-2">
+                                  <span>Submitted: {new Date(submission.created_at).toLocaleDateString()}</span>
+                                  {submission.response_date && (
+                                    <>
+                                      <span className="w-1 h-1 bg-gray-400 rounded-full"></span>
+                                      <span>Responded: {new Date(submission.response_date).toLocaleDateString()}</span>
+                                    </>
+                                  )}
+                                </p>
+                              </div>
                             </div>
-                            <div>
-                              <h5 className="font-bold text-gray-900">{submission.lender.name}</h5>
-                              <p className="text-xs text-gray-500 flex items-center gap-2">
-                                <span>Submitted: {new Date(submission.created_at).toLocaleDateString()}</span>
-                                {submission.response_date && (
-                                  <>
-                                    <span className="w-1 h-1 bg-gray-400 rounded-full"></span>
-                                    <span>Responded: {new Date(submission.response_date).toLocaleDateString()}</span>
-                                  </>
-                                )}
+                            <span className={`inline-flex px-3 py-1 rounded-full text-xs font-bold ${getLenderStatusColor(submission.status)}`}>
+                              {submission.status}
+                            </span>
+                          </div>
+                          {submission.response && (
+                            <div className="mb-4 p-3 bg-blue-50/50 rounded-lg border border-blue-200/50">
+                              <p className="text-sm text-gray-700">
+                                <span className="font-semibold text-blue-700">Response:</span> {submission.response}
                               </p>
                             </div>
-                          </div>
-                          <span className={`inline-flex px-3 py-1 rounded-full text-xs font-bold ${getLenderStatusColor(submission.status)}`}>
-                            {submission.status}
-                          </span>
+                          )}
+                          {(submission.offered_amount || submission.factor_rate || submission.terms) && (
+                            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+                              {submission.offered_amount && (
+                                <div className="bg-emerald-50/50 rounded-lg p-3 border border-emerald-200/50">
+                                  <span className="text-xs font-semibold text-emerald-700 uppercase tracking-wide">Offered Amount</span>
+                                  <p className="font-bold text-emerald-600 text-lg">${submission.offered_amount.toLocaleString()}</p>
+                                </div>
+                              )}
+                              {submission.factor_rate && (
+                                <div className="bg-orange-50/50 rounded-lg p-3 border border-orange-200/50">
+                                  <span className="text-xs font-semibold text-orange-700 uppercase tracking-wide">Factor Rate</span>
+                                  <p className="font-bold text-orange-600 text-lg">{submission.factor_rate}</p>
+                                </div>
+                              )}
+                              {submission.terms && (
+                                <div className="bg-purple-50/50 rounded-lg p-3 border border-purple-200/50">
+                                  <span className="text-xs font-semibold text-purple-700 uppercase tracking-wide">Terms</span>
+                                  <p className="font-bold text-purple-600 text-sm">{submission.terms}</p>
+                                </div>
+                              )}
+                            </div>
+                          )}
+                          {submission.notes && (
+                            <div className="bg-gray-50/50 rounded-lg p-3 border border-gray-200/50">
+                              <span className="text-xs font-semibold text-gray-700 uppercase tracking-wide">Notes</span>
+                              <p className="text-sm text-gray-600 mt-1">{submission.notes}</p>
+                            </div>
+                          )}
                         </div>
-                        
-                        {submission.response && (
-                          <div className="mb-4 p-3 bg-blue-50/50 rounded-lg border border-blue-200/50">
-                            <p className="text-sm text-gray-700">
-                              <span className="font-semibold text-blue-700">Response:</span> {submission.response}
-                            </p>
-                          </div>
-                        )}
-                        
-                        {(submission.offered_amount || submission.factor_rate || submission.terms) && (
-                          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
-                            {submission.offered_amount && (
-                              <div className="bg-emerald-50/50 rounded-lg p-3 border border-emerald-200/50">
-                                <span className="text-xs font-semibold text-emerald-700 uppercase tracking-wide">Offered Amount</span>
-                                <p className="font-bold text-emerald-600 text-lg">${submission.offered_amount.toLocaleString()}</p>
-                              </div>
-                            )}
-                            {submission.factor_rate && (
-                              <div className="bg-orange-50/50 rounded-lg p-3 border border-orange-200/50">
-                                <span className="text-xs font-semibold text-orange-700 uppercase tracking-wide">Factor Rate</span>
-                                <p className="font-bold text-orange-600 text-lg">{submission.factor_rate}</p>
-                              </div>
-                            )}
-                            {submission.terms && (
-                              <div className="bg-purple-50/50 rounded-lg p-3 border border-purple-200/50">
-                                <span className="text-xs font-semibold text-purple-700 uppercase tracking-wide">Terms</span>
-                                <p className="font-bold text-purple-600 text-sm">{submission.terms}</p>
-                              </div>
-                            )}
-                          </div>
-                        )}
-                        
-                        {submission.notes && (
-                          <div className="bg-gray-50/50 rounded-lg p-3 border border-gray-200/50">
-                            <span className="text-xs font-semibold text-gray-700 uppercase tracking-wide">Notes</span>
-                            <p className="text-sm text-gray-600 mt-1">{submission.notes}</p>
-                          </div>
-                        )}
+                      ))}
+                    </div>
+                  )
+                ) : (
+                  <div className="space-y-6">
+                    {/* Add Note Form */}
+                    <div className="bg-gradient-to-br from-white to-gray-50/50 rounded-2xl border border-gray-200/80 shadow-lg p-6">
+                      <div className="flex items-center gap-3 mb-4">
+                        <div className="w-8 h-8 rounded-lg bg-blue-100 flex items-center justify-center">
+                          <svg className="w-4 h-4 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                          </svg>
+                        </div>
+                        <h4 className="text-lg font-bold text-gray-900">Add New Note</h4>
                       </div>
-                    ))}
+                      <textarea
+                        className="w-full min-h-[120px] px-4 py-3 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 resize-none transition-all duration-200 bg-white/80 backdrop-blur-sm"
+                        placeholder="Write a note for lenders... (e.g., follow-up required, special conditions, contact preferences)"
+                        value={newNote}
+                        onChange={(e) => setNewNote(e.target.value)}
+                      />
+                      <div className="mt-4 flex items-center justify-between">
+                        <div className="text-xs text-gray-500">
+                          {newNote.length}/500 characters
+                        </div>
+                        <button
+                          onClick={async () => {
+                            if (!selectedDeal || !newNote.trim() || savingNote) return;
+                            setSavingNote(true);
+                            try {
+                              const saved = await addLenderNote(selectedDeal.id, newNote.trim());
+                              setLenderNotes(prev => [saved, ...prev]);
+                              setNewNote('');
+                              pushToast('Note added', 'success');
+                            } catch (e) {
+                              console.warn('Failed to add note:', e);
+                              pushToast('Failed to add note', 'error');
+                            } finally {
+                              setSavingNote(false);
+                            }
+                          }}
+                          disabled={!newNote.trim() || savingNote}
+                          className={`px-6 py-2.5 rounded-xl text-sm font-semibold transition-all duration-200 ${!newNote.trim() || savingNote ? 'bg-gray-300 text-gray-500 cursor-not-allowed' : 'bg-gradient-to-r from-blue-600 to-blue-700 text-white hover:from-blue-700 hover:to-blue-800 shadow-lg hover:shadow-xl transform hover:scale-105'}`}
+                        >
+                          {savingNote ? 'Saving…' : 'Add Note'}
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Notes List */}
+                    {notesLoading ? (
+                      <div className="text-center py-12 bg-gradient-to-br from-white to-gray-50/50 rounded-2xl border border-gray-200/80 shadow-sm">
+                        <div className="animate-spin rounded-full h-8 w-8 border-3 border-gray-200 border-t-blue-600 mx-auto mb-4" />
+                        <div className="text-sm font-medium text-gray-600">Loading notes…</div>
+                      </div>
+                    ) : lenderNotes.length === 0 ? (
+                      <div className="text-center py-16 bg-gradient-to-br from-white to-gray-50/50 rounded-2xl border-2 border-dashed border-gray-300">
+                        <div className="w-16 h-16 rounded-2xl bg-gray-100 flex items-center justify-center mx-auto mb-4">
+                          <svg className="w-8 h-8 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                          </svg>
+                        </div>
+                        <h3 className="text-lg font-semibold text-gray-900 mb-2">No notes yet</h3>
+                        <p className="text-sm text-gray-500 max-w-sm mx-auto">
+                          Start documenting important information about this application by adding your first note above.
+                        </p>
+                      </div>
+                    ) : (
+                      <div className="space-y-4">
+                        <div className="flex items-center justify-between mb-2">
+                          <h4 className="text-lg font-bold text-gray-900">Notes History</h4>
+                          <div className="px-2.5 py-1 bg-green-100 text-green-700 rounded-full text-xs font-semibold">
+                            {lenderNotes.length} note{lenderNotes.length !== 1 ? 's' : ''}
+                          </div>
+                        </div>
+                        {lenderNotes.map((n) => (
+                          <div key={n.id} className="bg-white rounded-xl border border-gray-200 shadow-sm hover:shadow-md transition-all duration-200 p-4">
+                            {(() => {
+                              const d = new Date(n.created_at);
+                              const formatted = d.toLocaleString('en-US', {
+                                day: '2-digit',
+                                month: 'long',
+                                year: 'numeric',
+                                hour: '2-digit',
+                                minute: '2-digit',
+                                hour12: true,
+                              });
+                              const daysAgo = Math.floor((Date.now() - d.getTime()) / (1000 * 60 * 60 * 24));
+                              const suffix = `${daysAgo} day${daysAgo === 1 ? '' : 's'} ago`;
+                              return (
+                                <div className="flex items-center justify-between text-xs text-gray-500 mb-2">
+                                  <span className="font-medium">{formatted}</span>
+                                  <span className="text-gray-600">{suffix}</span>
+                                </div>
+                              );
+                            })()}
+                            {editingNoteId === n.id ? (
+                              <div>
+                                <textarea
+                                  className="w-full min-h-[90px] px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                  value={editNoteText}
+                                  onChange={(e) => setEditNoteText(e.target.value)}
+                                />
+                                <div className="mt-2 flex items-center gap-2 justify-end">
+                                  <button
+                                    className="px-4 py-2 text-sm font-semibold rounded-lg bg-gray-100 text-gray-700 hover:bg-gray-200"
+                                    onClick={() => { setEditingNoteId(null); setEditNoteText(''); }}
+                                  >
+                                    Cancel
+                                  </button>
+                                  <button
+                                    className="px-4 py-2 text-sm font-semibold rounded-lg bg-blue-600 text-white hover:bg-blue-700"
+                                    onClick={async () => {
+                                      if (!editNoteText.trim()) return;
+                                      try {
+                                        await updateLenderNote(n.id, { notes: editNoteText.trim() });
+                                        setLenderNotes(prev => prev.map(x => x.id === n.id ? { ...x, notes: editNoteText.trim() } : x));
+                                        setEditingNoteId(null);
+                                        setEditNoteText('');
+                                        pushToast('Note updated', 'success');
+                                      } catch (e) {
+                                        console.warn('Failed to update note:', e);
+                                        pushToast('Failed to update note', 'error');
+                                      }
+                                    }}
+                                  >
+                                    Save
+                                  </button>
+                                </div>
+                              </div>
+                            ) : (
+                              <div className="flex items-start justify-between gap-3">
+                                <div className="text-sm text-gray-800 leading-relaxed whitespace-pre-wrap">{n.notes}</div>
+                                <div className="flex items-center gap-2 ml-3">
+                                  <button
+                                    className="px-3 py-1.5 text-xs font-semibold rounded-lg bg-gray-100 text-gray-700 hover:bg-gray-200"
+                                    onClick={() => { setEditingNoteId(n.id); setEditNoteText(n.notes || ''); }}
+                                  >
+                                    Edit
+                                  </button>
+                                  <button
+                                    className={`px-3 py-1.5 text-xs font-semibold rounded-lg ${deletingNoteId === n.id ? 'bg-red-300 text-white' : 'bg-red-600 text-white hover:bg-red-700'}`}
+                                    onClick={async () => {
+                                      if (deletingNoteId) return;
+                                      try {
+                                        setDeletingNoteId(n.id);
+                                        await deleteLenderNote(n.id);
+                                        setLenderNotes(prev => prev.filter(x => x.id !== n.id));
+                                        pushToast('Note deleted', 'success');
+                                      } catch (e) {
+                                        console.warn('Failed to delete note:', e);
+                                        pushToast('Failed to delete note', 'error');
+                                      } finally {
+                                        setDeletingNoteId(null);
+                                      }
+                                    }}
+                                  >
+                                    {deletingNoteId === n.id ? 'Deleting…' : 'Delete'}
+                                  </button>
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
@@ -1702,12 +1925,7 @@ const AllDealsPortal: React.FC<AllDealsPortalProps> = ({ onEditDeal, onViewQuali
                 >
                   Close
                 </button>
-                <button
-                  className="px-6 py-3 bg-gradient-to-r from-purple-600 to-indigo-600 text-white rounded-xl hover:from-purple-700 hover:to-indigo-700 font-semibold transition-all duration-200 shadow-lg hover:shadow-xl transform hover:scale-105"
-                  onClick={() => handleEditDeal(selectedDeal)}
-                >
-                  Edit Deal
-                </button>
+                {/* 'Edit Deal' button removed by request */}
               </div>
             </div>
           </div>

@@ -59,12 +59,24 @@ export function extractLenderMatches(webhookResponse: unknown): CleanedMatch[] {
 
   // If any candidate is already an array, assume it's the matches array
   let matches: unknown = cands.find((x) => Array.isArray(x));
+  // Special case: top-level is an array wrapper like [{ ranked_matches: [...] }]
+  if (Array.isArray(matches) && matches.length === 1 && typeof matches[0] === 'object' && matches[0] !== null) {
+    const inner = (matches[0] as Record<string, unknown>).ranked_matches;
+    if (Array.isArray(inner)) {
+      matches = inner as unknown;
+    }
+  }
   // Otherwise look for a .matches array on any object candidate
   if (!matches) {
     for (const cand of cands) {
       const obj = asObject(cand);
       if (obj && Array.isArray(obj.matches as unknown)) {
         matches = obj.matches as unknown;
+        break;
+      }
+      // Also support ranked_matches
+      if (obj && Array.isArray((obj as Record<string, unknown>).ranked_matches as unknown)) {
+        matches = (obj as Record<string, unknown>).ranked_matches as unknown;
         break;
       }
     }
@@ -83,9 +95,9 @@ export function extractLenderMatches(webhookResponse: unknown): CleanedMatch[] {
         (m?.lenderID as string | undefined) ||
         null;
       const rawScore =
-        (m?.match_score as unknown) ??
-        (m?.score as unknown) ??
-        (m?.matchScore as unknown) ??
+        (m?.match_score as unknown) ||
+        (m?.score as unknown) ||
+        (m?.matchScore as unknown) ||
         (m?.qualification_score as unknown);
 
       const match_score = typeof rawScore === 'number' ? rawScore : Number(rawScore);

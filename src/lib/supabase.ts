@@ -640,6 +640,14 @@ export interface LenderSubmission {
   updated_at: string
 }
 
+// Lender notes (free-form internal notes per application)
+export interface LenderNote {
+  id: string
+  application_id: string
+  notes: string
+  created_at: string
+}
+
 // Application document records (PDF uploads and parsed results)
 export interface ApplicationDocument {
   id: string
@@ -852,6 +860,50 @@ export const getLenderSubmissions = async (applicationId: string) => {
 
   if (error) throw error
   return data
+}
+
+// Lender notes helpers
+export const getLenderNotes = async (applicationId: string): Promise<LenderNote[]> => {
+  const { data, error } = await supabase
+    .from('lenders_notes')
+    .select('*')
+    .eq('application_id', applicationId)
+    .order('created_at', { ascending: false })
+
+  if (error) throw error
+  return (data || []) as LenderNote[]
+}
+
+export const addLenderNote = async (applicationId: string, notes: string): Promise<LenderNote> => {
+  const payload = { application_id: applicationId, notes }
+  const { data, error } = await supabase
+    .from('lenders_notes')
+    .insert([payload])
+    .select()
+    .single()
+
+  if (error) throw error
+  return data as LenderNote
+}
+
+export const updateLenderNote = async (id: string, updates: Partial<Pick<LenderNote, 'notes'>>): Promise<{ id: string }> => {
+  const { error } = await supabase
+    .from('lenders_notes')
+    .update(updates)
+    .eq('id', id)
+
+  if (error) throw error
+  return { id }
+}
+
+export const deleteLenderNote = async (id: string): Promise<{ id: string }> => {
+  const { error } = await supabase
+    .from('lenders_notes')
+    .delete()
+    .eq('id', id)
+
+  if (error) throw error
+  return { id }
 }
 
 export const updateLenderSubmission = async (id: string, updates: Partial<LenderSubmission>) => {
