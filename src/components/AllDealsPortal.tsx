@@ -719,7 +719,7 @@ const AllDealsPortal: React.FC<AllDealsPortalProps> = ({ onEditDeal, onViewQuali
             </div>
 
             {/* Enhanced Modal Body */}
-            <div className="p-8">
+            <div className="p-8 overflow-y-auto max-h-[calc(95vh-200px)]">
               <div className="text-gray-600 mb-6 text-center">
                 <div className="text-sm font-medium">Manage application documents and bank statements</div>
                 <div className="text-xs text-gray-500 mt-1">Upload, view, and delete documents for this application</div>
