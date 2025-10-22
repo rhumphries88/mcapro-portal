@@ -870,7 +870,34 @@ const ApplicationForm: React.FC<ApplicationFormProps> = ({ onSubmit, initialStep
     }
     
     setErrors(newErrors);
-    return Object.keys(newErrors).length === 0;
+    const ok = Object.keys(newErrors).length === 0;
+    if (!ok) {
+      // Determine first invalid field in a logical ordering and bring it into view
+      const order = [
+        'businessName',
+        'ownerName',
+        'email',
+        'phone',
+        'industry',
+        'businessType',
+        'yearsInBusiness',
+        'numberOfEmployees',
+      ];
+      const firstKey = order.find(k => newErrors[k]);
+      if (firstKey) {
+        const el = document.getElementById(firstKey);
+        if (el) {
+          el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          // Focus after a short delay so it occurs after scrolling
+          window.setTimeout(() => {
+            if (typeof (el as HTMLInputElement).focus === 'function') {
+              (el as HTMLInputElement).focus({ preventScroll: true });
+            }
+          }, 250);
+        }
+      }
+    }
+    return ok;
   };
 
   const handleSubmit = (e: React.FormEvent) => {

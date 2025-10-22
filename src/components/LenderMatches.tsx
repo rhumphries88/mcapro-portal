@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
+
 import { Star, CheckCircle, Building2, ArrowRight, Lock, TrendingUp, Clock, DollarSign, Award } from 'lucide-react';
 import { getLenders, qualifyLenders, Lender as DBLender, Application as DBApplication } from '../lib/supabase';
 import type { CleanedMatch } from '../lib/parseLenderMatches';
@@ -33,7 +34,13 @@ interface LenderMatchesProps {
   lockedLenderIds?: string[];
 }
 
+// Lightweight in-memory cache to make Qualified Lenders load instantly
+let __lendersCache: (DBLender[]) | null = null;
+let __lendersCacheTs = 0;
+const __LENDERS_CACHE_MS = 5 * 60 * 1000; // 5 minutes
+
 const LenderMatches: React.FC<LenderMatchesProps> = ({ application, matches, onLenderSelect, onBack, lockedLenderIds = [] }) => {
+
   // Debug the application values received
   console.log('[LenderMatches] Received application values:', {
     monthlyRevenue: application?.monthlyRevenue,
@@ -51,57 +58,48 @@ const LenderMatches: React.FC<LenderMatchesProps> = ({ application, matches, onL
   useEffect(() => {
     const loadAndQualifyLenders = async () => {
       if (!application) return;
-      
-      try {
-        setLoading(true);
-        const allLenders = await getLenders();
-        
-        // Ensure allLenders is an array
-        const lendersArray = allLenders || [];
-        
-        // Convert camelCase application to snake_case for database compatibility
-        // Coerce status to allowed union
-        const allowedStatus: DBApplication['status'][] = ['draft', 'submitted', 'under-review', 'approved', 'funded', 'declined'];
-        const status: DBApplication['status'] = allowedStatus.includes((application.status as DBApplication['status']))
-          ? (application.status as DBApplication['status'])
-          : 'draft';
 
-        const dbApplication: DBApplication = {
-          id: '',
-          business_name: application.businessName || '',
-          owner_name: application.ownerName || '',
-          email: application.email || '',
-          phone: application.phone || '',
-          address: application.address || '',
-          ein: application.ein || '',
-          business_type: application.businessType || '',
-          industry: application.industry || '',
-          years_in_business: application.yearsInBusiness || 0,
-          number_of_employees: application.numberOfEmployees || 0,
-          annual_revenue: application.annualRevenue || 0,
-          monthly_revenue: application.monthlyRevenue || 0,
-          monthly_deposits: application.monthlyDeposits || 0,
-          existing_debt: application.existingDebt || 0,
-          credit_score: application.creditScore || 0,
-          requested_amount: application.requestedAmount || 0,
-          status,
-          documents: application.documents || [],
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-          // user_id is optional; omit when not available
-        };
-        
-        const qualifiedLenders = await qualifyLenders(lendersArray, dbApplication);
+      // Convert application shape and coerce status
+      const allowedStatus: DBApplication['status'][] = ['draft', 'submitted', 'under-review', 'approved', 'funded', 'declined'];
+      const status: DBApplication['status'] = allowedStatus.includes((application.status as DBApplication['status']))
+        ? (application.status as DBApplication['status'])
+        : 'draft';
 
-        // If cleaned matches provided, order lenders by response and attach match_score
+      const dbApplication: DBApplication = {
+        id: '',
+        business_name: application.businessName || '',
+        owner_name: application.ownerName || '',
+        email: application.email || '',
+        phone: application.phone || '',
+        address: application.address || '',
+        ein: application.ein || '',
+        business_type: application.businessType || '',
+        industry: application.industry || '',
+        years_in_business: application.yearsInBusiness || 0,
+        number_of_employees: application.numberOfEmployees || 0,
+        annual_revenue: application.annualRevenue || 0,
+        monthly_revenue: application.monthlyRevenue || 0,
+        monthly_deposits: application.monthlyDeposits || 0,
+        existing_debt: application.existingDebt || 0,
+        credit_score: application.creditScore || 0,
+        requested_amount: application.requestedAmount || 0,
+        status,
+        documents: application.documents || [],
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
+
+      const now = Date.now();
+      const cacheFresh = __lendersCache && (now - __lendersCacheTs) < __LENDERS_CACHE_MS;
+
+      const qualifyAndSet = (list: DBLender[]) => {
+        const qualifiedLenders = qualifyLenders(list || [], dbApplication);
         if (Array.isArray(matches) && matches.length > 0) {
           const byId = new Map(qualifiedLenders.map(l => [l.id, l] as const));
           const ordered: (DBLender & { match_score?: number; matchScore?: number })[] = [];
           for (const m of matches) {
             const found = byId.get(m.lender_id);
-            if (found) {
-              ordered.push({ ...found, match_score: m.match_score });
-            }
+            if (found) ordered.push({ ...found, match_score: m.match_score });
           }
           setLenders(ordered);
         } else {
@@ -109,11 +107,25 @@ const LenderMatches: React.FC<LenderMatchesProps> = ({ application, matches, onL
         }
         // Preselect locked lenders
         if (lockedLenderIds && lockedLenderIds.length > 0) {
-          setSelectedLenderIds(prev => Array.from(new Set([
-            ...lockedLenderIds,
-            ...prev
-          ])));
+          setSelectedLenderIds(prev => Array.from(new Set([...lockedLenderIds, ...prev])));
         }
+      };
+
+      try {
+        if (cacheFresh) {
+          // Use cache instantly, no loading spinner
+          setLoading(false);
+          qualifyAndSet(__lendersCache!);
+          // Refresh in background to keep cache warm
+          getLenders().then(list => { __lendersCache = list || []; __lendersCacheTs = Date.now(); qualifyAndSet(__lendersCache); }).catch(() => {});
+          return;
+        }
+
+        setLoading(true);
+        const list = await getLenders();
+        __lendersCache = list || [];
+        __lendersCacheTs = Date.now();
+        qualifyAndSet(__lendersCache);
       } catch (error) {
         console.error('Error loading lenders:', error);
       } finally {
@@ -150,16 +162,7 @@ const LenderMatches: React.FC<LenderMatchesProps> = ({ application, matches, onL
     }
   };
 
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center py-12">
-        <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-emerald-600 mx-auto mb-4"></div>
-          <p className="text-gray-600">Finding qualified lenders...</p>
-        </div>
-      </div>
-    );
-  }
+  // Do not block rendering on loading; we'll show a small inline indicator instead
 
   if (!application) {
     return (
@@ -181,6 +184,12 @@ const LenderMatches: React.FC<LenderMatchesProps> = ({ application, matches, onL
         <p className="text-xl text-gray-600 max-w-2xl mx-auto">
           We've analyzed your business profile and found the best lending partners for your needs
         </p>
+        {loading && (
+          <div className="mt-4 flex items-center justify-center text-sm text-gray-500">
+            <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-emerald-600 mr-2"></div>
+            Updating matches...
+          </div>
+        )}
       </div>
 
       {/* Application Summary Cards */}

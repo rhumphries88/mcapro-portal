@@ -1120,49 +1120,63 @@ export const updateApplicationDocumentMonthlyRevenue = async (
 
 // Qualification logic
 export const qualifyLenders = (lenders: Lender[], application: Application): (Lender & { qualified: boolean; matchScore: number })[] => {
-  return lenders.map(lender => {
-    let qualified = true
-    let matchScore = 100
+  // Helper: clamp value to range
+  const clamp = (val: number, min: number, max: number) => Math.min(max, Math.max(min, val));
 
-    // Check amount range
-    if (application.requested_amount < lender.min_amount || application.requested_amount > lender.max_amount) {
-      qualified = false
-      matchScore -= 30
-    }
+  // Prepare application industry words (case-insensitive)
+  const appIndustryWords = (application.industry || '')
+    .toLowerCase()
+    .split(/[^a-z0-9]+/i)
+    .filter(Boolean);
 
-    // Check credit score
-    if (application.credit_score < lender.min_credit_score || application.credit_score > lender.max_credit_score) {
-      qualified = false
-      matchScore -= 25
+  const isIndustryMatch = (l: Lender) => {
+    if (l.industries.some(i => i.trim().toLowerCase() === 'all industries')) return true;
+    if (appIndustryWords.length === 0) return false;
+    // Compare exact words
+    for (const entry of l.industries) {
+      const lenderWords = (entry || '')
+        .toLowerCase()
+        .split(/[^a-z0-9]+/i)
+        .filter(Boolean);
+      const hasAny = appIndustryWords.some(w => lenderWords.includes(w));
+      if (hasAny) return true;
     }
+    return false;
+  };
 
-    // Check time in business
-    if (application.years_in_business < lender.min_time_in_business) {
-      qualified = false
-      matchScore -= 20
-    }
+  // Keep only active lenders first
+  const active = (lenders || []).filter(l => l.status === 'active');
 
-    // Check monthly revenue
-    if (application.monthly_revenue < lender.min_monthly_revenue) {
-      qualified = false
-      matchScore -= 15
-    }
+  // Evaluate qualification and score
+  const qualified = active
+    .map(l => {
+      const inCreditRange = application.credit_score >= l.min_credit_score && application.credit_score <= l.max_credit_score;
+      const industryOk = isIndustryMatch(l);
 
-    // Check industry (if not "All Industries")
-    if (!lender.industries.includes('All Industries') && !lender.industries.includes(application.industry)) {
-      matchScore -= 10
-    }
+      const qualified = inCreditRange && industryOk;
 
-    // Bonus points for better rates and faster approval
-    if (parseFloat(lender.factor_rate.split(' - ')[0]) < 1.15) {
-      matchScore += 5
-    }
-    if (lender.approval_time.includes('24 hours') || lender.approval_time.includes('2 hours')) {
-      matchScore += 3
-    }
+      // Scoring
+      const denom = Math.max(1, (l.max_credit_score - l.min_credit_score));
+      const creditRaw = ((application.credit_score - l.min_credit_score) / denom) * 50;
+      const creditScore = clamp(creditRaw, 0, 50);
+      let score = creditScore + (industryOk ? 50 : 0);
+      // Random jitter ±1–5
+      const jitter = (Math.random() * 4) + 1; // 1..5
+      score += Math.random() < 0.5 ? -jitter : jitter;
+      score = clamp(score, 0, 100);
 
-    return { ...lender, qualified, matchScore: Math.max(0, matchScore) }
-  })
+      return { ...l, qualified, matchScore: Math.round(score) };
+    })
+    // Only include lenders that passed both filters
+    .filter(l => l.qualified);
+
+  // Ranking: sort descending by matchScore; break ties with tiny jitter
+  qualified.sort((a, b) => {
+    if (b.matchScore !== a.matchScore) return b.matchScore - a.matchScore;
+    return Math.random() - 0.5;
+  });
+
+  return qualified;
 }
 
 // Deferred MCA results

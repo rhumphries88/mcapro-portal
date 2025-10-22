@@ -10,6 +10,28 @@ type Deal = DBApplication & {
   user?: { full_name: string; email: string };
 };
 
+// Unified file entry types for Documents + MTD
+type DocFile = {
+  kind: 'doc';
+  id: string;
+  file_name: string;
+  file_size?: number;
+  file_type?: string;
+  upload_date?: string;
+  file_url?: string;
+};
+type MtdFile = {
+  kind: 'mtd';
+  id: string;
+  file_name: string;
+  file_size?: number;
+  file_type?: string;
+  upload_date?: string;
+  file_url?: string;
+  statement_date?: string;
+};
+type UnifiedFile = DocFile | MtdFile;
+
 type AllDealsPortalProps = {
   onEditDeal?: (params: { applicationId: string; lockedLenderIds: string[] }) => void;
   onViewQualifiedLenders?: (params: { applicationId: string; lockedLenderIds: string[] }) => void;
@@ -26,11 +48,8 @@ const AllDealsPortal: React.FC<AllDealsPortalProps> = ({ onEditDeal, onViewQuali
   const [documents, setDocuments] = useState<Array<{ id: string; file_name: string; file_size?: number; file_type?: string; upload_date?: string; file_url?: string }>>([]);
   const [mtdDocuments, setMtdDocuments] = useState<Array<{ id: string; file_name: string; file_size?: number; file_type?: string; upload_date?: string; file_url?: string; statement_date?: string }>>([]);
   const [uploadingDoc, setUploadingDoc] = useState(false);
-  const [uploadingMtd, setUploadingMtd] = useState(false);
   const [docDragOver, setDocDragOver] = useState(false);
-  const [mtdDragOver, setMtdDragOver] = useState(false);
   const docInputRef = useRef<HTMLInputElement | null>(null);
-  const mtdInputRef = useRef<HTMLInputElement | null>(null);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<
     | { kind: 'doc'; data: { id: string; file_url?: string; file_name: string } }
@@ -201,25 +220,37 @@ const AllDealsPortal: React.FC<AllDealsPortalProps> = ({ onEditDeal, onViewQuali
     setUploadingDoc(true);
     try {
       for (const file of Array.from(files)) {
-        const storagePath = `docs/${selectedDeal.id}/${Date.now()}-${file.name}`;
+        const isMtd = /mtd/i.test(file.name);
+        const storagePath = isMtd ? `mtd/${selectedDeal.id}/${Date.now()}-${file.name}` : `docs/${selectedDeal.id}/${Date.now()}-${file.name}`;
         const up = await supabase.storage.from('application_documents').upload(storagePath, file, { upsert: true });
         if (up.error) throw up.error;
         const { data: pub } = supabase.storage.from('application_documents').getPublicUrl(storagePath);
         const publicUrl = pub?.publicUrl;
-        const ins = await supabase
-          .from('application_documents')
-          .insert([
-            {
-              application_id: selectedDeal.id,
-              file_name: file.name,
-              file_size: file.size,
-              file_type: file.type,
-              upload_date: new Date().toISOString(),
-              file_url: publicUrl ?? null,
-            },
-          ])
-          .select();
-        if (ins.error) throw ins.error;
+        if (isMtd) {
+          await insertApplicationMTD({
+            application_id: selectedDeal.id,
+            file_name: file.name,
+            file_size: file.size,
+            file_type: file.type,
+            file_url: publicUrl,
+            upload_status: 'completed',
+          });
+        } else {
+          const ins = await supabase
+            .from('application_documents')
+            .insert([
+              {
+                application_id: selectedDeal.id,
+                file_name: file.name,
+                file_size: file.size,
+                file_type: file.type,
+                upload_date: new Date().toISOString(),
+                file_url: publicUrl ?? null,
+              },
+            ])
+            .select();
+          if (ins.error) throw ins.error;
+        }
       }
       await reloadDocs();
     } catch (err) {
@@ -245,39 +276,6 @@ const AllDealsPortal: React.FC<AllDealsPortalProps> = ({ onEditDeal, onViewQuali
     } else {
       await handleDeleteMtd(t.data);
     }
-  };
-
-  const processMtdFiles = async (files: FileList | File[]) => {
-    if (!files || !selectedDeal) return;
-    setUploadingMtd(true);
-    try {
-      for (const file of Array.from(files)) {
-        const storagePath = `mtd/${selectedDeal.id}/${Date.now()}-${file.name}`;
-        const up = await supabase.storage.from('application_documents').upload(storagePath, file, { upsert: true });
-        if (up.error) throw up.error;
-        const { data: pub } = supabase.storage.from('application_documents').getPublicUrl(storagePath);
-        const publicUrl = pub?.publicUrl;
-        await insertApplicationMTD({
-          application_id: selectedDeal.id,
-          file_name: file.name,
-          file_size: file.size,
-          file_type: file.type,
-          file_url: publicUrl,
-          upload_status: 'completed',
-        });
-      }
-      await reloadDocs();
-    } catch (err) {
-      console.error('MTD upload failed', err);
-      alert('Failed to upload MTD file(s).');
-    } finally {
-      setUploadingMtd(false);
-      if (mtdInputRef.current) mtdInputRef.current.value = '';
-    }
-  };
-
-  const handleMtdFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    await processMtdFiles(e.target.files as FileList);
   };
 
   // Delete handlers
@@ -565,10 +563,27 @@ const AllDealsPortal: React.FC<AllDealsPortalProps> = ({ onEditDeal, onViewQuali
   };
 
   const filteredDeals = deals.filter(deal => {
-    const matchesSearch = deal.business_name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                         deal.owner_name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                         deal.id.toLowerCase().includes(searchTerm.toLowerCase());
+    const q = (searchTerm || '').trim().toLowerCase();
     const matchesStatus = statusFilter === 'all' || deal.status === statusFilter;
+    if (!q) return matchesStatus;
+
+    const haystack = [
+      deal.business_name || '',
+      deal.industry || '',
+      deal.owner_name || '',
+      deal.email || '',
+      deal.phone || '',
+      deal.address || '',
+      deal.id || '',
+      deal.user?.full_name || '',
+      deal.user?.email || '',
+    ]
+      .join(' ')
+      .toLowerCase();
+
+    // Support multi-word queries: all tokens must be present
+    const tokens = q.split(/\s+/).filter(Boolean);
+    const matchesSearch = tokens.every(t => haystack.includes(t));
     return matchesSearch && matchesStatus;
   });
 
@@ -578,6 +593,13 @@ const AllDealsPortal: React.FC<AllDealsPortalProps> = ({ onEditDeal, onViewQuali
     approved: deals.filter(d => d.status === 'approved').length,
     declined: deals.filter(d => d.status === 'declined').length,
   };
+
+  // Unified files list for Documents + MTD (for single upload/list UI)
+  const unifiedFiles: UnifiedFile[] = React.useMemo(() => {
+    const docs: DocFile[] = documents.map(d => ({ kind: 'doc', ...d }));
+    const mtds: MtdFile[] = mtdDocuments.map(d => ({ kind: 'mtd', ...d }));
+    return [...docs, ...mtds];
+  }, [documents, mtdDocuments]);
 
   const handleEditDeal = (deal: Deal) => {
     const lockedIds = Array.from(new Set(
@@ -680,9 +702,8 @@ const AllDealsPortal: React.FC<AllDealsPortalProps> = ({ onEditDeal, onViewQuali
                 <div className="text-xs text-gray-500 mt-1">Upload, view, and delete documents for this application</div>
               </div>
 
-              {/* Hidden file inputs for uploads */}
+              {/* Hidden file input for uploads */}
               <input ref={docInputRef} type="file" multiple onChange={handleDocFileChange} className="hidden" />
-              <input ref={mtdInputRef} type="file" multiple onChange={handleMtdFileChange} className="hidden" />
 
               {docsLoading ? (
                 <div className="flex flex-col items-center justify-center py-16">
@@ -693,7 +714,7 @@ const AllDealsPortal: React.FC<AllDealsPortalProps> = ({ onEditDeal, onViewQuali
                 </div>
               ) : (
                 <>
-                  {/* Documents Section */}
+                  {/* Unified Files Section (Documents + MTD) */}
                   <div className={`rounded-2xl p-6 mb-8 transition-all duration-150 bg-gradient-to-br from-gray-50 to-gray-100/50 border border-gray-200/50`}>
                     <div className="flex items-center mb-6">
                       <div className="flex items-center gap-3">
@@ -701,13 +722,13 @@ const AllDealsPortal: React.FC<AllDealsPortalProps> = ({ onEditDeal, onViewQuali
                           <FileText className="w-4 h-4 text-blue-600" />
                         </div>
                         <div>
-                          <h4 className="text-lg font-bold text-gray-900">Uploaded Documents</h4>
-                          <p className="text-sm text-gray-600">{documents.length} document{documents.length !== 1 ? 's' : ''} available</p>
+                          <h4 className="text-lg font-bold text-gray-900">Files (Documents + MTD)</h4>
+                          <p className="text-sm text-gray-600">{unifiedFiles.length} file{unifiedFiles.length !== 1 ? 's' : ''} available</p>
                         </div>
                       </div>
                     </div>
 
-                    {/* Dedicated Dropzone for Documents */}
+                    {/* Dedicated Dropzone */}
                     <div
                       onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); setDocDragOver(true); }}
                       onDragLeave={() => setDocDragOver(false)}
@@ -719,7 +740,7 @@ const AllDealsPortal: React.FC<AllDealsPortalProps> = ({ onEditDeal, onViewQuali
                           <svg className="w-4 h-4 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" /></svg>
                         </div>
                         <div>
-                          <div className="text-sm font-semibold text-gray-800">Drag & drop documents here</div>
+                          <div className="text-sm font-semibold text-gray-800">Drag & drop files here</div>
                           <div className="text-xs text-gray-500">or click Browse to select files</div>
                         </div>
                       </div>
@@ -732,12 +753,12 @@ const AllDealsPortal: React.FC<AllDealsPortalProps> = ({ onEditDeal, onViewQuali
                       </button>
                     </div>
 
-                    {documents.length === 0 ? (
-                      <div className="text-center py-6 text-sm text-gray-500">No documents uploaded yet</div>
+                    {unifiedFiles.length === 0 ? (
+                      <div className="text-center py-6 text-sm text-gray-500">No files uploaded yet</div>
                     ) : (
                       <div className={`space-y-3 rounded-lg ${docDragOver ? 'ring-2 ring-blue-300 ring-offset-0' : ''}`}>
-                        {documents.map((doc, index) => (
-                          <div key={doc.id} className="bg-white/80 backdrop-blur-sm rounded-xl p-5 border border-white/60 shadow-sm hover:shadow-md transition-all duration-200 group">
+                        {unifiedFiles.map((doc, index) => (
+                          <div key={`${doc.kind}-${doc.id}`} className="bg-white/80 backdrop-blur-sm rounded-xl p-5 border border-white/60 shadow-sm hover:shadow-md transition-all duration-200 group">
                             <div className="flex items-center justify-between">
                               <div className="flex items-center gap-4 flex-1">
                                 <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-blue-500 to-blue-600 flex items-center justify-center shadow-sm">
@@ -748,9 +769,13 @@ const AllDealsPortal: React.FC<AllDealsPortalProps> = ({ onEditDeal, onViewQuali
                                 <div className="flex-1 min-w-0">
                                   <div className="flex items-center gap-2 mb-1">
                                     <h5 className="text-sm font-semibold text-gray-900 truncate">{doc.file_name}</h5>
-                                    <span className="inline-flex px-2.5 py-1 text-xs font-semibold bg-blue-100 text-blue-800 rounded-full">
-                                      {doc.file_type?.split('/')[1]?.toUpperCase() || 'PDF'}
-                                    </span>
+                                    {doc.kind === 'mtd' ? (
+                                      <span className="inline-flex px-2.5 py-1 text-xs font-semibold bg-purple-100 text-purple-800 rounded-full">MTD</span>
+                                    ) : (
+                                      <span className="inline-flex px-2.5 py-1 text-xs font-semibold bg-blue-100 text-blue-800 rounded-full">
+                                        {doc.file_type?.split('/')[1]?.toUpperCase() || 'FILE'}
+                                      </span>
+                                    )}
                                   </div>
                                   <div className="flex items-center gap-3 text-xs text-gray-500">
                                     <span className="flex items-center gap-1">
@@ -765,6 +790,12 @@ const AllDealsPortal: React.FC<AllDealsPortalProps> = ({ onEditDeal, onViewQuali
                                           day: 'numeric', 
                                           year: 'numeric' 
                                         })}
+                                      </span>
+                                    )}
+                                    {doc.kind === 'mtd' && doc.statement_date && (
+                                      <span className="flex items-center gap-1">
+                                        <Clock className="w-3 h-3" />
+                                        {new Date(doc.statement_date).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
                                       </span>
                                     )}
                                   </div>
@@ -786,138 +817,28 @@ const AllDealsPortal: React.FC<AllDealsPortalProps> = ({ onEditDeal, onViewQuali
                                       <Eye className="w-3 h-3 mr-1 inline" />
                                       Open
                                     </a>
-                                    <button onClick={() => { setDeleteTarget({ kind: 'doc', data: doc }); setShowDeleteConfirm(true); }} className="px-3 py-2 text-xs font-semibold text-red-700 bg-red-50 border border-red-200 rounded-lg hover:bg-red-100 hover:border-red-300 transition-all duration-200">
+                                    <button onClick={() => { if (doc.kind === 'mtd') { setDeleteTarget({ kind: 'mtd', data: { id: doc.id, file_url: doc.file_url, file_name: doc.file_name, file_size: doc.file_size } }); } else { setDeleteTarget({ kind: 'doc', data: { id: doc.id, file_url: doc.file_url, file_name: doc.file_name } }); } setShowDeleteConfirm(true); }} className="px-3 py-2 text-xs font-semibold text-red-700 bg-red-50 border border-red-200 rounded-lg hover:bg-red-100 hover:border-red-300 transition-all duration-200">
                                       <svg className="w-3 h-3 mr-1 inline" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
                                       </svg>
                                       Delete
                                     </button>
-                                  </>
-                                ) : (
-                                  <span className="px-3 py-2 text-xs text-gray-400 bg-gray-100 rounded-lg">
-                                    <XCircle className="w-3 h-3 mr-1 inline" />
-                                    No URL
-                                  </span>
-                                )}
-                              </div>
+                                </>
+                              ) : (
+                                <span className="px-3 py-2 text-xs text-gray-400 bg-gray-100 rounded-lg">
+                                  <XCircle className="w-3 h-3 mr-1 inline" />
+                                  No URL
+                                </span>
+                              )}
                             </div>
                           </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-
-                  {/* MTD Section */}
-                  <div className={`rounded-2xl p-6 transition-all duration-150 bg-gradient-to-br from-purple-50 to-pink-50/50 border border-purple-200/50`}>
-                    <div className="flex items-center mb-6">
-                      <div className="flex items-center gap-3">
-                        <div className="w-8 h-8 rounded-lg bg-purple-100 flex items-center justify-center">
-                          <svg className="w-4 h-4 text-purple-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2m0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
-                          </svg>
                         </div>
-                        <div>
-                          <h4 className="text-lg font-bold text-gray-900">Bank Statements (MTD)</h4>
-                          <p className="text-sm text-gray-600">{mtdDocuments.length} file{mtdDocuments.length !== 1 ? 's' : ''} available</p>
-                        </div>
-                      </div>
+                      ))}
                     </div>
-
-                    {/* Dedicated Dropzone for MTD */}
-                    <div
-                      onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); setMtdDragOver(true); }}
-                      onDragLeave={() => setMtdDragOver(false)}
-                      onDrop={async (e) => { e.preventDefault(); e.stopPropagation(); setMtdDragOver(false); const files = e.dataTransfer.files; if (files && files.length) { await processMtdFiles(files as FileList); } }}
-                      className={`mb-6 rounded-xl border-2 border-dashed ${mtdDragOver ? 'border-purple-400 bg-purple-50/40' : 'border-purple-200 bg-white/60'} p-5 flex items-center justify-between`}
-                    >
-                      <div className="flex items-center gap-3 text-left">
-                        <div className="w-9 h-9 rounded-lg bg-purple-100 flex items-center justify-center">
-                          <svg className="w-4 h-4 text-purple-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" /></svg>
-                        </div>
-                        <div>
-                          <div className="text-sm font-semibold text-gray-800">Drag & drop MTD files here</div>
-                          <div className="text-xs text-gray-500">or click Browse to select files</div>
-                        </div>
-                      </div>
-                      <button
-                        onClick={() => mtdInputRef.current?.click()}
-                        disabled={uploadingMtd}
-                        className={`px-3 py-2 rounded-lg text-sm font-semibold ${uploadingMtd ? 'bg-purple-300 text-white cursor-not-allowed' : 'bg-purple-600 text-white hover:bg-purple-700'}`}
-                      >
-                        {uploadingMtd ? 'Uploading…' : 'Browse'}
-                      </button>
-                    </div>
-
-                    {mtdDocuments.length === 0 ? (
-                      <div className="text-center py-6 text-sm text-gray-500">No MTD files uploaded yet</div>
-                    ) : (
-                      <div className={`space-y-3 rounded-lg ${mtdDragOver ? 'ring-2 ring-purple-300 ring-offset-0' : ''}`}>
-                        {mtdDocuments.map((doc, index) => (
-                          <div key={doc.id} className="bg-white/80 backdrop-blur-sm rounded-xl p-5 border border-white/60 shadow-sm hover:shadow-md transition-all duration-200 group">
-                            <div className="flex items-center justify-between">
-                              <div className="flex items-center gap-4 flex-1">
-                                <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-purple-500 to-purple-600 flex items-center justify-center shadow-sm">
-                                  <span className="text-white font-bold text-sm">
-                                    {(index + 1).toString().padStart(2, '0')}
-                                  </span>
-                                </div>
-                                <div className="flex-1 min-w-0">
-                                  <div className="flex items-center gap-2 mb-1">
-                                    <h5 className="text-sm font-semibold text-gray-900 truncate">{doc.file_name}</h5>
-                                    <span className="inline-flex px-2.5 py-1 text-xs font-semibold bg-purple-100 text-purple-800 rounded-full">MTD</span>
-                                  </div>
-                                  <div className="flex items-center gap-3 text-xs text-gray-500">
-                                    <span className="flex items-center gap-1">
-                                      <Building2 className="w-3 h-3" />
-                                      {doc.file_size ? `${(doc.file_size / 1024).toFixed(1)} KB` : 'Size unknown'}
-                                    </span>
-                                    {doc.statement_date && (
-                                      <span className="flex items-center gap-1">
-                                        <Clock className="w-3 h-3" />
-                                        {new Date(doc.statement_date).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
-                                      </span>
-                                    )}
-                                  </div>
-                                </div>
-                              </div>
-                              <div className="flex items-center gap-2">
-                                {doc.file_url ? (
-                                  <>
-                                    <button className="px-3 py-2 text-xs font-semibold text-gray-700 bg-white border border-gray-200 rounded-lg hover:bg-gray-50 hover:border-gray-300 transition-all duration-200">
-                                      <Download className="w-3 h-3 mr-1 inline" />
-                                      Download
-                                    </button>
-                                    <a 
-                                      href={doc.file_url} 
-                                      target="_blank" 
-                                      rel="noreferrer" 
-                                      className="px-3 py-2 text-xs font-semibold text-white bg-gradient-to-r from-purple-600 to-purple-700 rounded-lg hover:from-purple-700 hover:to-purple-800 transition-all duration-200 shadow-sm hover:shadow-md"
-                                    >
-                                      <Eye className="w-3 h-3 mr-1 inline" />
-                                      Open
-                                    </a>
-                                    <button onClick={() => { setDeleteTarget({ kind: 'mtd', data: doc }); setShowDeleteConfirm(true); }} className="px-3 py-2 text-xs font-semibold text-red-700 bg-red-50 border border-red-200 rounded-lg hover:bg-red-100 hover:border-red-300 transition-all duration-200">
-                                      <svg className="w-3 h-3 mr-1 inline" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                                      </svg>
-                                      Delete
-                                    </button>
-                                  </>
-                                ) : (
-                                  <span className="px-3 py-2 text-xs text-gray-400 bg-gray-100 rounded-lg">
-                                    <XCircle className="w-3 h-3 mr-1 inline" />
-                                    No URL
-                                  </span>
-                                )}
-                              </div>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                </>
-              )}
+                  )}
+                </div>
+              </>
+            )}
             </div>
 
             {/* Delete Confirm Dialog */}
@@ -1056,7 +977,7 @@ const AllDealsPortal: React.FC<AllDealsPortalProps> = ({ onEditDeal, onViewQuali
               <Search className="w-5 h-5 absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400" />
               <input
                 type="text"
-                placeholder="Search deals..."
+                placeholder="Search by business, contact, phone, email, ID..."
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
                 className="pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent"
@@ -1075,12 +996,6 @@ const AllDealsPortal: React.FC<AllDealsPortalProps> = ({ onEditDeal, onViewQuali
             </select>
           </div>
 
-          <div className="flex items-center space-x-2">
-            <button className="px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors flex items-center">
-              <Download className="w-4 h-4 mr-2" />
-              Export
-            </button>
-          </div>
         </div>
       </div>
 
@@ -1114,7 +1029,17 @@ const AllDealsPortal: React.FC<AllDealsPortalProps> = ({ onEditDeal, onViewQuali
               </tr>
             </thead>
             <tbody className="bg-white divide-y divide-gray-200">
-              {filteredDeals.map((deal) => (
+              {filteredDeals.length === 0 ? (
+                <tr>
+                  <td
+                    className="px-6 py-10 text-center text-gray-500 text-sm"
+                    colSpan={(user && (user.role === 'admin' || user.role === 'Admin')) ? 7 : 6}
+                  >
+                    No application found
+                  </td>
+                </tr>
+              ) : (
+              filteredDeals.map((deal) => (
                 <tr key={deal.id} className="hover:bg-gray-50 transition-colors">
                   <td className="px-6 py-4">
                     <div className="flex items-center">
@@ -1295,7 +1220,8 @@ const AllDealsPortal: React.FC<AllDealsPortalProps> = ({ onEditDeal, onViewQuali
                     </div>
                   </td>
                 </tr>
-              ))}
+              ))
+              )}
             </tbody>
           </table>
         </div>

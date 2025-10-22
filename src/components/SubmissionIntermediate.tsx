@@ -106,10 +106,11 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
 
       // Gather base metrics used across sections
       const docsCount = Array.isArray(dbDocs) ? dbDocs.length : 0;
-      const fo = Array.isArray(financialOverviewFromDocs) ? financialOverviewFromDocs : [];
-      const sumDeposits = fo.reduce((s: number, r: any) => s + (Number(r.total_deposits) || 0), 0);
-      const sumRevenue = fo.reduce((s: number, r: any) => s + (Number(r.monthly_revenue) || 0), 0);
-      const sumNegDays = fo.reduce((s: number, r: any) => s + (Number(r.negative_days) || 0), 0);
+      type FoRow = { month?: string; total_deposits?: number | string; monthly_revenue?: number | string; negative_days?: number | string; file_name?: string };
+      const fo: FoRow[] = Array.isArray(financialOverviewFromDocs) ? (financialOverviewFromDocs as FoRow[]) : [];
+      const sumDeposits = fo.reduce((s: number, r: FoRow) => s + (Number(r.total_deposits) || 0), 0);
+      const sumRevenue = fo.reduce((s: number, r: FoRow) => s + (Number(r.monthly_revenue) || 0), 0);
+      const sumNegDays = fo.reduce((s: number, r: FoRow) => s + (Number(r.negative_days) || 0), 0);
       const denom = Math.max(1, fo.length);
       const avgDeposits = sumDeposits / denom;
       const avgRevenue = sumRevenue / denom;
@@ -134,8 +135,8 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
         // Only show actual data from the system
         const foRows = fo
           .slice()
-          .sort((a: any, b: any) => Date.parse(a.month + '-01') - Date.parse(b.month + '-01'))
-          .map((r: any) => [
+          .sort((a: FoRow, b: FoRow) => Date.parse(String(a.month || '') + '-01') - Date.parse(String(b.month || '') + '-01'))
+          .map((r: FoRow) => [
             r.month || 'Unknown Period',
             fmtCurrency2(Number(r.total_deposits) || 0),
             fmtCurrency2(Number(r.monthly_revenue) || 0),
@@ -180,11 +181,119 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
           tableWidth: 'auto',
           margin: { left: marginX, right: marginX }
         });
-        cursorY = (pdf as any).lastAutoTable.finalY + 15;
+        {
+          const lat = (pdf as unknown as { lastAutoTable?: { finalY: number } }).lastAutoTable;
+          if (lat && typeof lat.finalY === 'number') cursorY = lat.finalY + 15;
+        }
       }
 
-      // 2) Transaction Analysis - only show if data exists
-      if (Array.isArray(mcaSummaryRows) && mcaSummaryRows.length > 0) {
+      // 2) Funder MTD Totals (Selected Rows) - reflect UI Selected Rows table
+      if (Array.isArray(mtdRows) && mtdRows.length > 0) {
+        // Section header
+        pdf.setFillColor(245, 247, 250);
+        pdf.rect(marginX - 8, cursorY - 10, pageWidth - 2 * marginX + 16, 24, 'F');
+        pdf.setDrawColor(180, 190, 200);
+        pdf.setLineWidth(0.5);
+        pdf.rect(marginX - 8, cursorY - 10, pageWidth - 2 * marginX + 16, 24, 'S');
+        pdf.setTextColor(30, 40, 50);
+        pdf.setFont('times', 'bold');
+        pdf.setFontSize(14);
+        pdf.text('Funder MTD Totals (Selected Rows)', marginX, cursorY + 6);
+        cursorY += 28;
+
+        type SelectedRow = { date?: string; description?: string; FUNDER?: string; funder?: string; type?: string; amount?: number | string };
+        type MtdWithSelected = { mtd_selected?: SelectedRow[] | null; total_mtd?: number | string | null };
+        const rows: MtdWithSelected[] = (mtdRows as unknown[] as MtdWithSelected[]);
+        const bodyRows: Array<[string, string, string, string, string]> = [];
+        let mtdTotal = 0;
+        rows.forEach((r) => {
+          const selected = Array.isArray(r?.mtd_selected) ? (r?.mtd_selected as SelectedRow[]) : [];
+          selected.forEach((s) => {
+            const dateText = s?.date ? String(s.date) : '—';
+            const desc = s?.description ? String(s.description) : '—';
+            const funder = (s?.FUNDER ?? s?.funder) ? String((s?.FUNDER ?? s?.funder) as string) : '—';
+            const t = s?.type ? String(s.type).toUpperCase() : '—';
+            const amountVal = s?.amount as unknown;
+            const num = typeof amountVal === 'number' ? amountVal : parseAmount(String(amountVal ?? ''));
+            if (Number.isFinite(num)) mtdTotal += Number(num);
+            bodyRows.push([
+              dateText,
+              desc,
+              funder,
+              t,
+              Number.isFinite(num) ? fmtCurrency2(Number(num)) : (amountVal == null ? '—' : String(amountVal)),
+            ]);
+          });
+          // If no selected rows appended for this record but a total_mtd exists, include it as a single summary row
+          if (selected.length === 0 && (r?.total_mtd != null)) {
+            const val = r.total_mtd as unknown;
+            const num = typeof val === 'number' ? val : parseAmount(String(val ?? ''));
+            if (Number.isFinite(num)) {
+              mtdTotal += Number(num);
+              bodyRows.push(['—', '—', '—', '—', fmtCurrency2(Number(num))]);
+            }
+          }
+        });
+        // If still no rows, skip rendering this section
+        if (bodyRows.length === 0) {
+          // do nothing
+        } else {
+
+        autoTable(pdf, {
+          startY: cursorY,
+          styles: {
+            font: 'times',
+            fontSize: 10,
+            cellPadding: 8,
+            lineColor: [200, 210, 220],
+            lineWidth: 0.6,
+            textColor: [30, 30, 30]
+          },
+          headStyles: {
+            fillColor: [37, 99, 235],
+            textColor: [255, 255, 255],
+            fontSize: 11,
+            fontStyle: 'bold',
+            halign: 'center',
+            font: 'times',
+            cellPadding: 10
+          },
+          bodyStyles: {
+            lineColor: [220, 230, 240],
+            lineWidth: 0.5
+          },
+          theme: 'striped',
+          head: [['Date', 'Description', 'Funder', 'Type', 'Amount']],
+          body: bodyRows,
+          columnStyles: {
+            0: { halign: 'center', fontSize: 10, font: 'times' },
+            1: { halign: 'left', fontSize: 10, font: 'times' },
+            2: { halign: 'center', fontSize: 10, font: 'times' },
+            3: { halign: 'center', fontSize: 10, font: 'times' },
+            4: { halign: 'right', fontStyle: 'bold', fontSize: 10, textColor: [22, 101, 52], font: 'times' },
+          },
+          tableWidth: 'auto',
+          margin: { left: marginX, right: marginX },
+        });
+
+        {
+          const lat = (pdf as unknown as { lastAutoTable?: { finalY: number } }).lastAutoTable;
+          if (lat && typeof lat.finalY === 'number') cursorY = lat.finalY + 8;
+        }
+
+        // Render total aligned to the right
+        pdf.setFont('times', 'bold');
+        pdf.setFontSize(12);
+        pdf.setTextColor(20, 83, 45);
+        const totalText = `TOTAL  ${fmtCurrency2(mtdTotal)}`;
+        const tw = pdf.getTextWidth(totalText);
+        pdf.text(totalText, pageWidth - marginX - tw, cursorY + 6);
+        cursorY += 18;
+        }
+      }
+
+      // 3) Transaction Analysis - only show if there are selected funders
+      if (Array.isArray(mcaItems) && mcaItems.length > 0) {
         // Elegant section header with premium styling
         pdf.setFillColor(245, 247, 250);
         pdf.rect(marginX - 8, cursorY - 10, pageWidth - 2 * marginX + 16, 24, 'F');
@@ -197,55 +306,39 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
         pdf.text('Funders Analysis', marginX, cursorY + 6);
         cursorY += 28;
 
-        // Extract transaction data using EXACT same logic as frontend UI
+        // Extract ONLY the UI-selected funders using EXACT same logic as frontend UI
         const txRows: Array<[string, string, string, string, string, string]> = [];
-        (mcaSummaryRows || []).forEach((row: any) => {
-          const raw = row && row.__mca_raw;
-          const itemsArray = Array.isArray(raw) ? raw : [];
-          const itemsFromObject = (!Array.isArray(raw) && raw && typeof raw === 'object')
-            ? Object.values(raw).flat().filter(Boolean)
-            : [];
-          const items: any[] = (itemsArray.length ? itemsArray : itemsFromObject).filter((it: any) => it && typeof it === 'object');
-          
-          items.forEach((it: any) => {
-            const period = String((it?.month ?? it?.period ?? '') || '');
-            // No longer filtering by month
-            const funder = String(it?.funder ?? '');
-            const freq = String(it?.dailyweekly ?? it?.debit_frequency ?? '');
-            const amountVal = it?.amount;
-            const notes = String(it?.notes ?? '');
-            
-            // EXACT same calculation as frontend UI (lines 2654-2656)
-            const amountNum = (typeof amountVal === 'number') ? amountVal : parseAmount(String(amountVal ?? ''));
-            const isWeekly = /weekly/i.test(freq);
-            const displayAmount = isWeekly ? (Number(amountNum) / 5) : Number(amountNum);
-            
-            // Split amounts for color styling
-            if (isWeekly) {
-              const originalAmount = Number.isFinite(Number(amountNum)) ? fmtCurrency2(Number(amountNum)) : (amountVal == null ? '—' : String(amountVal));
-              const dailyAmount = Number.isFinite(displayAmount) ? fmtCurrency2(displayAmount) : (amountVal == null ? '—' : String(amountVal));
-              
-              txRows.push([
-                period || '—',
-                funder || '—',
-                'WEEKLY = DAILY',
-                originalAmount, // Will be styled gray
-                dailyAmount,    // Will be styled green
-                notes || '—',
-              ]);
-            } else {
-              const singleAmount = Number.isFinite(displayAmount) ? fmtCurrency2(displayAmount) : (amountVal == null ? '—' : String(amountVal));
-              
-              txRows.push([
-                period || '—',
-                funder || '—',
-                freq || '—',
-                '—', // No original amount for non-weekly
-                singleAmount, // Will be styled green
-                notes || '—',
-              ]);
-            }
-          });
+        (mcaItems || []).forEach((it: { period?: string; funder?: string; freq?: string; amountNum?: number; isWeekly?: boolean; displayAmount?: number; notes?: string }, idx: number) => {
+          if (!selectedMcaItems.has(idx)) return; // include only selected
+          const period = String(it?.period || '');
+          const funder = String(it?.funder || '');
+          const freq = String(it?.isWeekly ? 'WEEKLY = DAILY' : (it?.freq || ''));
+          const amountNum = Number(it?.amountNum);
+          const displayAmount = Number(it?.displayAmount);
+          const notes = String(it?.notes || '');
+
+          if (it?.isWeekly) {
+            const originalAmount = Number.isFinite(amountNum) ? fmtCurrency2(amountNum) : '—';
+            const dailyAmount = Number.isFinite(displayAmount) ? fmtCurrency2(displayAmount) : '—';
+            txRows.push([
+              period || '—',
+              funder || '—',
+              'WEEKLY = DAILY',
+              originalAmount,
+              dailyAmount,
+              notes || '—',
+            ]);
+          } else {
+            const singleAmount = Number.isFinite(displayAmount) ? fmtCurrency2(displayAmount) : '—';
+            txRows.push([
+              period || '—',
+              funder || '—',
+              freq || '—',
+              '—',
+              singleAmount,
+              notes || '—',
+            ]);
+          }
         });
 
         // Only show table if we have actual transaction data
@@ -291,7 +384,10 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
             tableWidth: 'auto',
             margin: { left: marginX, right: marginX },
           });
-          cursorY = (pdf as any).lastAutoTable.finalY + 15;
+          {
+            const lat = (pdf as unknown as { lastAutoTable?: { finalY: number } }).lastAutoTable;
+            if (lat && typeof lat.finalY === 'number') cursorY = lat.finalY + 15;
+          }
           
           if (txRows.length > MAX_ROWS) {
             pdf.setFont('helvetica', 'italic');
@@ -412,24 +508,25 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
             },
             tableWidth: 'auto',
             margin: { left: marginX, right: marginX },
-            didParseCell: (data: any) => {
-              const rowIndex = data.row.index;
+            didParseCell: (data: unknown) => {
+              const d = data as { row: { index: number }; column: { index: number }; cell: { styles: Record<string, unknown> } };
+              const rowIndex = d.row.index;
               const row = summaryData[rowIndex];
               
               // Style section headers with professional background
               if (row && (row[0] === 'DOCUMENT ANALYSIS' || row[0] === 'RISK ASSESSMENT' || row[0] === 'RECOMMENDATION')) {
-                data.cell.styles.fillColor = [52, 73, 94];
-                data.cell.styles.textColor = [255, 255, 255];
-                data.cell.styles.fontSize = 10;
-                data.cell.styles.fontStyle = 'bold';
+                (d.cell.styles as any).fillColor = [52, 73, 94];
+                (d.cell.styles as any).textColor = [255, 255, 255];
+                (d.cell.styles as any).fontSize = 10;
+                (d.cell.styles as any).fontStyle = 'bold';
               }
               
               // Highlight the final recommendation with elegant green
-              if (row && row[0] === 'Holdback Rate' && data.column.index === 1) {
-                data.cell.styles.textColor = [20, 83, 45];
-                data.cell.styles.fontSize = 12;
-                data.cell.styles.fontStyle = 'bold';
-                data.cell.styles.font = 'times';
+              if (row && row[0] === 'Holdback Rate' && d.column.index === 1) {
+                (d.cell.styles as any).textColor = [20, 83, 45];
+                (d.cell.styles as any).fontSize = 12;
+                (d.cell.styles as any).fontStyle = 'bold';
+                (d.cell.styles as any).font = 'times';
               }
             }
           });
@@ -448,7 +545,7 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
         pdf.setFont('helvetica', 'normal');
         pdf.setFontSize(9);
         pdf.text('Financial Analysis Report', marginX, pageHeight - 10);
-        pdf.text(`Page ${pageNumber}` as any, pageWidth - marginX, pageHeight - 10, { align: 'right' });
+        pdf.text(String(`Page ${pageNumber}`), pageWidth - marginX, pageHeight - 10, { align: 'right' });
       };
 
       const totalPages = pdf.getNumberOfPages();
