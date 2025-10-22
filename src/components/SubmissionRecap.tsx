@@ -96,11 +96,15 @@ const SubmissionRecap: React.FC<SubmissionRecapProps> = ({
   // MTD documents (from Supabase)
   const [mtdDocs, setMtdDocs] = useState<ApplicationMTD[]>([]);
   const [mtdDocsLoading, setMtdDocsLoading] = useState<boolean>(false);
+  // Exclude list for documents (persisted per application)
+  const [excludedDocs, setExcludedDocs] = useState<Set<string>>(() => new Set());
   // UI: show/hide password in Email Settings
   const [showPassword, setShowPassword] = useState<boolean>(false);
   // UI: simple validation state for SMTP form
   const [smtpErrors, setSmtpErrors] = useState<{ host?: string; port?: string; user?: string; password?: string; fromEmail?: string }>({});
   const [smtpSettingsId, setSmtpSettingsId] = useState<string | null>(null);
+  // Feature flag: temporarily hide Email Configuration card from UI
+  const SHOW_EMAIL_CONFIG = false;
 
   const applyPreset = (preset: 'gmail_tls' | 'gmail_ssl' | 'outlook_tls') => {
     if (preset === 'gmail_tls') {
@@ -190,6 +194,44 @@ const SubmissionRecap: React.FC<SubmissionRecapProps> = ({
     loadDocs();
   }, [application?.id]);
 
+  // Load/save excluded docs per application id
+  React.useEffect(() => {
+    const key = application?.id ? `recap_excluded_docs_${application.id}` : null;
+    if (!key) { setExcludedDocs(new Set()); return; }
+    try {
+      const raw = localStorage.getItem(key);
+      if (raw) {
+        const arr: string[] = JSON.parse(raw);
+        setExcludedDocs(new Set(arr));
+      } else {
+        setExcludedDocs(new Set());
+      }
+    } catch { setExcludedDocs(new Set()); }
+  }, [application?.id]);
+
+  React.useEffect(() => {
+    const key = application?.id ? `recap_excluded_docs_${application.id}` : null;
+    if (!key) return;
+    try {
+      localStorage.setItem(key, JSON.stringify(Array.from(excludedDocs)));
+    } catch { /* ignore */ }
+  }, [excludedDocs, application?.id]);
+
+  const keyForInline = (name: string) => `inline:${name}`;
+  const keyForAppDoc = (doc: ApplicationDocument) => `app:${doc.id}`;
+  const keyForMtdDoc = (doc: ApplicationMTD) => `mtd:${doc.id}`;
+  const isExcluded = (key: string) => excludedDocs.has(key);
+  const excludeKey = (key: string) => setExcludedDocs(prev => new Set(prev).add(key));
+  const includeKey = (key: string) => {
+    setExcludedDocs(prev => {
+      const next = new Set(prev);
+      next.delete(key);
+      return next;
+    });
+  };
+
+  // Derived lists for rendering and counts (declared after inlineDocs memo below)
+
   // Load MTD documents from Supabase for this application
   React.useEffect(() => {
     const loadMtdDocs = async () => {
@@ -219,6 +261,14 @@ const SubmissionRecap: React.FC<SubmissionRecapProps> = ({
     return Array.isArray(application?.documents) ? (application!.documents as string[]) : [];
   }, [application]);
   
+  // Derived lists for rendering and counts (now that inlineDocs is defined)
+  const includedInline = inlineDocs.filter((name: string) => !isExcluded(keyForInline(name)));
+  const includedAppDocs = appDocs.filter((d: ApplicationDocument) => !isExcluded(keyForAppDoc(d)));
+  const includedMtdDocs = mtdDocs.filter((d: ApplicationMTD) => !isExcluded(keyForMtdDoc(d)));
+  const excludedInline = inlineDocs.filter((name: string) => isExcluded(keyForInline(name)));
+  const excludedApp = appDocs.filter((d: ApplicationDocument) => isExcluded(keyForAppDoc(d)));
+  const excludedMtd = mtdDocs.filter((d: ApplicationMTD) => isExcluded(keyForMtdDoc(d)));
+
   const selectedLenders = lenders.filter(lender => selectedLenderIds.includes(lender.id));
   
   // Debug useEffect to log document counts
@@ -380,9 +430,9 @@ const SubmissionRecap: React.FC<SubmissionRecapProps> = ({
     let template = hasKeySections(savedTemplate) ? (savedTemplate as string) : defaultTemplate;
 
     // Build dynamic documents list combining application_documents (appDocs), MTD documents (mtdDocs), and inline application documents (application.documents)
-    const dbDocs = Array.isArray(appDocs) ? appDocs : [];
-    const mtdDbDocs = Array.isArray(mtdDocs) ? mtdDocs : [];
-    const inlineDocsList: string[] = Array.isArray(inlineDocs) ? inlineDocs : [];
+    const dbDocs = (Array.isArray(appDocs) ? appDocs : []).filter(d => !isExcluded(keyForAppDoc(d)));
+    const mtdDbDocs = (Array.isArray(mtdDocs) ? mtdDocs : []).filter(d => !isExcluded(keyForMtdDoc(d)));
+    const inlineDocsList: string[] = (Array.isArray(inlineDocs) ? inlineDocs : []).filter(n => !isExcluded(keyForInline(n)));
     // Merge filenames: prefer explicit file_name from dbDocs and mtdDocs, and also include inline doc names
     const mergedNames: string[] = [
       ...dbDocs.map(doc => doc.file_name),
@@ -684,7 +734,7 @@ const SubmissionRecap: React.FC<SubmissionRecapProps> = ({
             }
           });
           attachmentsUrl = (docs || [])
-            .filter((d) => Boolean(d.file_url))
+            .filter((d) => Boolean(d.file_url) && !isExcluded(keyForAppDoc(d)))
             .map((d) => ({ filename: d.file_name, url: d.file_url as string }));
           // Also include completed application form files from application_form table
           try {
@@ -699,7 +749,7 @@ const SubmissionRecap: React.FC<SubmissionRecapProps> = ({
           // Include MTD files from application_mtd table (e.g., Funder MTD)
           try {
             const mtdRows: ApplicationMTD[] = await getApplicationMTDByApplicationId(application.id);
-            const mtdAttachments = (mtdRows || []).map((m) => {
+            const mtdAttachments = (mtdRows || []).filter(m => !isExcluded(keyForMtdDoc(m))).map((m) => {
               // Prefer direct URL from application_mtd
               let url = m.file_url ? String(m.file_url) : '';
               // If missing, try to find same file_name in application_documents we already fetched
@@ -1029,45 +1079,47 @@ const SubmissionRecap: React.FC<SubmissionRecapProps> = ({
         </div>
       </div>
 
-      {/* Email Configuration */}
-      <div className="bg-white rounded-2xl shadow-lg ring-1 ring-gray-100 p-6 mb-12">
-        <div className="flex items-start justify-between">
-          <div className="flex items-start gap-4">
-            <div className="w-12 h-12 rounded-xl bg-blue-100 flex items-center justify-center shadow-inner">
-              <Settings className="w-6 h-6 text-blue-600" />
-            </div>
-            <div>
-              <h4 className="text-lg font-bold text-gray-900 mb-2">Email Configuration</h4>
-              <p className="text-gray-600 mb-1">
-                Emails will be sent from: <span className="font-semibold text-gray-900">{emailSettings.fromEmail ? emailSettings.fromEmail : <span className="text-amber-600 italic">No from email specified</span>}</span>
-              </p>
-              <div className="flex items-center gap-2">
-                <div className={`w-2 h-2 rounded-full ${emailSettings.smtpHost ? 'bg-green-500' : 'bg-yellow-500'}`}></div>
-                <span className="text-sm text-gray-600">
-                  SMTP Status: {emailSettings.smtpHost ? 'Configured' : 'Using default settings'}
-                </span>
+      {/* Email Configuration (hidden via feature flag) */}
+      {SHOW_EMAIL_CONFIG && (
+        <div className="bg-white rounded-2xl shadow-lg ring-1 ring-gray-100 p-6 mb-12">
+          <div className="flex items-start justify-between">
+            <div className="flex items-start gap-4">
+              <div className="w-12 h-12 rounded-xl bg-blue-100 flex items-center justify-center shadow-inner">
+                <Settings className="w-6 h-6 text-blue-600" />
               </div>
-              {emailSettings.smtpHost && (
-                <p className="text-xs text-green-600 mt-1">Settings saved for future submissions</p>
-              )}
+              <div>
+                <h4 className="text-lg font-bold text-gray-900">Email Configuration</h4>
+                <div className="text-sm text-gray-600">
+                  Emails will be sent from: {' '}
+                  {emailSettings.fromEmail ? (
+                    <span className="font-semibold text-gray-800">{emailSettings.fromEmail}</span>
+                  ) : (
+                    <span className="font-semibold text-amber-600">No from email specified</span>
+                  )}
+                </div>
+                <div className="mt-1 text-xs text-gray-500 flex items-center gap-2">
+                  <span className="inline-block w-2 h-2 rounded-full bg-yellow-400" />
+                  SMTP Status: Using default settings
+                </div>
+              </div>
             </div>
+            <button
+              onClick={() => setShowEmailSettings(true)}
+              className="flex items-center gap-2 px-4 py-2 text-blue-600 hover:text-blue-700 hover:bg-blue-50 rounded-xl transition-all duration-200 text-sm font-medium"
+            >
+              <Settings className="w-4 h-4" />
+              Configure SMTP
+            </button>
           </div>
-          <button
-            onClick={() => setShowEmailSettings(true)}
-            className="flex items-center gap-2 px-4 py-2 text-blue-600 hover:text-blue-700 hover:bg-blue-50 rounded-xl transition-all duration-200 text-sm font-medium"
-          >
-            <Settings className="w-4 h-4" />
-            Configure SMTP
-          </button>
         </div>
-      </div>
+      )}
 
       {/* Documents Section (dynamic from application_documents) */}
       <div className="bg-white rounded-2xl shadow-lg ring-1 ring-gray-100 p-6 mb-12">
         <div className="flex items-center justify-between mb-4">
           <h4 className="text-lg font-bold text-gray-900">Documents to be Included</h4>
           <div className="text-xs text-gray-500">
-            {(appDocsLoading || mtdDocsLoading) ? 'Loading…' : `${((appDocs?.length || 0) + (inlineDocs?.length || 0) + (mtdDocs?.length || 0))} file${(((appDocs?.length || 0) + (inlineDocs?.length || 0) + (mtdDocs?.length || 0)) === 1) ? '' : 's'}`}
+            {(appDocsLoading || mtdDocsLoading) ? 'Loading…' : `${(includedAppDocs.length + includedInline.length + includedMtdDocs.length)} file${((includedAppDocs.length + includedInline.length + includedMtdDocs.length) === 1) ? '' : 's'}`}
           </div>
         </div>
         {/* Debug info in console */}
@@ -1075,11 +1127,11 @@ const SubmissionRecap: React.FC<SubmissionRecapProps> = ({
           <div className="flex items-center gap-2 text-gray-600 text-sm">
             <Loader className="w-4 h-4 animate-spin" /> Fetching documents…
           </div>
-        ) : ((appDocs?.length || 0) + (inlineDocs?.length || 0) + (mtdDocs?.length || 0)) === 0 ? (
+        ) : ((includedAppDocs.length + includedInline.length + includedMtdDocs.length) === 0) ? (
           <div className="text-sm text-gray-500">No documents uploaded yet.</div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {inlineDocs.map((fileName, idx) => (
+            {includedInline.map((fileName: string, idx: number) => (
               <div key={`inline-${idx}`} className="flex items-center justify-between p-3 rounded-xl border bg-gradient-to-br from-gray-50 to-white hover:shadow-md transition-shadow border-gray-200">
                 <div className="flex items-center gap-2">
                   <FileText className="w-5 h-5 text-blue-500" />
@@ -1088,15 +1140,21 @@ const SubmissionRecap: React.FC<SubmissionRecapProps> = ({
                     <div className="text-xs text-gray-500">Application Form</div>
                   </div>
                 </div>
+                <button
+                  onClick={() => excludeKey(keyForInline(fileName))}
+                  className="px-2 py-1 text-xs rounded-lg border border-gray-300 text-gray-600 hover:bg-gray-100"
+                >
+                  Exclude
+                </button>
               </div>
             ))}
-            {appDocs
-              .sort((a, b) => {
+            {includedAppDocs
+              .sort((a: ApplicationDocument, b: ApplicationDocument) => {
                 const dateA = a.created_at ? new Date(a.created_at).getTime() : 0;
                 const dateB = b.created_at ? new Date(b.created_at).getTime() : 0;
                 return dateB - dateA;
               })
-              .map((doc) => (
+              .map((doc: ApplicationDocument) => (
                 <div key={doc.id} className="flex items-center justify-between p-3 rounded-xl border bg-gradient-to-br from-gray-50 to-white hover:shadow-md transition-shadow border-gray-200">
                   <div className="flex items-center gap-2">
                     <FileText className="w-5 h-5 text-blue-500" />
@@ -1105,15 +1163,21 @@ const SubmissionRecap: React.FC<SubmissionRecapProps> = ({
                       <div className="text-xs text-gray-500">Bank Statement</div>
                     </div>
                   </div>
+                  <button
+                    onClick={() => excludeKey(keyForAppDoc(doc))}
+                    className="px-2 py-1 text-xs rounded-lg border border-gray-300 text-gray-600 hover:bg-gray-100"
+                  >
+                    Exclude
+                  </button>
                 </div>
               ))}
-            {mtdDocs
-              .sort((a, b) => {
+            {includedMtdDocs
+              .sort((a: ApplicationMTD, b: ApplicationMTD) => {
                 const dateA = a.created_at ? new Date(a.created_at).getTime() : 0;
                 const dateB = b.created_at ? new Date(b.created_at).getTime() : 0;
                 return dateB - dateA;
               })
-              .map((doc) => (
+              .map((doc: ApplicationMTD) => (
                 <div key={doc.id} className="flex items-center justify-between p-3 rounded-xl border bg-gradient-to-br from-gray-50 to-white hover:shadow-md transition-shadow border-gray-200">
                   <div className="flex items-center gap-2">
                     <FileText className="w-5 h-5 text-blue-500" />
@@ -1122,11 +1186,80 @@ const SubmissionRecap: React.FC<SubmissionRecapProps> = ({
                       <div className="text-xs text-gray-500">Funder MTD</div>
                     </div>
                   </div>
+                  <button
+                    onClick={() => excludeKey(keyForMtdDoc(doc))}
+                    className="px-2 py-1 text-xs rounded-lg border border-gray-300 text-gray-600 hover:bg-gray-100"
+                  >
+                    Exclude
+                  </button>
                 </div>
               ))}
           </div>
         )}
       </div>
+
+      {/* Excluded area */}
+      {(excludedInline.length + excludedApp.length + excludedMtd.length) > 0 && (
+        <div className="bg-white rounded-2xl shadow-inner ring-1 ring-red-100 p-6 mb-12">
+          <div className="flex items-center justify-between mb-4">
+            <h4 className="text-lg font-bold text-red-700">Excluded from Submission</h4>
+            <div className="text-xs text-red-600">{excludedInline.length + excludedApp.length + excludedMtd.length} file(s)</div>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {excludedInline.map((fileName: string, idx: number) => (
+              <div key={`x-inline-${idx}`} className="flex items-center justify-between p-3 rounded-xl border bg-red-50 border-red-200">
+                <div className="flex items-center gap-2">
+                  <FileText className="w-5 h-5 text-red-500" />
+                  <div>
+                    <div className="text-sm font-medium text-red-900">{fileName}</div>
+                    <div className="text-xs text-red-700">Application Form</div>
+                  </div>
+                </div>
+                <button
+                  onClick={() => includeKey(keyForInline(fileName))}
+                  className="px-2 py-1 text-xs rounded-lg border border-red-300 text-red-700 hover:bg-red-100"
+                >
+                  Include
+                </button>
+              </div>
+            ))}
+            {excludedApp.map((doc: ApplicationDocument) => (
+              <div key={`x-app-${doc.id}`} className="flex items-center justify-between p-3 rounded-xl border bg-red-50 border-red-200">
+                <div className="flex items-center gap-2">
+                  <FileText className="w-5 h-5 text-red-500" />
+                  <div>
+                    <div className="text-sm font-medium text-red-900">{doc.file_name}</div>
+                    <div className="text-xs text-red-700">Bank Statement</div>
+                  </div>
+                </div>
+                <button
+                  onClick={() => includeKey(keyForAppDoc(doc))}
+                  className="px-2 py-1 text-xs rounded-lg border border-red-300 text-red-700 hover:bg-red-100"
+                >
+                  Include
+                </button>
+              </div>
+            ))}
+            {excludedMtd.map((doc: ApplicationMTD) => (
+              <div key={`x-mtd-${doc.id}`} className="flex items-center justify-between p-3 rounded-xl border bg-red-50 border-red-200">
+                <div className="flex items-center gap-2">
+                  <FileText className="w-5 h-5 text-red-500" />
+                  <div>
+                    <div className="text-sm font-medium text-red-900">{doc.file_name}</div>
+                    <div className="text-xs text-red-700">Funder MTD</div>
+                  </div>
+                </div>
+                <button
+                  onClick={() => includeKey(keyForMtdDoc(doc))}
+                  className="px-2 py-1 text-xs rounded-lg border border-red-300 text-red-700 hover:bg-red-100"
+                >
+                  Include
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Action Buttons */}
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
