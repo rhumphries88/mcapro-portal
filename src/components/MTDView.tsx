@@ -295,13 +295,13 @@ const MTDView: React.FC<MTDViewProps> = ({ applicationId, businessName, ownerNam
   // Normalize Funder MTD JSON array to same row shape so we can render a table
   const normalizedFunder = React.useMemo(() => {
     const src = detailsModal?.funder_mtd as FunderRow[] | null | undefined;
-    const toNum = (v: number | string | null | undefined): number => {
+    const toNum = (v: unknown): number => {
       const n = typeof v === 'number' ? v : parseFloat(String(v ?? '').replace(/[^0-9.-]/g, ''));
       return Number.isFinite(n) ? n : 0;
     };
     const rows: FunderRow[] = [];
     if (Array.isArray(src)) {
-      src.forEach((r: Record<string, any>) => {
+      src.forEach((r: Record<string, unknown>) => {
         const date = r?.date || r?.Date || '';
         const description = r?.description || r?.Description || '';
         // Get the original amount
@@ -415,6 +415,16 @@ const MTDView: React.FC<MTDViewProps> = ({ applicationId, businessName, ownerNam
 
   // Local cache key for instant hydration per application
   const cacheKey = React.useMemo(() => (applicationId ? `mtd_recent_${applicationId}` : undefined), [applicationId]);
+  
+  // Analysis readiness: show content only when all key fields are present
+  const analysisReady = React.useMemo(() => {
+    const ms = detailsModal?.mtd_summary as MTDSummary | undefined;
+    const hasSummary = !!ms && (Array.isArray(ms) ? ms.length > 0 : Object.keys(ms).length > 0);
+    const hasAvail = typeof detailsModal?.available_balance === 'number';
+    const hasNeg = typeof detailsModal?.negative === 'number';
+    const hasFunder = Array.isArray(detailsModal?.funder_mtd);
+    return hasSummary && hasAvail && hasNeg && hasFunder;
+  }, [detailsModal]);
 
   // Removed hydration effect; we initialize synchronously in useState
 
@@ -510,11 +520,13 @@ const MTDView: React.FC<MTDViewProps> = ({ applicationId, businessName, ownerNam
     try {
       // Delete DB row
       const id = removed?.id;
-      const { deleteApplicationMTD, deleteApplicationMTDByAppAndName } = await import('../lib/supabase');
+      const { deleteApplicationMTD, resolveAndDeleteApplicationMTD } = await import('../lib/supabase');
       if (id) {
         await deleteApplicationMTD(id);
       } else if (applicationId) {
-        await deleteApplicationMTDByAppAndName(applicationId, docName, docSize);
+        // If size is 0 (often from null in DB), avoid filtering by size to ensure match
+        const sizeArg = (typeof docSize === 'number' && docSize > 0) ? docSize : undefined;
+        await resolveAndDeleteApplicationMTD(applicationId, docName, sizeArg);
       }
       // Force refetch to ensure sync with DB
       if (applicationId) {
@@ -549,9 +561,14 @@ const MTDView: React.FC<MTDViewProps> = ({ applicationId, businessName, ownerNam
           // Silently handle storage deletion errors
         }
       }
-    } catch {
-      // Restore on failure - silently catch errors but still restore the uploads
+    } catch (err) {
+      // Restore on failure and surface the error for visibility
       if (removed) setRecentUploads(prev => [removed!, ...prev]);
+      console.error('Failed to delete MTD document:', err);
+      try {
+        const message = err instanceof Error ? err.message : String(err);
+        alert(`Failed to delete MTD document. ${message}`);
+      } catch { void 0 }
     }
   };
   const openFilePicker = () => {
@@ -938,6 +955,14 @@ const MTDView: React.FC<MTDViewProps> = ({ applicationId, businessName, ownerNam
                     <p className="text-sm">Please wait while we load the Month-To-Date analysis.</p>
                   </div>
                 </div>
+              ) : (!analysisReady ? (
+                <div className="p-6 border border-amber-200 bg-amber-50 rounded-xl text-amber-800 flex items-center gap-3">
+                  <div className="w-5 h-5 border-2 border-amber-600 border-t-transparent rounded-full animate-spin" />
+                  <div>
+                    <div className="font-semibold">Preparing MTD Metrics</div>
+                    <p className="text-sm">Waiting for summary, available balance, negative count, and funder MTD to be available…</p>
+                  </div>
+                </div>
               ) : (
                 <>
                   {/* Summary Cards */}
@@ -1249,7 +1274,7 @@ const MTDView: React.FC<MTDViewProps> = ({ applicationId, businessName, ownerNam
                   )}
 
                 </>
-              )}
+              ))}
             </div>
 
             {/* Mini success popup */}

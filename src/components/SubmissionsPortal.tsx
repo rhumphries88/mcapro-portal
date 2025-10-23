@@ -5,6 +5,7 @@ import BankStatement from './BankStatement';
 import LenderMatches from './LenderMatches';
 import SubmissionRecap from './SubmissionRecap';
 import SubmissionIntermediate from './SubmissionIntermediate';
+import AdditionalDocuments from './AdditionalDocuments';
 import { extractLenderMatches, type CleanedMatch } from '../lib/parseLenderMatches';
 import { createApplication, updateApplication, getApplicationById, getApplicationDocuments, type Application as DBApplication } from '../lib/supabase';
 import { useAuth } from '../App';
@@ -136,15 +137,15 @@ type FormApplication = {
 };
 
 type SubmissionsPortalProps = {
-  initialStep?: 'application' | 'bank' | 'intermediate' | 'matches' | 'recap';
+  initialStep?: 'application' | 'bank' | 'intermediate' | 'additional-documents' | 'matches' | 'recap';
   initialApplicationId?: string;
   lockedLenderIds?: string[];
 };
 
 const SubmissionsPortal: React.FC<SubmissionsPortalProps> = ({ initialStep, initialApplicationId, lockedLenderIds = [] }) => {
   const { user } = useAuth(); // Get the current logged-in user
-  const [currentStep, setCurrentStep] = useState<'application' | 'bank' | 'intermediate' | 'matches' | 'recap'>('application');
-  const [prevStep, setPrevStep] = useState<'application' | 'bank' | 'intermediate' | 'matches' | 'recap' | null>(null);
+  const [currentStep, setCurrentStep] = useState<'application' | 'bank' | 'intermediate' | 'additional-documents' | 'matches' | 'recap'>('application');
+  const [prevStep, setPrevStep] = useState<'application' | 'bank' | 'intermediate' | 'additional-documents' | 'matches' | 'recap' | null>(null);
   const [application, setApplication] = useState<AppData | null>(null);
   const [bankPrefill, setBankPrefill] = useState<ReviewInitialType>(null);
   const [editPrefill, setEditPrefill] = useState<ReviewInitialType>(null);
@@ -395,7 +396,7 @@ const SubmissionsPortal: React.FC<SubmissionsPortalProps> = ({ initialStep, init
   };
 
   // simple navigation helpers so Back returns to the real previous page
-  const goTo = (next: 'application' | 'bank' | 'intermediate' | 'matches' | 'recap') => {
+  const goTo = (next: 'application' | 'bank' | 'intermediate' | 'additional-documents' | 'matches' | 'recap') => {
     setPrevStep(currentStep);
     setCurrentStep(next);
   };
@@ -797,7 +798,7 @@ const SubmissionsPortal: React.FC<SubmissionsPortalProps> = ({ initialStep, init
       } finally {
         // Hide loading once webhook completes
         setIntermediateLoading(false);
-        goTo('matches');
+        goTo('additional-documents');
       }
     })();
   };
@@ -850,11 +851,22 @@ const SubmissionsPortal: React.FC<SubmissionsPortalProps> = ({ initialStep, init
           {/* Separator to the right of Bank should be green only once we've moved past Bank */}
           <div className={`flex-1 h-1 mx-4 ${currentStep !== 'application' && currentStep !== 'bank' ? 'bg-green-200' : 'bg-gray-200'}`}></div>
           
+          <div className={`flex items-center ${currentStep === 'additional-documents' ? 'text-blue-600' : (currentStep === 'matches' || currentStep === 'recap') ? 'text-green-600' : 'text-gray-400'}`}>
+            <div className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-medium ${
+              (currentStep === 'matches' || currentStep === 'recap') ? 'bg-green-100 text-green-600' : currentStep === 'additional-documents' ? 'bg-blue-100 text-blue-600' : 'bg-gray-100 text-gray-400'
+            }`}>
+              {(currentStep === 'matches' || currentStep === 'recap') ? <CheckCircle className="w-5 h-5" /> : '3'}
+            </div>
+            <span className="ml-2 text-sm font-medium">Additional Documents</span>
+          </div>
+          
+          <div className={`flex-1 h-1 mx-4 ${(currentStep === 'matches' || currentStep === 'recap') ? 'bg-green-200' : 'bg-gray-200'}`}></div>
+          
           <div className={`flex items-center ${currentStep === 'matches' ? 'text-blue-600' : selectedLenders.length > 0 ? 'text-green-600' : 'text-gray-400'}`}>
             <div className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-medium ${
               selectedLenders.length > 0 ? 'bg-green-100 text-green-600' : currentStep === 'matches' ? 'bg-blue-100 text-blue-600' : 'bg-gray-100 text-gray-400'
             }`}>
-              {selectedLenders.length > 0 ? <CheckCircle className="w-5 h-5" /> : '3'}
+              {selectedLenders.length > 0 ? <CheckCircle className="w-5 h-5" /> : '4'}
             </div>
             <span className="ml-2 text-sm font-medium">Lender Matches</span>
           </div>
@@ -865,7 +877,7 @@ const SubmissionsPortal: React.FC<SubmissionsPortalProps> = ({ initialStep, init
             <div className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-medium ${
               currentStep === 'recap' ? 'bg-blue-100 text-blue-600' : 'bg-gray-100 text-gray-400'
             }`}>
-              4
+              5
             </div>
             <span className="ml-2 text-sm font-medium">Submission Recap</span>
           </div>
@@ -1077,6 +1089,12 @@ const SubmissionsPortal: React.FC<SubmissionsPortalProps> = ({ initialStep, init
           loading={intermediateLoading}
           onBack={goBack}
           onContinue={handleIntermediateContinue}
+        />
+      ) : currentStep === 'additional-documents' ? (
+        <AdditionalDocuments
+          applicationId={application?.id}
+          onBack={goBack}
+          onContinue={() => goTo('matches')}
         />
       ) : currentStep === 'matches' ? (
         <LenderMatches 

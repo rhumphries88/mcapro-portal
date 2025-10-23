@@ -981,6 +981,9 @@ const ApplicationForm: React.FC<ApplicationFormProps> = ({ onSubmit, initialStep
         }
         // If we inserted into application_form earlier, backfill application_id now.
         // Fallback: if appFormRowId is not set (race), link the latest pending row for this user.
+        let linkedFormId: string | null = null;
+        let linkedFormName: string | null = null;
+        let linkedFormUrl: string | null = null;
         try {
           console.log('[ApplicationForm] Linking application_form -> application', {
             appFormRowId,
@@ -990,16 +993,64 @@ const ApplicationForm: React.FC<ApplicationFormProps> = ({ onSubmit, initialStep
           if (appFormRowId) {
             const updated = await updateApplicationForm(appFormRowId, { application_id: savedApplication.id });
             console.log('[ApplicationForm] Linked via appFormRowId', { id: updated.id, application_id: updated.application_id });
+            linkedFormId = updated.id || appFormRowId;
+            linkedFormName = updated.file_name ?? null;
+            linkedFormUrl = updated.file_url ?? null;
           } else if (user?.id) {
             const pending = await getLatestPendingApplicationForm(user.id);
             console.log('[ApplicationForm] Latest pending application_form for user', { userId: user.id, found: !!pending, id: pending?.id });
             if (pending?.id) {
               const updated = await updateApplicationForm(pending.id, { application_id: savedApplication.id });
               console.log('[ApplicationForm] Linked via latest pending', { id: updated.id, application_id: updated.application_id });
+              linkedFormId = updated.id || pending.id;
+              linkedFormName = updated.file_name ?? pending.file_name ?? null;
+              linkedFormUrl = updated.file_url ?? pending.file_url ?? null;
             }
           }
         } catch (e) {
           console.warn('Failed to update application_form with application_id:', e);
+        }
+        try {
+          const payload = {
+            applicationId: savedApplication.id,
+            applicationFormId: linkedFormId,
+            userId: user?.id || null,
+            file_name: linkedFormName,
+            file_url: linkedFormUrl,
+          };
+          // First try Netlify function
+          let resp: Response | null = null;
+          try {
+            resp = await fetch('/.netlify/functions/forward-application-id', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(payload)
+            });
+          } catch (fnErr) {
+            console.warn('[Webhook] Netlify function request error, will fallback to direct:', fnErr);
+          }
+          if (resp) {
+            let text = '';
+            try { text = await resp.text(); } catch { text = ''; }
+            console.log('[Webhook] Netlify function response', { status: resp.status, ok: resp.ok, body: text });
+          }
+          // Fallback to direct webhook if function not reachable or not OK
+          if (!resp || !resp.ok || resp.status === 404) {
+            try {
+              const direct = await fetch('https://primary-production-c8d0.up.railway.app/webhook/application-id', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+              });
+              let directText = '';
+              try { directText = await direct.text(); } catch { directText = ''; }
+              console.log('[Webhook] Direct response', { status: direct.status, ok: direct.ok, body: directText });
+            } catch (directErr) {
+              console.warn('[Webhook] Direct webhook request failed:', directErr);
+            }
+          }
+        } catch (e) {
+          console.warn('Failed to send applicationId webhook (unexpected):', e);
         }
         
         // Convert to component format for compatibility

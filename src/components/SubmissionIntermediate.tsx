@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any, no-empty, @typescript-eslint/no-unused-vars */
 import React, { useState, useEffect, useRef } from 'react';
 import { Upload, FileText, CheckCircle, RefreshCw, Trash2, RotateCcw, TrendingUp } from 'lucide-react';
 import jsPDF from 'jspdf';
@@ -187,7 +188,7 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
         }
       }
 
-      // 2) Funder MTD Totals (Selected Rows) - reflect UI Selected Rows table
+      // 2) Funder MTD Totals (Selected Rows) - group by each MTD document
       if (Array.isArray(mtdRows) && mtdRows.length > 0) {
         // Section header
         pdf.setFillColor(245, 247, 250);
@@ -201,13 +202,36 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
         pdf.text('Funder MTD Totals (Selected Rows)', marginX, cursorY + 6);
         cursorY += 28;
 
-        type SelectedRow = { date?: string; description?: string; FUNDER?: string; funder?: string; type?: string; amount?: number | string };
-        type MtdWithSelected = { mtd_selected?: SelectedRow[] | null; total_mtd?: number | string | null };
+        type SelectedRow = { date?: string; description?: string; FUNDER?: string; funder?: string; type?: string; amount?: number | string; FREQUENCY?: string; frequency?: string; NOTES?: string; notes?: string };
+        type MtdWithSelected = { file_name?: string; mtd_selected?: SelectedRow[] | null; total_mtd?: number | string | null };
         const rows: MtdWithSelected[] = (mtdRows as unknown[] as MtdWithSelected[]);
-        const bodyRows: Array<[string, string, string, string, string]> = [];
-        let mtdTotal = 0;
+
         rows.forEach((r) => {
+          // Compute saved total and selected rows for this file
+          const savedTotal = (() => {
+            const val = r?.total_mtd as unknown;
+            const num = typeof val === 'number' ? val : parseAmount(String(val ?? ''));
+            return Number.isFinite(num) ? Number(num) : 0;
+          })();
           const selected = Array.isArray(r?.mtd_selected) ? (r?.mtd_selected as SelectedRow[]) : [];
+
+          // Subheader row: left shows selected count, right shows saved total
+          const leftLabel = `${selected.length || 0} SELECTED ROW${(selected.length || 0) === 1 ? '' : 'S'}`;
+          pdf.setFont('times', 'bold');
+          pdf.setFontSize(10);
+          pdf.setTextColor(71, 85, 105);
+          pdf.text(leftLabel, marginX, cursorY);
+          const rightLabel = `Transactions Total Deposits for MTD  ${fmtCurrency2(savedTotal)}`;
+          pdf.setFont('times', 'italic');
+          pdf.setFontSize(10);
+          pdf.setTextColor(71, 85, 105);
+          const rlw = pdf.getTextWidth(rightLabel);
+          pdf.text(rightLabel, pageWidth - marginX - rlw, cursorY);
+          cursorY += 10;
+
+          // Build body for this file
+          const bodyRows: Array<[string, string, string, string, string]> = [];
+          let subTotal = 0;
           selected.forEach((s) => {
             const dateText = s?.date ? String(s.date) : '—';
             const desc = s?.description ? String(s.description) : '—';
@@ -215,7 +239,7 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
             const t = s?.type ? String(s.type).toUpperCase() : '—';
             const amountVal = s?.amount as unknown;
             const num = typeof amountVal === 'number' ? amountVal : parseAmount(String(amountVal ?? ''));
-            if (Number.isFinite(num)) mtdTotal += Number(num);
+            if (Number.isFinite(num)) subTotal += Number(num);
             bodyRows.push([
               dateText,
               desc,
@@ -224,72 +248,69 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
               Number.isFinite(num) ? fmtCurrency2(Number(num)) : (amountVal == null ? '—' : String(amountVal)),
             ]);
           });
-          // If no selected rows appended for this record but a total_mtd exists, include it as a single summary row
-          if (selected.length === 0 && (r?.total_mtd != null)) {
-            const val = r.total_mtd as unknown;
-            const num = typeof val === 'number' ? val : parseAmount(String(val ?? ''));
-            if (Number.isFinite(num)) {
-              mtdTotal += Number(num);
-              bodyRows.push(['—', '—', '—', '—', fmtCurrency2(Number(num))]);
+
+          // If none selected but we have a saved total, render a placeholder single row for visibility
+          if (bodyRows.length === 0 && savedTotal > 0) {
+            bodyRows.push(['—', '—', '—', '—', fmtCurrency2(savedTotal)]);
+            subTotal = savedTotal;
+          }
+
+          if (bodyRows.length > 0) {
+            autoTable(pdf, {
+              startY: cursorY + 4,
+              styles: {
+                font: 'times',
+                fontSize: 10,
+                cellPadding: 8,
+                lineColor: [200, 210, 220],
+                lineWidth: 0.6,
+                textColor: [30, 30, 30]
+              },
+              headStyles: {
+                fillColor: [37, 99, 235],
+                textColor: [255, 255, 255],
+                fontSize: 11,
+                fontStyle: 'bold',
+                halign: 'center',
+                font: 'times',
+                cellPadding: 10
+              },
+              bodyStyles: {
+                lineColor: [220, 230, 240],
+                lineWidth: 0.5
+              },
+              theme: 'striped',
+              head: [['Date', 'Description', 'Funder', 'Type', 'Amount']],
+              body: bodyRows,
+              columnStyles: {
+                0: { halign: 'center', fontSize: 10, font: 'times' },
+                1: { halign: 'left', fontSize: 10, font: 'times' },
+                2: { halign: 'center', fontSize: 10, font: 'times' },
+                3: { halign: 'center', fontSize: 10, font: 'times' },
+                4: { halign: 'right', fontStyle: 'bold', fontSize: 10, textColor: [22, 101, 52], font: 'times' },
+              },
+              tableWidth: 'auto',
+              margin: { left: marginX, right: marginX },
+            });
+
+            {
+              const lat = (pdf as unknown as { lastAutoTable?: { finalY: number } }).lastAutoTable;
+              if (lat && typeof lat.finalY === 'number') cursorY = lat.finalY + 6;
             }
+
+            // Per-file total aligned to the right
+            pdf.setFont('times', 'bold');
+            pdf.setFontSize(12);
+            pdf.setTextColor(20, 83, 45);
+            const totalText = `TOTAL  ${fmtCurrency2(subTotal)}`;
+            const tw = pdf.getTextWidth(totalText);
+            pdf.text(totalText, pageWidth - marginX - tw, cursorY + 6);
+            cursorY += 18;
+          } else {
+            // If truly nothing to show, add small spacing
+            cursorY += 6;
           }
         });
-        // If still no rows, skip rendering this section
-        if (bodyRows.length === 0) {
-          // do nothing
-        } else {
-
-        autoTable(pdf, {
-          startY: cursorY,
-          styles: {
-            font: 'times',
-            fontSize: 10,
-            cellPadding: 8,
-            lineColor: [200, 210, 220],
-            lineWidth: 0.6,
-            textColor: [30, 30, 30]
-          },
-          headStyles: {
-            fillColor: [37, 99, 235],
-            textColor: [255, 255, 255],
-            fontSize: 11,
-            fontStyle: 'bold',
-            halign: 'center',
-            font: 'times',
-            cellPadding: 10
-          },
-          bodyStyles: {
-            lineColor: [220, 230, 240],
-            lineWidth: 0.5
-          },
-          theme: 'striped',
-          head: [['Date', 'Description', 'Funder', 'Type', 'Amount']],
-          body: bodyRows,
-          columnStyles: {
-            0: { halign: 'center', fontSize: 10, font: 'times' },
-            1: { halign: 'left', fontSize: 10, font: 'times' },
-            2: { halign: 'center', fontSize: 10, font: 'times' },
-            3: { halign: 'center', fontSize: 10, font: 'times' },
-            4: { halign: 'right', fontStyle: 'bold', fontSize: 10, textColor: [22, 101, 52], font: 'times' },
-          },
-          tableWidth: 'auto',
-          margin: { left: marginX, right: marginX },
-        });
-
-        {
-          const lat = (pdf as unknown as { lastAutoTable?: { finalY: number } }).lastAutoTable;
-          if (lat && typeof lat.finalY === 'number') cursorY = lat.finalY + 8;
-        }
-
-        // Render total aligned to the right
-        pdf.setFont('times', 'bold');
-        pdf.setFontSize(12);
-        pdf.setTextColor(20, 83, 45);
-        const totalText = `TOTAL  ${fmtCurrency2(mtdTotal)}`;
-        const tw = pdf.getTextWidth(totalText);
-        pdf.text(totalText, pageWidth - marginX - tw, cursorY + 6);
-        cursorY += 18;
-        }
       }
 
       // 3) Transaction Analysis - only show if there are selected funders
@@ -3069,7 +3090,11 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                           {(mtdRows || [])
                             .filter(r => {
                               const anyR: any = r as any;
-                              return (typeof anyR?.total_mtd === 'number' && !Number.isNaN(anyR.total_mtd)) || (Array.isArray(anyR?.mtd_selected) && anyR.mtd_selected.length > 0);
+                              return (
+                                (typeof anyR?.total_mtd === 'number' && !Number.isNaN(anyR.total_mtd)) ||
+                                (typeof anyR?.total_amount === 'number' && !Number.isNaN(anyR.total_amount)) ||
+                                (Array.isArray(anyR?.mtd_selected) && anyR.mtd_selected.length > 0)
+                              );
                             })
                             .map((r, idx) => {
                               const anyR: any = r as any;
@@ -3078,6 +3103,15 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                                 <div key={r.id || idx} className="px-6 py-3">
                                   <div className="grid grid-cols-12 gap-4 items-center">
                                     <div className="col-span-12 truncate text-slate-700 text-sm">{r.file_name || 'MTD Document'}</div>
+                                  </div>
+                                  {/* Totals from application_mtd */}
+                                  <div className="mt-2 grid grid-cols-12 gap-3">
+                                    {typeof anyR?.total_amount === 'number' && !Number.isNaN(anyR.total_amount) && (
+                                      <div className="col-span-12 flex items-center justify-between py-1">
+                                        <div className="text-[11px] font-semibold text-slate-600 uppercase tracking-wider">Transactions Total Deposits for MTD</div>
+                                        <div className="text-right font-mono text-sm font-bold text-slate-900">{fmtCurrency2(Number(anyR.total_amount || 0))}</div>
+                                      </div>
+                                    )}
                                   </div>
                                   {sel.length > 0 && (
                                     <div className="mt-4 rounded-xl border border-blue-200 bg-gradient-to-br from-blue-50 to-indigo-50 shadow-sm overflow-hidden">
@@ -3448,9 +3482,6 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                                           <div className="flex justify-between items-center py-3 border-b border-slate-200">
                                             <div className="flex-1">
                                               <div className="text-sm font-bold text-slate-900 uppercase tracking-wide">FUNDER MTD TOTALS</div>
-                                              <div className="text-xs text-slate-500 mt-1">
-                                                <span className="font-medium text-violet-600">{mtdCount}</span> item{mtdCount !== 1 ? 's' : ''} saved from analysis
-                                              </div>
                                             </div>
                                             <div className="text-right min-w-[120px]">
                                               <div className="font-mono text-lg font-black text-slate-900 tabular-nums">
@@ -3459,6 +3490,7 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                                             </div>
                                           </div>
                                         )}
+                                        {/* Transactions Total Deposits removed per request */}
 
                                         <div className="flex justify-between items-center py-3 border-b border-slate-200">
                                           <div className="flex-1">
@@ -3696,7 +3728,7 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                         ? 'bg-gradient-to-r from-gray-300 to-gray-400 text-white cursor-not-allowed'
                         : 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white hover:from-blue-700 hover:to-indigo-700 hover:shadow-lg hover:scale-[1.02] focus:ring-blue-500/40'
                     }`}
-                    aria-label="Continue to Lender Matches"
+                    aria-label="Continue to Additional Documents"
                     aria-busy={submitting || batchProcessing || isFinancialOverviewUpdating}
                   >
                     {submitting || batchProcessing ? (
@@ -3706,7 +3738,7 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
                       </>
                     ) : (
                       <>
-                        Continue to Lender Matches
+                        Continue to Additional Documents
                         <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7l5 5m0 0l-5 5m5-5H6" />
                         </svg>

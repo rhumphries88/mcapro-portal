@@ -28,6 +28,81 @@ if (!supabaseUrl || !supabaseAnonKey) {
   )
 }
 
+export const getApplicationAdditionalByApplicationId = async (
+  applicationId: string
+): Promise<ApplicationAdditionalRow[]> => {
+  const { data, error } = await supabase
+    .from('application_additional')
+    .select('*')
+    .eq('application_id', applicationId)
+    .order('created_at', { ascending: false })
+
+  if (error) throw error
+  return (data as unknown as ApplicationAdditionalRow[]) || []
+}
+
+// ===================== ADDITIONAL DOCUMENTS =====================
+export interface ApplicationAdditionalRow {
+  id?: string
+  application_id: string
+  file_name: string
+  file_size?: number | null
+  file_type?: string | null
+  file_url?: string | null
+  created_at?: string
+  description?: string | null
+}
+
+// Upload an additional document to Storage and return public URL + storage path
+export const uploadApplicationAdditionalFile = async (
+  applicationId: string,
+  file: File
+): Promise<{ publicUrl: string | null; storagePath: string }> => {
+  const safeAppId = applicationId || 'unassigned'
+  const storagePath = `docs/${safeAppId}/additional/${Date.now()}-${file.name}`
+  const { error: uploadError } = await supabase.storage
+    .from('application_documents')
+    .upload(storagePath, file, {
+      upsert: true,
+      contentType: file.type || 'application/octet-stream',
+      cacheControl: '3600',
+    })
+  if (uploadError) throw uploadError
+
+  const { data: pub } = supabase.storage
+    .from('application_documents')
+    .getPublicUrl(storagePath)
+  let publicUrl: string | null = pub?.publicUrl ?? null
+  if (!publicUrl) {
+    const { data: signed } = await supabase.storage
+      .from('application_documents')
+      .createSignedUrl(storagePath, 60 * 60)
+    publicUrl = (signed && typeof signed.signedUrl === 'string') ? signed.signedUrl : null
+  }
+  return { publicUrl, storagePath: `application_documents/${storagePath}` }
+}
+
+// Insert a row into application_additional (only columns likely present)
+export const insertApplicationAdditional = async (row: ApplicationAdditionalRow) => {
+  const payload: Record<string, unknown> = {
+    application_id: row.application_id,
+    file_name: row.file_name,
+  }
+  if (row.file_size !== undefined) payload.file_size = row.file_size
+  if (row.file_type !== undefined) payload.file_type = row.file_type
+  if (row.file_url !== undefined) payload.file_url = row.file_url
+  if (row.description !== undefined) payload.description = row.description
+
+  const { data, error } = await supabase
+    .from('application_additional')
+    .insert([payload])
+    .select()
+    .single()
+
+  if (error) throw error
+  return data as ApplicationAdditionalRow
+}
+
 // Fetch application_form rows linked to a specific application_id
 export const getApplicationFormByApplicationId = async (
   applicationId: string
@@ -132,14 +207,15 @@ export const updateApplicationForm = async (
   id: string,
   updates: Partial<ApplicationFormRow>
 ): Promise<ApplicationFormRow> => {
-  const { data, error } = await supabase
+  const { error } = await supabase
     .from('application_form')
     .update(updates)
     .eq('id', id)
-    .select()
-    .single()
   if (error) throw error
-  return data as ApplicationFormRow
+  return {
+    id,
+    ...(updates as object),
+  } as ApplicationFormRow
 }
 
 // Fetch an application's access map across users: user_id -> can_access
@@ -460,6 +536,42 @@ export interface User {
   phone?: string
   address?: string
   roles?: string
+  avatar_url?: string
+}
+
+export const getUserProfile = async (userId: string) => {
+  const { data, error } = await supabase
+    .from('users')
+    .select('id, email, full_name, roles, created_at, avatar_url')
+    .eq('id', userId)
+    .single()
+  if (error) throw error
+  return data as User
+}
+
+export const updateUserProfile = async (
+  userId: string,
+  updates: Partial<Pick<User, 'full_name' | 'avatar_url'>>
+) => {
+  const { data, error } = await supabase
+    .from('users')
+    .update(updates)
+    .eq('id', userId)
+    .select('id, email, full_name, roles, created_at, avatar_url')
+    .single()
+  if (error) throw error
+  return data as User
+}
+
+export const uploadUserAvatar = async (userId: string, file: File): Promise<string> => {
+  // Use existing bucket to avoid 'Bucket not found' errors in environments without the avatars bucket
+  const path = `avatars/${userId}/${Date.now()}-${file.name}`
+  const { error } = await supabase.storage
+    .from('application_documents')
+    .upload(path, file, { upsert: true, contentType: file.type || 'image/jpeg', cacheControl: '3600' })
+  if (error) throw error
+  const { data } = supabase.storage.from('application_documents').getPublicUrl(path)
+  return data.publicUrl
 }
 
 // ===================== ACCESS CONTROL =====================
@@ -1119,6 +1231,20 @@ export const resolveAndDeleteApplicationMTD = async (
   if (id) {
     await deleteApplicationMTD(id)
     return
+  }
+  // Secondary attempt: case-insensitive match on file_name (handles casing/format differences)
+  const { data: ciRows, error: ciErr } = await supabase
+    .from('application_mtd')
+    .select('id, file_name, created_at')
+    .eq('application_id', applicationId)
+    .ilike('file_name', file_name)
+    .order('created_at', { ascending: false })
+    .limit(1);
+  if (ciErr) throw ciErr;
+  const ciId = (Array.isArray(ciRows) && ciRows.length > 0) ? (ciRows[0] as { id: string }).id : undefined;
+  if (ciId) {
+    await deleteApplicationMTD(ciId);
+    return;
   }
   // Fallback to direct conditional delete
   await deleteApplicationMTDByAppAndName(applicationId, file_name, file_size)

@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { ArrowLeft, Send, Settings, CheckCircle, FileText, Loader, Eye, EyeOff, Server, Hash, AtSign, KeyRound, ShieldCheck } from 'lucide-react';
-import { getLenders, createLenderSubmissions, Lender as DBLender, getApplicationDocuments, type ApplicationDocument, qualifyLenders, type Application as DBApplication, ApplicationMTD, getApplicationMTDByApplicationId, getApplicationFormByApplicationId, type ApplicationFormRow } from '../lib/supabase';
+import { getLenders, createLenderSubmissions, Lender as DBLender, getApplicationDocuments, type ApplicationDocument, qualifyLenders, type Application as DBApplication, ApplicationMTD, getApplicationMTDByApplicationId, getApplicationFormByApplicationId, type ApplicationFormRow, getApplicationAdditionalByApplicationId, type ApplicationAdditionalRow } from '../lib/supabase';
 
 interface Application {
   id: string;
@@ -93,6 +93,9 @@ const SubmissionRecap: React.FC<SubmissionRecapProps> = ({
   // Application documents (from Supabase)
   const [appDocs, setAppDocs] = useState<ApplicationDocument[]>([]);
   const [appDocsLoading, setAppDocsLoading] = useState<boolean>(false);
+  // Additional documents (from Supabase)
+  const [additionalDocs, setAdditionalDocs] = useState<ApplicationAdditionalRow[]>([]);
+  const [additionalDocsLoading, setAdditionalDocsLoading] = useState<boolean>(false);
   // MTD documents (from Supabase)
   const [mtdDocs, setMtdDocs] = useState<ApplicationMTD[]>([]);
   const [mtdDocsLoading, setMtdDocsLoading] = useState<boolean>(false);
@@ -194,6 +197,27 @@ const SubmissionRecap: React.FC<SubmissionRecapProps> = ({
     loadDocs();
   }, [application?.id]);
 
+  // Load Additional documents from Supabase for this application
+  React.useEffect(() => {
+    const loadAdditional = async () => {
+      if (!application?.id) {
+        setAdditionalDocs([]);
+        return;
+      }
+      try {
+        setAdditionalDocsLoading(true);
+        const docs = await getApplicationAdditionalByApplicationId(application.id);
+        setAdditionalDocs(docs || []);
+      } catch (e) {
+        console.warn('Failed to load application_additional for recap:', e);
+        setAdditionalDocs([]);
+      } finally {
+        setAdditionalDocsLoading(false);
+      }
+    };
+    loadAdditional();
+  }, [application?.id]);
+
   // Load/save excluded docs per application id
   React.useEffect(() => {
     const key = application?.id ? `recap_excluded_docs_${application.id}` : null;
@@ -219,6 +243,7 @@ const SubmissionRecap: React.FC<SubmissionRecapProps> = ({
 
   const keyForInline = (name: string) => `inline:${name}`;
   const keyForAppDoc = (doc: ApplicationDocument) => `app:${doc.id}`;
+  const keyForAdditionalDoc = (doc: ApplicationAdditionalRow) => `add:${doc.id}`;
   const keyForMtdDoc = (doc: ApplicationMTD) => `mtd:${doc.id}`;
   const isExcluded = (key: string) => excludedDocs.has(key);
   const excludeKey = (key: string) => setExcludedDocs(prev => new Set(prev).add(key));
@@ -264,9 +289,11 @@ const SubmissionRecap: React.FC<SubmissionRecapProps> = ({
   // Derived lists for rendering and counts (now that inlineDocs is defined)
   const includedInline = inlineDocs.filter((name: string) => !isExcluded(keyForInline(name)));
   const includedAppDocs = appDocs.filter((d: ApplicationDocument) => !isExcluded(keyForAppDoc(d)));
+  const includedAdditionalDocs = additionalDocs.filter((d: ApplicationAdditionalRow) => !isExcluded(keyForAdditionalDoc(d)));
   const includedMtdDocs = mtdDocs.filter((d: ApplicationMTD) => !isExcluded(keyForMtdDoc(d)));
   const excludedInline = inlineDocs.filter((name: string) => isExcluded(keyForInline(name)));
   const excludedApp = appDocs.filter((d: ApplicationDocument) => isExcluded(keyForAppDoc(d)));
+  const excludedAdditional = additionalDocs.filter((d: ApplicationAdditionalRow) => isExcluded(keyForAdditionalDoc(d)));
   const excludedMtd = mtdDocs.filter((d: ApplicationMTD) => isExcluded(keyForMtdDoc(d)));
 
   const selectedLenders = lenders.filter(lender => selectedLenderIds.includes(lender.id));
@@ -275,11 +302,12 @@ const SubmissionRecap: React.FC<SubmissionRecapProps> = ({
   React.useEffect(() => {
     console.log('Document counts:', { 
       appDocs: appDocs?.length || 0, 
+      additionalDocs: additionalDocs?.length || 0,
       inlineDocs: inlineDocs?.length || 0, 
       mtdDocs: mtdDocs?.length || 0,
       mtdDocsData: mtdDocs
     });
-  }, [appDocs, inlineDocs, mtdDocs]);
+  }, [appDocs, additionalDocs, inlineDocs, mtdDocs]);
 
   const generateEmailContent = (lender: DBLender) => {
     if (!application) return '';
@@ -429,13 +457,15 @@ const SubmissionRecap: React.FC<SubmissionRecapProps> = ({
       !!tpl && tpl.includes('<div class="contact-info">') && tpl.includes('<div class="documents">') && tpl.includes('criteria-list');
     let template = hasKeySections(savedTemplate) ? (savedTemplate as string) : defaultTemplate;
 
-    // Build dynamic documents list combining application_documents (appDocs), MTD documents (mtdDocs), and inline application documents (application.documents)
+    // Build dynamic documents list combining application_documents (appDocs), application_additional (additionalDocs), MTD (mtdDocs), and inline application documents (application.documents)
     const dbDocs = (Array.isArray(appDocs) ? appDocs : []).filter(d => !isExcluded(keyForAppDoc(d)));
+    const addDocs = (Array.isArray(additionalDocs) ? additionalDocs : []).filter(d => !isExcluded(keyForAdditionalDoc(d)));
     const mtdDbDocs = (Array.isArray(mtdDocs) ? mtdDocs : []).filter(d => !isExcluded(keyForMtdDoc(d)));
     const inlineDocsList: string[] = (Array.isArray(inlineDocs) ? inlineDocs : []).filter(n => !isExcluded(keyForInline(n)));
     // Merge filenames: prefer explicit file_name from dbDocs and mtdDocs, and also include inline doc names
     const mergedNames: string[] = [
       ...dbDocs.map(doc => doc.file_name),
+      ...addDocs.map(doc => doc.file_name),
       ...mtdDbDocs.map(doc => doc.file_name),
       ...inlineDocsList
     ];
@@ -715,7 +745,7 @@ const SubmissionRecap: React.FC<SubmissionRecapProps> = ({
         return parts.length > 1 ? parts.slice(1).join('\n\n') : emailContent;
       };
 
-      // Collect application documents as attachments when URLs are available (includes application_documents, application_form, and application_mtd)
+      // Collect application documents as attachments when URLs are available (includes application_documents, application_additional, application_form, and application_mtd)
       let attachmentsUrl: { filename: string; url: string }[] = [];
       try {
         if (application?.id) {
@@ -736,6 +766,16 @@ const SubmissionRecap: React.FC<SubmissionRecapProps> = ({
           attachmentsUrl = (docs || [])
             .filter((d) => Boolean(d.file_url) && !isExcluded(keyForAppDoc(d)))
             .map((d) => ({ filename: d.file_name, url: d.file_url as string }));
+          // Include application_additional documents
+          try {
+            const addDocs: ApplicationAdditionalRow[] = await getApplicationAdditionalByApplicationId(application.id);
+            const addAttachments = (addDocs || [])
+              .filter((d) => Boolean(d.file_url) && !isExcluded(keyForAdditionalDoc(d)))
+              .map((d) => ({ filename: d.file_name || 'Additional Document', url: String(d.file_url) }));
+            attachmentsUrl = [...attachmentsUrl, ...addAttachments];
+          } catch (err) {
+            console.warn('Failed to load application_additional documents for attachments:', err);
+          }
           // Also include completed application form files from application_form table
           try {
             const forms: ApplicationFormRow[] = await getApplicationFormByApplicationId(application.id);
@@ -813,31 +853,72 @@ const SubmissionRecap: React.FC<SubmissionRecapProps> = ({
         if (addr) previewHtml = previewHtml.replace(new RegExp(addr, 'g'), '');
       } catch { void 0; }
 
-      // Build webhook payload and send (fire-and-forget)
-      const webhookPayload = {
-        applicationId: application?.id,
-        lenders: lenderEmails, // legacy combined
-        toEmails: toEmails,
-        ccEmails: ccEmails,
-        lenderIds,
-        lendersDetailed,
-        subject: preview.subject,
-        body: previewHtml,
-        bodyHtml: previewHtml,
-        attachments: attachmentsForWebhook,
-        smtpSettingsId: savedSmtpId || smtpSettingsId || null,
-        context: {
-          businessName: application?.businessName,
-          applicantEmail: emailSettings.fromEmail || null,
-          requestedAmount: application?.requestedAmount,
-          monthlyRevenue: application?.monthlyRevenue,
-          creditScore: application?.creditScore,
-          selectedLenderCount: selectedLenders.length,
-        },
-        sentAt: new Date().toISOString(),
-      };
-      // Don't block UI on webhook; intentionally no await
-      sendApplicationToWebhook(webhookPayload);
+      // Send webhook ONCE PER LENDER with lender-specific recipients/content (fire-and-forget)
+      for (const lender of selectedLenders) {
+        // Build per-lender recipients
+        const primary = (lender.contact_email || '').trim();
+        const ccs = (() => {
+          const ccRaw = (lender as { cc_emails?: string | string[] | null }).cc_emails ?? null;
+          const parse = (val: string) => val
+            .split(/[;,]/)
+            .map(e => e.trim())
+            .filter(e => e.length > 0);
+          if (Array.isArray(ccRaw)) return ccRaw.flatMap(v => parse(String(v)));
+          if (typeof ccRaw === 'string') return parse(ccRaw);
+          return [];
+        })();
+        // Subject/body tailored to this lender
+        const per = buildEmailPayloadForLender(lender);
+        let perHtmlBody = extractHtmlBody(generateEmailContent(lender))
+          .replace(/<div class="contact-info"[^>]*>[\s\S]*?<\/div>/, '')
+          .replace(/<div class="documents"[^>]*>[\s\S]*?<\/div>/, '')
+          .replace(/<div class="download-zip"[^>]*>[\s\S]*?<\/div>/, '')
+          .replace(/<div class="highlight-box"[^>]*>[\s\S]*?<\/div>/, '')
+          .replace(/<div class="contact-item"[^>]*>[\s\S]*?<\/div>/g, '')
+          .replace(/<p[^>]*>\s*<strong>Best regards,[\s\S]*?<\/p>/, '')
+          .replace(/<p[^>]*>\s*<strong>[^<]+<\/strong>\s*<br[^>]*>[\s\S]*?<\/p>/, '')
+          .replace(/<p[^>]*>I would appreciate[\s\S]*?<\/p>/, '')
+          .replace(/<p[^>]*>Thank you for your time[\s\S]*?<\/p>/, '')
+          .replace(/<div class="section">[\s\S]*?<h2>[\s\S]*?Financial Information[\s\S]*?<\/h2>[\s\S]*?<\/div>/, '')
+          .replace(/<h2>[\s\S]*?Financial Information[\s\S]*?<\/h2>[\s\S]*?<div class="info-grid">[\s\S]*?<\/div>/, '')
+          .replace(/<p[^>]*>\s*Application ID:[\s\S]*?<\/p>/, '');
+        try {
+          const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+          const phone = esc(application?.contactInfo?.phone || '');
+          const addr = esc(application?.contactInfo?.address || '');
+          if (phone) perHtmlBody = perHtmlBody.replace(new RegExp(phone, 'g'), '');
+          if (addr) perHtmlBody = perHtmlBody.replace(new RegExp(addr, 'g'), '');
+        } catch { /* ignore */ }
+
+        const payloadPerLender = {
+          applicationId: application?.id,
+          lenders: primary ? [primary] : [],
+          toEmails: primary ? [primary] : [],
+          ccEmails: ccs,
+          lenderIds: [lender.id],
+          lendersDetailed: [
+            ...(primary ? [{ id: lender.id, email: primary, role: 'to' as const }] : []),
+            ...ccs.map(e => ({ id: lender.id, email: e, role: 'cc' as const })),
+          ],
+          subject: per.subject,
+          body: perHtmlBody,
+          bodyHtml: perHtmlBody,
+          attachments: attachmentsForWebhook,
+          smtpSettingsId: savedSmtpId || smtpSettingsId || null,
+          context: {
+            businessName: application?.businessName,
+            applicantEmail: emailSettings.fromEmail || null,
+            requestedAmount: application?.requestedAmount,
+            monthlyRevenue: application?.monthlyRevenue,
+            creditScore: application?.creditScore,
+            selectedLenderCount: 1,
+            lenderName: lender.name,
+          },
+          sentAt: new Date().toISOString(),
+        };
+        // Fire-and-forget per lender
+        sendApplicationToWebhook(payloadPerLender);
+      }
 
       // POST to local email server only if smtp_settings exists
       if (savedSmtpId) {
@@ -1114,20 +1195,20 @@ const SubmissionRecap: React.FC<SubmissionRecapProps> = ({
         </div>
       )}
 
-      {/* Documents Section (dynamic from application_documents) */}
+      {/* Documents Section (dynamic from application_documents + application_additional + application_mtd + application_form inline) */}
       <div className="bg-white rounded-2xl shadow-lg ring-1 ring-gray-100 p-6 mb-12">
         <div className="flex items-center justify-between mb-4">
           <h4 className="text-lg font-bold text-gray-900">Documents to be Included</h4>
           <div className="text-xs text-gray-500">
-            {(appDocsLoading || mtdDocsLoading) ? 'Loading…' : `${(includedAppDocs.length + includedInline.length + includedMtdDocs.length)} file${((includedAppDocs.length + includedInline.length + includedMtdDocs.length) === 1) ? '' : 's'}`}
+            {(appDocsLoading || additionalDocsLoading || mtdDocsLoading) ? 'Loading…' : `${(includedAppDocs.length + includedAdditionalDocs.length + includedInline.length + includedMtdDocs.length)} file${((includedAppDocs.length + includedAdditionalDocs.length + includedInline.length + includedMtdDocs.length) === 1) ? '' : 's'}`}
           </div>
         </div>
         {/* Debug info in console */}
-        {(appDocsLoading || mtdDocsLoading) ? (
+        {(appDocsLoading || additionalDocsLoading || mtdDocsLoading) ? (
           <div className="flex items-center gap-2 text-gray-600 text-sm">
             <Loader className="w-4 h-4 animate-spin" /> Fetching documents…
           </div>
-        ) : ((includedAppDocs.length + includedInline.length + includedMtdDocs.length) === 0) ? (
+        ) : ((includedAppDocs.length + includedAdditionalDocs.length + includedInline.length + includedMtdDocs.length) === 0) ? (
           <div className="text-sm text-gray-500">No documents uploaded yet.</div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -1171,6 +1252,29 @@ const SubmissionRecap: React.FC<SubmissionRecapProps> = ({
                   </button>
                 </div>
               ))}
+            {includedAdditionalDocs
+              .sort((a: ApplicationAdditionalRow, b: ApplicationAdditionalRow) => {
+                const dateA = a.created_at ? new Date(a.created_at).getTime() : 0;
+                const dateB = b.created_at ? new Date(b.created_at).getTime() : 0;
+                return dateB - dateA;
+              })
+              .map((doc: ApplicationAdditionalRow) => (
+                <div key={doc.id} className="flex items-center justify-between p-3 rounded-xl border bg-gradient-to-br from-gray-50 to-white hover:shadow-md transition-shadow border-gray-200">
+                  <div className="flex items-center gap-2">
+                    <FileText className="w-5 h-5 text-blue-500" />
+                    <div>
+                      <div className="text-sm font-medium text-gray-900">{doc.file_name}</div>
+                      <div className="text-xs text-gray-500">Additional Document</div>
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => excludeKey(keyForAdditionalDoc(doc))}
+                    className="px-2 py-1 text-xs rounded-lg border border-gray-300 text-gray-600 hover:bg-gray-100"
+                  >
+                    Exclude
+                  </button>
+                </div>
+              ))}
             {includedMtdDocs
               .sort((a: ApplicationMTD, b: ApplicationMTD) => {
                 const dateA = a.created_at ? new Date(a.created_at).getTime() : 0;
@@ -1199,11 +1303,11 @@ const SubmissionRecap: React.FC<SubmissionRecapProps> = ({
       </div>
 
       {/* Excluded area */}
-      {(excludedInline.length + excludedApp.length + excludedMtd.length) > 0 && (
+      {(excludedInline.length + excludedApp.length + excludedAdditional.length + excludedMtd.length) > 0 && (
         <div className="bg-white rounded-2xl shadow-inner ring-1 ring-red-100 p-6 mb-12">
           <div className="flex items-center justify-between mb-4">
             <h4 className="text-lg font-bold text-red-700">Excluded from Submission</h4>
-            <div className="text-xs text-red-600">{excludedInline.length + excludedApp.length + excludedMtd.length} file(s)</div>
+            <div className="text-xs text-red-600">{excludedInline.length + excludedApp.length + excludedAdditional.length + excludedMtd.length} file(s)</div>
           </div>
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             {excludedInline.map((fileName: string, idx: number) => (
@@ -1234,6 +1338,23 @@ const SubmissionRecap: React.FC<SubmissionRecapProps> = ({
                 </div>
                 <button
                   onClick={() => includeKey(keyForAppDoc(doc))}
+                  className="px-2 py-1 text-xs rounded-lg border border-red-300 text-red-700 hover:bg-red-100"
+                >
+                  Include
+                </button>
+              </div>
+            ))}
+            {excludedAdditional.map((doc: ApplicationAdditionalRow) => (
+              <div key={`x-add-${doc.id}`} className="flex items-center justify-between p-3 rounded-xl border bg-red-50 border-red-200">
+                <div className="flex items-center gap-2">
+                  <FileText className="w-5 h-5 text-red-500" />
+                  <div>
+                    <div className="text-sm font-medium text-red-900">{doc.file_name}</div>
+                    <div className="text-xs text-red-700">Additional Document</div>
+                  </div>
+                </div>
+                <button
+                  onClick={() => includeKey(keyForAdditionalDoc(doc))}
                   className="px-2 py-1 text-xs rounded-lg border border-red-300 text-red-700 hover:bg-red-100"
                 >
                   Include

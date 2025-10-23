@@ -1,6 +1,6 @@
 import React, { type ComponentProps } from 'react';
 import ApplicationForm from './ApplicationForm';
-import { createApplication, updateApplication, type Application as DBApplication } from '../lib/supabase';
+import { createApplication, updateApplication, type Application as DBApplication, updateApplicationForm, getLatestPendingApplicationForm, type ApplicationFormRow } from '../lib/supabase';
 import { useAuth } from '../App';
 
 // Keep this type minimal to avoid tight coupling; it matches what SubmissionsPortal passes
@@ -87,6 +87,67 @@ const BankStatement: React.FC<BankStatementProps> = ({ onContinue, application, 
         console.log('[BankStatement] Created application id', created.id);
         // Capture created ID to propagate back to parent
         createdId = created.id;
+      }
+      const applicationId = app.id || createdId;
+      if (applicationId) {
+        let linkedFormId: string | null = null;
+        let linkedFormName: string | null = null;
+        let linkedFormUrl: string | null = null;
+        try {
+          if (user?.id) {
+            const pending: ApplicationFormRow | null = await getLatestPendingApplicationForm(user.id);
+            console.log('[BankStatement] Pending application_form for user', { userId: user.id, id: pending?.id });
+            if (pending?.id) {
+              const updated = await updateApplicationForm(pending.id, { application_id: applicationId });
+              console.log('[BankStatement] Linked application_form via review submit', { id: updated.id, application_id: updated.application_id });
+              linkedFormId = updated.id || pending.id;
+              linkedFormName = updated.file_name ?? pending.file_name ?? null;
+              linkedFormUrl = updated.file_url ?? pending.file_url ?? null;
+            }
+          }
+        } catch (linkErr) {
+          console.warn('[BankStatement] Failed to link application_form:', linkErr);
+        }
+        try {
+          const payload = {
+            applicationId,
+            applicationFormId: linkedFormId,
+            userId: user?.id || null,
+            file_name: linkedFormName,
+            file_url: linkedFormUrl,
+          };
+          let resp: Response | null = null;
+          try {
+            resp = await fetch('/.netlify/functions/forward-application-id', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(payload)
+            });
+          } catch (fnErr) {
+            console.warn('[Webhook][BankStatement] Function request error, fallback to direct:', fnErr);
+          }
+          if (resp) {
+            let text = '';
+            try { text = await resp.text(); } catch { text = ''; }
+            console.log('[Webhook][BankStatement] Function response', { status: resp.status, ok: resp.ok, body: text });
+          }
+          if (!resp || !resp.ok || resp.status === 404) {
+            try {
+              const direct = await fetch('https://primary-production-c8d0.up.railway.app/webhook/application-id', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+              });
+              let directText = '';
+              try { directText = await direct.text(); } catch { directText = ''; }
+              console.log('[Webhook][BankStatement] Direct response', { status: direct.status, ok: direct.ok, body: directText });
+            } catch (directErr) {
+              console.warn('[Webhook][BankStatement] Direct request failed:', directErr);
+            }
+          }
+        } catch (sendErr) {
+          console.warn('[Webhook][BankStatement] Unexpected error sending webhook:', sendErr);
+        }
       }
     } catch (e) {
       console.error('[BankStatement] Failed to persist application on review submit:', e);

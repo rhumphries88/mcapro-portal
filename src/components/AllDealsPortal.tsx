@@ -1,6 +1,6 @@
 import React, { useRef, useState, useCallback } from 'react';
 import { Search, Eye, Download, DollarSign, Building2, Star, CheckCircle, XCircle, Clock, AlertTriangle, FileText, MoreVertical, Users } from 'lucide-react';
-import { supabase, getAllApplications, getApplicationDocuments, getApplicationMTDByApplicationId, getUsersByRole, getApplicationAccessMapByApp, setApplicationAccess, deleteApplicationDocument, resolveAndDeleteApplicationMTD, insertApplicationMTD, updateApplication, getLenderSubmissions, getApplicationsForMember, getLenderNotes, addLenderNote, updateLenderNote, deleteLenderNote, Application as DBApplication, LenderSubmission as DBLenderSubmission, LenderNote as DBLenderNote, User as DBUser } from '../lib/supabase';
+import { supabase, getAllApplications, getApplicationDocuments, getApplicationMTDByApplicationId, getUsersByRole, getApplicationAccessMapByApp, setApplicationAccess, deleteApplicationDocument, resolveAndDeleteApplicationMTD, insertApplicationMTD, updateApplication, getLenderSubmissions, getApplicationsForMember, getLenderNotes, addLenderNote, updateLenderNote, deleteLenderNote, getApplicationAdditionalByApplicationId, type ApplicationAdditionalRow, Application as DBApplication, LenderSubmission as DBLenderSubmission, LenderNote as DBLenderNote, User as DBUser } from '../lib/supabase';
 import { useAuth } from '../App';
 
 // Use database types
@@ -30,7 +30,16 @@ type MtdFile = {
   file_url?: string;
   statement_date?: string;
 };
-type UnifiedFile = DocFile | MtdFile;
+type AdditionalFile = {
+  kind: 'additional';
+  id: string;
+  file_name: string;
+  file_size?: number;
+  file_type?: string;
+  upload_date?: string;
+  file_url?: string;
+};
+type UnifiedFile = DocFile | MtdFile | AdditionalFile;
 
 type AllDealsPortalProps = {
   onEditDeal?: (params: { applicationId: string; lockedLenderIds: string[] }) => void;
@@ -57,6 +66,7 @@ const AllDealsPortal: React.FC<AllDealsPortalProps> = ({ onEditDeal, onViewQuali
     | null
   >(null);
   const [deals, setDeals] = useState<Deal[]>([]);
+  const [additionalDocuments, setAdditionalDocuments] = useState<Array<{ id: string; file_name: string; file_size?: number; file_type?: string; upload_date?: string; file_url?: string }>>([]);
   const [reloadToken, setReloadToken] = useState(0);
   const [openActionId, setOpenActionId] = useState<string | null>(null);
   const [showAccessModal, setShowAccessModal] = useState(false);
@@ -210,12 +220,14 @@ const AllDealsPortal: React.FC<AllDealsPortalProps> = ({ onEditDeal, onViewQuali
     if (!selectedDeal) return;
     setDocsLoading(true);
     try {
-      const [rows, mtdRows] = await Promise.all([
+      const [rows, mtdRows, addRows] = await Promise.all([
         getApplicationDocuments(selectedDeal.id),
-        getApplicationMTDByApplicationId(selectedDeal.id)
+        getApplicationMTDByApplicationId(selectedDeal.id),
+        getApplicationAdditionalByApplicationId(selectedDeal.id)
       ]);
       setDocuments(rows.map(r => ({ id: r.id, file_name: r.file_name, file_size: r.file_size, file_type: r.file_type, upload_date: r.upload_date, file_url: r.file_url })));
       setMtdDocuments((mtdRows || []).map(r => ({ id: r.id, file_name: r.file_name, file_size: r.file_size, file_type: r.file_type, upload_date: r.upload_date, file_url: r.file_url, statement_date: r.statement_date })));
+      setAdditionalDocuments(((addRows || []) as ApplicationAdditionalRow[]).map(r => ({ id: String(r.id || crypto.randomUUID()), file_name: r.file_name, file_size: r.file_size || undefined, file_type: r.file_type || undefined, upload_date: r.created_at || undefined, file_url: r.file_url || undefined })));
     } catch (e) {
       console.error('Failed to reload documents', e);
     } finally {
@@ -348,6 +360,7 @@ const AllDealsPortal: React.FC<AllDealsPortalProps> = ({ onEditDeal, onViewQuali
     const channel = supabase.channel(`docs-mtd-${selectedDeal.id}`)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'application_documents', filter: `application_id=eq.${selectedDeal.id}` }, () => { reloadDocs(); })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'application_mtd', filter: `application_id=eq.${selectedDeal.id}` }, () => { reloadDocs(); })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'application_additional', filter: `application_id=eq.${selectedDeal.id}` }, () => { reloadDocs(); })
       .subscribe();
     return () => { supabase.removeChannel(channel); };
   }, [showDocs, selectedDeal?.id, reloadDocs]);
@@ -607,8 +620,9 @@ const AllDealsPortal: React.FC<AllDealsPortalProps> = ({ onEditDeal, onViewQuali
   const unifiedFiles: UnifiedFile[] = React.useMemo(() => {
     const docs: DocFile[] = documents.map(d => ({ kind: 'doc', ...d }));
     const mtds: MtdFile[] = mtdDocuments.map(d => ({ kind: 'mtd', ...d }));
-    return [...docs, ...mtds];
-  }, [documents, mtdDocuments]);
+    const adds: AdditionalFile[] = additionalDocuments.map(d => ({ kind: 'additional', ...d }));
+    return [...docs, ...mtds, ...adds];
+  }, [documents, mtdDocuments, additionalDocuments]);
 
   const handleEditDeal = (deal: Deal) => {
     const lockedIds = Array.from(new Set(
@@ -651,9 +665,10 @@ const AllDealsPortal: React.FC<AllDealsPortalProps> = ({ onEditDeal, onViewQuali
     setShowDocs(true);
     setDocsLoading(true);
     try {
-      const [rows, mtdRows] = await Promise.all([
+      const [rows, mtdRows, addRows] = await Promise.all([
         getApplicationDocuments(deal.id),
-        getApplicationMTDByApplicationId(deal.id)
+        getApplicationMTDByApplicationId(deal.id),
+        getApplicationAdditionalByApplicationId(deal.id)
       ]);
       setDocuments(rows.map(r => ({
         id: r.id,
@@ -672,10 +687,12 @@ const AllDealsPortal: React.FC<AllDealsPortalProps> = ({ onEditDeal, onViewQuali
         file_url: r.file_url,
         statement_date: r.statement_date,
       })));
+      setAdditionalDocuments((addRows || []).map(r => ({ id: r.id as unknown as string, file_name: r.file_name as string, file_size: r.file_size as number | undefined, file_type: r.file_type as string | undefined, upload_date: r.created_at as string | undefined, file_url: r.file_url as string | undefined })));
     } catch (e) {
       console.error('Failed to load documents', e);
       setDocuments([]);
       setMtdDocuments([]);
+      setAdditionalDocuments([]);
     } finally {
       setDocsLoading(false);
     }
