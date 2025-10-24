@@ -98,9 +98,9 @@ const AllDealsPortal: React.FC<AllDealsPortalProps> = ({ onEditDeal, onViewQuali
     phone: '',
     address: '',
   });
-  const [submissionsExpanded, setSubmissionsExpanded] = useState(true);
-  const [notesSectionExpanded, setNotesSectionExpanded] = useState(true);
+
   const [notesLoading, setNotesLoading] = useState(false);
+  const [dealsLoading, setDealsLoading] = useState(true);
   const [lenderNotes, setLenderNotes] = useState<DBLenderNote[]>([]);
   const [newNote, setNewNote] = useState('');
   const [savingNote, setSavingNote] = useState(false);
@@ -365,6 +365,10 @@ const AllDealsPortal: React.FC<AllDealsPortalProps> = ({ onEditDeal, onViewQuali
     return () => { supabase.removeChannel(channel); };
   }, [showDocs, selectedDeal?.id, reloadDocs]);
 
+  // Tab state for View Details modal
+  const [activeTab, setActiveTab] = useState<'information' | 'notes'>('information');
+  const [showAddNoteForm, setShowAddNoteForm] = useState(false);
+
   // Selection helpers for bulk add
   const toggleSelectUser = (id: string) => {
     setSelectedUserIds(prev => {
@@ -372,6 +376,19 @@ const AllDealsPortal: React.FC<AllDealsPortalProps> = ({ onEditDeal, onViewQuali
       if (next.has(id)) next.delete(id); else next.add(id);
       return next;
     });
+  };
+
+  // Handle application status update for members
+  const handleUpdateApplicationStatus = async (applicationId: string, newStatus: string) => {
+    try {
+      await updateApplication(applicationId, { status: newStatus });
+      pushToast('Status updated successfully', 'success');
+    } catch (error) {
+      console.error('Error updating status:', error);
+      pushToast('Failed to update status', 'error');
+      // Revert the UI change on error - reload the deals to get original status
+      setReloadToken(prev => prev + 1);
+    }
   };
 
   const handleBulkAddUsers = async () => {
@@ -462,6 +479,7 @@ const AllDealsPortal: React.FC<AllDealsPortalProps> = ({ onEditDeal, onViewQuali
         return;
       }
 
+      setDealsLoading(true);
       try {
         // Do not block UI; load immediately and enrich in background
         
@@ -514,7 +532,7 @@ const AllDealsPortal: React.FC<AllDealsPortalProps> = ({ onEditDeal, onViewQuali
       } catch (error) {
         console.error('Error loading applications:', error);
       } finally {
-        // keep non-blocking; loading spinner removed
+        setDealsLoading(false);
       }
     };
     loadApplications();
@@ -554,11 +572,21 @@ const AllDealsPortal: React.FC<AllDealsPortalProps> = ({ onEditDeal, onViewQuali
         return 'bg-blue-100 text-blue-800';
       case 'approved':
         return 'bg-green-100 text-green-800';
-      case 'submitted':
+      case 'ready-to-submit':
         return 'bg-yellow-100 text-yellow-800';
-      case 'under-review':
+      case 'sent-to-lenders':
+        return 'bg-indigo-100 text-indigo-800';
+      case 'under-negotiation':
+        return 'bg-blue-100 text-blue-800';
+      case 'contract-out':
         return 'bg-purple-100 text-purple-800';
+      case 'contract-in':
+        return 'bg-emerald-100 text-emerald-800';
       case 'declined':
+        return 'bg-red-100 text-red-800';
+      case 'deal-lost-with-offers':
+        return 'bg-red-100 text-red-800';
+      case 'deal-lost-no-offers':
         return 'bg-red-100 text-red-800';
       case 'draft':
         return 'bg-gray-100 text-gray-800';
@@ -573,10 +601,16 @@ const AllDealsPortal: React.FC<AllDealsPortalProps> = ({ onEditDeal, onViewQuali
         return <Star className="w-4 h-4" />;
       case 'approved':
         return <CheckCircle className="w-4 h-4" />;
-      case 'submitted':
+      case 'ready-to-submit':
         return <Clock className="w-4 h-4" />;
-      case 'under-review':
+      case 'sent-to-lenders':
+        return <Clock className="w-4 h-4" />;
+      case 'under-negotiation':
         return <AlertTriangle className="w-4 h-4" />;
+      case 'contract-out':
+        return <FileText className="w-4 h-4" />;
+      case 'contract-in':
+        return <CheckCircle className="w-4 h-4" />;
       case 'declined':
         return <XCircle className="w-4 h-4" />;
       default:
@@ -611,9 +645,14 @@ const AllDealsPortal: React.FC<AllDealsPortalProps> = ({ onEditDeal, onViewQuali
 
   const statusCounts = {
     all: deals.length,
-    submitted: deals.filter(d => d.status === 'submitted').length,
+    readyToSubmit: deals.filter(d => d.status === 'ready-to-submit').length,
+    sentToLenders: deals.filter(d => d.status === 'sent-to-lenders').length,
+    underNegotiation: deals.filter(d => d.status === 'under-negotiation').length,
+    contractOut: deals.filter(d => d.status === 'contract-out').length,
+    contractIn: deals.filter(d => d.status === 'contract-in').length,
     approved: deals.filter(d => d.status === 'approved').length,
-    declined: deals.filter(d => d.status === 'declined').length,
+    funded: deals.filter(d => d.status === 'funded').length,
+    declined: deals.filter(d => d.status === 'declined' || d.status === 'deal-lost-with-offers' || d.status === 'deal-lost-no-offers').length,
   };
 
   // Unified files list for Documents + MTD (for single upload/list UI)
@@ -698,9 +737,22 @@ const AllDealsPortal: React.FC<AllDealsPortalProps> = ({ onEditDeal, onViewQuali
     }
   };
 
+  // Loading screen before applications render
+  if (dealsLoading) {
+    const isAdmin = !!user && (user.role === 'admin' || user.role === 'Admin');
+    return (
+      <div className="flex items-center justify-center py-12">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-emerald-600 mx-auto mb-4"></div>
+          <p className="text-gray-600">{isAdmin ? 'Loading admin data...' : 'Loading your deals...'}</p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-      {/* Loading spinner removed to show content instantly */}
+      {/* Content */}
 
       {/* Enhanced Documents Modal */}
       {showDocs && selectedDeal && (
@@ -1003,8 +1055,8 @@ const AllDealsPortal: React.FC<AllDealsPortalProps> = ({ onEditDeal, onViewQuali
               <Clock className="w-6 h-6 text-yellow-600" />
             </div>
             <div className="ml-4">
-              <p className="text-sm font-medium text-gray-600">Submitted</p>
-              <p className="text-2xl font-bold text-gray-900">{statusCounts.submitted}</p>
+              <p className="text-sm font-medium text-gray-600">Ready to Submit</p>
+              <p className="text-2xl font-bold text-gray-900">{statusCounts.readyToSubmit}</p>
             </div>
           </div>
         </div>
@@ -1047,8 +1099,13 @@ const AllDealsPortal: React.FC<AllDealsPortalProps> = ({ onEditDeal, onViewQuali
               className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent"
             >
               <option value="all">All Status ({statusCounts.all})</option>
-              <option value="submitted">Submitted ({statusCounts.submitted})</option>
+              <option value="ready-to-submit">Ready to Submit ({statusCounts.readyToSubmit})</option>
+              <option value="sent-to-lenders">Sent to Lenders ({statusCounts.sentToLenders})</option>
+              <option value="under-negotiation">Under Negotiation ({statusCounts.underNegotiation})</option>
+              <option value="contract-out">Contract Out ({statusCounts.contractOut})</option>
+              <option value="contract-in">Contract In ({statusCounts.contractIn})</option>
               <option value="approved">Approved ({statusCounts.approved})</option>
+              <option value="funded">Funded ({statusCounts.funded})</option>
               <option value="declined">Declined ({statusCounts.declined})</option>
             </select>
           </div>
@@ -1497,10 +1554,39 @@ const AllDealsPortal: React.FC<AllDealsPortalProps> = ({ onEditDeal, onViewQuali
               {/* Top-right close button removed by request */}
             </div>
 
+            {/* Tab Switcher */}
+            <div className="px-8 py-4 border-b border-gray-200/80">
+              <div className="flex items-center gap-1">
+                <button
+                  onClick={() => setActiveTab('information')}
+                  className={`px-6 py-2.5 rounded-lg text-sm font-semibold transition-all duration-200 ${
+                    activeTab === 'information'
+                      ? 'bg-blue-600 text-white shadow-md'
+                      : 'text-gray-600 hover:text-gray-900 hover:bg-gray-100'
+                  }`}
+                >
+                  Information
+                </button>
+                <button
+                  onClick={() => setActiveTab('notes')}
+                  className={`px-6 py-2.5 rounded-lg text-sm font-semibold transition-all duration-200 ${
+                    activeTab === 'notes'
+                      ? 'bg-blue-600 text-white shadow-md'
+                      : 'text-gray-600 hover:text-gray-900 hover:bg-gray-100'
+                  }`}
+                >
+                  Notes
+                </button>
+              </div>
+            </div>
+
             {/* Enhanced Body */}
-            <div className="p-8 overflow-y-auto max-h-[calc(95vh-140px)]">
-              {/* Unified header row with centered toast */}
-              <div className="relative mb-4">
+            <div className="p-8 overflow-y-auto max-h-[calc(95vh-200px)]">
+
+              {activeTab === 'information' && (
+                <>
+                  {/* Unified header row with centered toast */}
+                  <div className="relative mb-4">
                 {/* Centered toast within the same row */}
                 {toast && (
                   <div className="pointer-events-none absolute left-1/2 -translate-x-1/2 top-1/2 -translate-y-1/2">
@@ -1525,7 +1611,52 @@ const AllDealsPortal: React.FC<AllDealsPortalProps> = ({ onEditDeal, onViewQuali
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 mb-8">
+              {/* Application Status for Members */}
+              {user && user.role !== 'admin' && user.role !== 'Admin' && (
+                <div className="mb-6 bg-gradient-to-br from-blue-50 to-indigo-50/50 rounded-2xl p-6 border border-blue-200/50">
+                  <div className="flex items-center gap-3 mb-4">
+                    <div className="w-8 h-8 rounded-lg bg-blue-100 flex items-center justify-center">
+                      <svg className="w-4 h-4 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                      </svg>
+                    </div>
+                    <h4 className="text-lg font-bold text-gray-900">Application Status</h4>
+                  </div>
+                  <div className="space-y-3">
+                    <label className="block text-sm font-medium text-gray-700">Current Status</label>
+                    <select
+                      value={selectedDeal.status}
+                      onChange={(e) => {
+                        // Update local state immediately for UI responsiveness
+                        if (selectedDeal) {
+                          setSelectedDeal({ ...selectedDeal, status: e.target.value });
+                        }
+                        // Update in deals list
+                        setDeals(prev => prev.map(deal => 
+                          deal.id === selectedDeal.id ? { ...deal, status: e.target.value } : deal
+                        ));
+                        // Save to database
+                        handleUpdateApplicationStatus(selectedDeal.id, e.target.value);
+                      }}
+                      className="w-full px-4 py-3 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white"
+                    >
+                      <option value="draft">Draft</option>
+                      <option value="ready-to-submit">Ready to Submit</option>
+                      <option value="sent-to-lenders">Sent to Lenders</option>
+                      <option value="under-negotiation">Under Negotiation</option>
+                      <option value="contract-out">Contract Out</option>
+                      <option value="contract-in">Contract In</option>
+                      <option value="approved">Approved</option>
+                      <option value="funded">Funded</option>
+                      <option value="declined">Declined</option>
+                      <option value="deal-lost-with-offers">Deal Lost with Offers</option>
+                      <option value="deal-lost-no-offers">Deal Lost w/ No Offers</option>
+                    </select>
+                  </div>
+                </div>
+              )}
+
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 mb-8">
                 {/* Business Information Card */}
                 <div className="bg-gradient-to-br from-gray-50 to-gray-100/50 rounded-2xl p-6 border border-gray-200/50">
                   <div className="flex items-center gap-3 mb-5">
@@ -1621,8 +1752,10 @@ const AllDealsPortal: React.FC<AllDealsPortalProps> = ({ onEditDeal, onViewQuali
                           <span className="font-semibold text-gray-900 truncate max-w-[60%] text-right">{selectedDeal.address || 'N/A'}</span>
                         </div>
                         <div className="flex items-center justify-between py-2">
-                          <span className="text-gray-600 font-medium">Source</span>
-                          <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold bg-purple-100 text-purple-800">website</span>
+                          <span className="text-gray-600 font-medium">Status</span>
+                          <span className={`px-3 py-1 rounded-full text-xs font-semibold ${getStatusColor(selectedDeal.status)}`}>
+                            {selectedDeal.status.replace(/-/g, ' ').replace(/\b\w/g, l => l.toUpperCase())}
+                          </span>
                         </div>
                       </>
                     ) : (
@@ -1644,9 +1777,11 @@ const AllDealsPortal: React.FC<AllDealsPortalProps> = ({ onEditDeal, onViewQuali
                             <span className="text-gray-600 font-medium">Address</span>
                             <input value={contactForm.address} onChange={e => setContactForm(s => ({ ...s, address: e.target.value }))} className="ml-4 w-72 px-3 py-2 border border-gray-300 rounded-lg text-sm" />
                           </label>
-                          <div className="flex items-center justify-between py-1 opacity-60">
-                            <span className="text-gray-600 font-medium">Source</span>
-                            <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold bg-purple-100 text-purple-800">website</span>
+                          <div className="flex items-center justify-between py-1">
+                            <span className="text-gray-600 font-medium">Status</span>
+                            <span className={`px-3 py-1 rounded-full text-xs font-semibold ${getStatusColor(selectedDeal.status)}`}>
+                              {selectedDeal.status.replace(/-/g, ' ').replace(/\b\w/g, l => l.toUpperCase())}
+                            </span>
                           </div>
                         </div>
                       </>
@@ -1655,178 +1790,88 @@ const AllDealsPortal: React.FC<AllDealsPortalProps> = ({ onEditDeal, onViewQuali
                 </div>
               </div>
               
-              <div className="bg-gradient-to-br from-purple-50 to-pink-50/50 rounded-2xl p-6 border border-purple-200/50">
-                <div className="flex items-center justify-between mb-6">
-                  <div className="flex items-center gap-3">
-                    <div className="w-8 h-8 rounded-lg bg-purple-100 flex items-center justify-center">
-                      <svg className="w-4 h-4 text-purple-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                      </svg>
-                    </div>
-                    <div className="flex-1">
-                      <h4 className="text-lg font-bold text-gray-900">Lender Submissions</h4>
-                      <p className="text-sm text-gray-600">Track all lender responses and offers</p>
-                    </div>
-                  </div>
-                  <div className="flex flex-col items-end gap-1">
-                    <button
-                      onClick={() => setSubmissionsExpanded(v => !v)}
-                      className="w-8 h-8 rounded-lg border border-purple-200 text-purple-700 hover:bg-purple-50 flex items-center justify-center text-lg leading-none"
-                      aria-label="Toggle submissions"
-                    >
-                      {submissionsExpanded ? '−' : '+'}
-                    </button>
-                    <div className="px-3 py-1 bg-purple-100 text-purple-700 rounded-full text-sm font-semibold">
-                      {selectedDeal.lenderSubmissions.length} Submissions
-                    </div>
-                  </div>
-                </div>
 
-                {submissionsExpanded && (
-                  <div className="mt-4">
-                  {selectedDeal.lenderSubmissions.length === 0 ? (
-                    <div className="text-center py-12 bg-white/60 rounded-xl border-2 border-dashed border-purple-200">
-                      <svg className="w-12 h-12 text-purple-300 mx-auto mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                      </svg>
-                      <div className="text-sm font-medium text-gray-600">No lender submissions yet</div>
-                      <div className="text-xs text-gray-400 mt-1">Submissions will appear here once lenders respond</div>
-                    </div>
-                  ) : (
-                    <div className="space-y-4">
-                      {selectedDeal.lenderSubmissions.map((submission, index) => (
-                        <div key={index} className="bg-white/80 backdrop-blur-sm rounded-xl p-5 border border-white/60 shadow-sm hover:shadow-md transition-all duration-200">
-                          <div className="flex items-start justify-between mb-4">
-                            <div className="flex items-center gap-3">
-                              <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center shadow-sm">
-                                <span className="text-white font-bold text-sm">
-                                  {submission.lender.name.charAt(0).toUpperCase()}
-                                </span>
-                              </div>
-                              <div>
-                                <h5 className="font-bold text-gray-900">{submission.lender.name}</h5>
-                                <p className="text-xs text-gray-500 flex items-center gap-2">
-                                  <span>Submitted: {new Date(submission.created_at).toLocaleDateString()}</span>
-                                  {submission.response_date && (
-                                    <>
-                                      <span className="w-1 h-1 bg-gray-400 rounded-full"></span>
-                                      <span>Responded: {new Date(submission.response_date).toLocaleDateString()}</span>
-                                    </>
-                                  )}
-                                </p>
-                              </div>
-                            </div>
-                            <span className={`inline-flex px-3 py-1 rounded-full text-xs font-bold ${getLenderStatusColor(submission.status)}`}>
-                              {submission.status}
-                            </span>
-                          </div>
-                          {submission.response && (
-                            <div className="mb-4 p-3 bg-blue-50/50 rounded-lg border border-blue-200/50">
-                              <p className="text-sm text-gray-700">
-                                <span className="font-semibold text-blue-700">Response:</span> {submission.response}
-                              </p>
-                            </div>
-                          )}
-                          {(submission.offered_amount || submission.factor_rate || submission.terms) && (
-                            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
-                              {submission.offered_amount && (
-                                <div className="bg-emerald-50/50 rounded-lg p-3 border border-emerald-200/50">
-                                  <span className="text-xs font-semibold text-emerald-700 uppercase tracking-wide">Offered Amount</span>
-                                  <p className="font-bold text-emerald-600 text-lg">${submission.offered_amount.toLocaleString()}</p>
-                                </div>
-                              )}
-                              {submission.factor_rate && (
-                                <div className="bg-orange-50/50 rounded-lg p-3 border border-orange-200/50">
-                                  <span className="text-xs font-semibold text-orange-700 uppercase tracking-wide">Factor Rate</span>
-                                  <p className="font-bold text-orange-600 text-lg">{submission.factor_rate}</p>
-                                </div>
-                              )}
-                              {submission.terms && (
-                                <div className="bg-purple-50/50 rounded-lg p-3 border border-purple-200/50">
-                                  <span className="text-xs font-semibold text-purple-700 uppercase tracking-wide">Terms</span>
-                                  <p className="font-bold text-purple-600 text-sm">{submission.terms}</p>
-                                </div>
-                              )}
-                            </div>
-                          )}
-                          {submission.notes && (
-                            <div className="bg-gray-50/50 rounded-lg p-3 border border-gray-200/50">
-                              <span className="text-xs font-semibold text-gray-700 uppercase tracking-wide">Notes</span>
-                              <p className="text-sm text-gray-600 mt-1">{submission.notes}</p>
-                            </div>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                  </div>
-                )}
-              </div>
-
-              {/* Notes for Lenders Card */}
-              <div className="mt-6 bg-gradient-to-b from-gray-50 to-white rounded-2xl border border-gray-200/80 shadow-sm p-6">
-                <div className="flex items-center justify-between mb-4">
-                  <div className="flex items-center gap-2">
-                    <div className="w-8 h-8 rounded-lg bg-blue-100 flex items-center justify-center">
-                      <svg className="w-4 h-4 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 10h8M8 14h6" />
-                      </svg>
-                    </div>
-                    <h4 className="text-lg font-bold text-gray-900">Notes for Lenders</h4>
-                  </div>
-                  <button
-                    onClick={() => setNotesSectionExpanded(v => !v)}
-                    className="w-8 h-8 rounded-lg border border-blue-200 text-blue-700 hover:bg-blue-50 flex items-center justify-center text-lg leading-none"
-                    aria-label="Toggle notes section"
-                  >
-                    {notesSectionExpanded ? '−' : '+'}
-                  </button>
-                </div>
-                {notesSectionExpanded && (
-                  <div className="space-y-6">
-                  {/* Add Note Form */}
-                  <div className="bg-gradient-to-br from-white to-gray-50/50 rounded-2xl border border-gray-200/80 shadow-lg p-6">
-                    <div className="flex items-center gap-3 mb-4">
+                </>  
+              )}
+              
+              {activeTab === 'notes' && (
+                <div className="bg-gradient-to-b from-gray-50 to-white rounded-2xl border border-gray-200/80 shadow-sm p-6 max-h-[calc(100vh-500px)] overflow-hidden flex flex-col">
+                  <div className="flex items-center justify-between mb-4 flex-shrink-0">
+                    <div className="flex items-center gap-3">
                       <div className="w-8 h-8 rounded-lg bg-blue-100 flex items-center justify-center">
                         <svg className="w-4 h-4 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
                         </svg>
                       </div>
-                      <h4 className="text-lg font-bold text-gray-900">Add New Note</h4>
+                      <h4 className="text-lg font-bold text-gray-900">Notes</h4>
                     </div>
-                        <textarea
-                      className="w-full min-h-[120px] px-4 py-3 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 resize-none transition-all duration-200 bg-white/80 backdrop-blur-sm"
-                      placeholder="Write a note for lenders... (e.g., follow-up required, special conditions, contact preferences)"
-                      value={newNote}
-                      onChange={(e) => setNewNote(e.target.value)}
-                        />
-                        <div className="mt-4 flex items-center justify-between">
-                          <div className="text-xs text-gray-500">
-                            {newNote.length}/500 characters
-                          </div>
-                          <button
-                        onClick={async () => {
-                          if (!selectedDeal || !newNote.trim() || savingNote) return;
-                          setSavingNote(true);
-                          try {
-                            const saved = await addLenderNote(selectedDeal.id, newNote.trim());
-                            setLenderNotes(prev => [saved, ...prev]);
-                            setNewNote('');
-                            pushToast('Note added', 'success');
-                          } catch (e) {
-                            console.warn('Failed to add note:', e);
-                            pushToast('Failed to add note', 'error');
-                          } finally {
-                            setSavingNote(false);
-                          }
-                        }}
-                        disabled={!newNote.trim() || savingNote}
-                        className={`px-6 py-2.5 rounded-xl text-sm font-semibold transition-all duration-200 ${!newNote.trim() || savingNote ? 'bg-gray-300 text-gray-500 cursor-not-allowed' : 'bg-gradient-to-r from-blue-600 to-blue-700 text-white hover:from-blue-700 hover:to-blue-800 shadow-lg hover:shadow-xl transform hover:scale-105'}`}
-                          >
-                            {savingNote ? 'Saving…' : 'Add Note'}
-                          </button>
-                        </div>
                   </div>
+                <div className="space-y-6 overflow-y-auto flex-1 pr-2">
+                  {/* Add Notes Button */}
+                  {!showAddNoteForm && (
+                    <div className="flex justify-end mb-4">
+                      <button
+                        onClick={() => setShowAddNoteForm(true)}
+                        className="px-6 py-3 bg-gradient-to-r from-blue-600 to-blue-700 text-white rounded-xl font-semibold hover:from-blue-700 hover:to-blue-800 shadow-lg hover:shadow-xl transition-all duration-200 flex items-center gap-2"
+                      >
+                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                        </svg>
+                        Add Notes
+                      </button>
+                    </div>
+                  )}
+
+                  {/* Add Note Form */}
+                  {showAddNoteForm && (
+                    <div className="bg-gradient-to-br from-white to-gray-50/50 rounded-2xl border border-gray-200/80 shadow-lg p-6 flex-shrink-0">
+                      <h5 className="text-sm font-semibold text-gray-800 mb-4">Add a new note</h5>
+                      <textarea
+                        className="w-full min-h-[120px] px-4 py-3 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 resize-none transition-all duration-200 bg-white/80 backdrop-blur-sm"
+                        placeholder="Write a note for lenders... (e.g., follow-up required, special conditions, contact preferences)"
+                        value={newNote}
+                        onChange={(e) => setNewNote(e.target.value)}
+                          />
+                          <div className="mt-4 flex items-center justify-between">
+                            <div className="text-xs text-gray-500">
+                              {newNote.length}/500 characters
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <button
+                                onClick={() => {
+                                  setShowAddNoteForm(false);
+                                  setNewNote('');
+                                }}
+                                className="px-4 py-2 text-sm font-semibold text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200 transition-all duration-200"
+                              >
+                                Cancel
+                              </button>
+                              <button
+                            onClick={async () => {
+                              if (!selectedDeal || !newNote.trim() || savingNote) return;
+                              setSavingNote(true);
+                              try {
+                                const saved = await addLenderNote(selectedDeal.id, newNote.trim());
+                                setLenderNotes(prev => [saved, ...prev]);
+                                setNewNote('');
+                                setShowAddNoteForm(false);
+                                pushToast('Note added', 'success');
+                              } catch (e) {
+                                console.warn('Failed to add note:', e);
+                                pushToast('Failed to add note', 'error');
+                              } finally {
+                                setSavingNote(false);
+                              }
+                            }}
+                            disabled={!newNote.trim() || savingNote}
+                            className={`px-6 py-2.5 rounded-xl text-sm font-semibold transition-all duration-200 ${!newNote.trim() || savingNote ? 'bg-gray-300 text-gray-500 cursor-not-allowed' : 'bg-gradient-to-r from-blue-600 to-blue-700 text-white hover:from-blue-700 hover:to-blue-800 shadow-lg hover:shadow-xl transform hover:scale-105'}`}
+                              >
+                                {savingNote ? 'Saving…' : 'Add Note'}
+                              </button>
+                            </div>
+                          </div>
+                    </div>
+                  )}
 
                   {/* Notes List */}
                   {notesLoading ? (
@@ -1946,7 +1991,52 @@ const AllDealsPortal: React.FC<AllDealsPortalProps> = ({ onEditDeal, onViewQuali
                     </div>
                     )}
                   </div>
-                )}
+                </div>
+              )}
+
+              {/* Lender Submissions - Always Visible at Bottom */}
+              <div className="bg-gradient-to-br from-purple-50 to-pink-50/50 rounded-2xl p-6 border border-purple-200/50 mt-8">
+                <div className="flex items-center justify-between mb-6">
+                  <div className="flex items-center gap-3">
+                    <div className="w-8 h-8 rounded-lg bg-purple-100 flex items-center justify-center">
+                      <svg className="w-4 h-4 text-purple-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                      </svg>
+                    </div>
+                    <div className="flex-1">
+                      <h4 className="text-lg font-bold text-gray-900">Lenders</h4>
+                      <p className="text-sm text-gray-600">Track all lender responses and offers</p>
+                    </div>
+                  </div>
+                  <div className="flex flex-col items-end gap-1">
+                    <div className="px-3 py-1 bg-purple-100 text-purple-700 rounded-full text-sm font-semibold">
+                      {selectedDeal.lenderSubmissions.length} Submissions
+                    </div>
+                  </div>
+                </div>
+
+                <div className="mt-4">
+                  {selectedDeal.lenderSubmissions.length === 0 ? (
+                    <div className="text-center py-12 bg-white/60 rounded-xl border-2 border-dashed border-purple-200">
+                      <p className="text-purple-700 font-medium">No submissions yet</p>
+                      <p className="text-purple-500 text-sm mt-1">Submissions from lenders will appear here</p>
+                    </div>
+                  ) : (
+                    <div className="space-y-4">
+                      {selectedDeal.lenderSubmissions.map((submission) => (
+                        <div key={submission.id} className="bg-white rounded-xl border border-gray-200 shadow-sm p-4">
+                          <div className="flex items-center justify-between">
+                            <div>
+                              <div className="font-semibold text-gray-900">{submission.lender.name}</div>
+                              <div className="text-sm text-gray-500">Updated {new Date(submission.updated_at || submission.created_at).toLocaleDateString()}</div>
+                            </div>
+                            <span className={`px-3 py-1 rounded-full text-xs font-semibold ${getLenderStatusColor(submission.status)}`}>{submission.status}</span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
               </div>
 
               {/* Enhanced Footer */}

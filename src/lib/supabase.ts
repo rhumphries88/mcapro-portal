@@ -705,7 +705,7 @@ export interface Application {
   existing_debt: number
   credit_score: number
   requested_amount: number
-  status: 'draft' | 'submitted' | 'under-review' | 'approved' | 'funded' | 'declined'
+  status: string
   documents: string[]
   created_at: string
   updated_at: string

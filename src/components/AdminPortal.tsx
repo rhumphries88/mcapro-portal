@@ -268,6 +268,19 @@ Application ID: {{applicationId}}`;
         return;
       }
 
+      // Map UI status labels to DB-allowed enum values (hotfix for applications_status_check)
+      const mapUiAppStatusToDb = (status?: string | null): DBApplication['status'] | undefined => {
+        if (!status) return undefined as unknown as DBApplication['status'];
+        const s = status.trim().toLowerCase().replace(/\s+/g, '-');
+        if (s === 'ready-to-submit') return 'submitted' as DBApplication['status'];
+        if (s === 'sent-to-lenders') return 'submitted' as DBApplication['status'];
+        if (s === 'under-negotiation') return 'under-review' as DBApplication['status'];
+        if (s === 'contract-out') return 'under-review' as DBApplication['status'];
+        if (s === 'contract-in') return 'approved' as DBApplication['status'];
+        if (s === 'deal-lost-with-offers' || s === 'deal-lost-no-offers') return 'declined' as DBApplication['status'];
+        return s as DBApplication['status'];
+      };
+
       const dbUpdateData: Partial<DBApplication> = {
         business_name: editingApplication.business_name,
         owner_name: editingApplication.owner_name,
@@ -285,11 +298,24 @@ Application ID: {{applicationId}}`;
         existing_debt: editingApplication.existing_debt,
         credit_score: editingApplication.credit_score,
         requested_amount: editingApplication.requested_amount,
-        status: editingApplication.status,
+        status: mapUiAppStatusToDb(editingApplication.status as string),
         documents: editingApplication.documents,
         user_id: editingApplication.user_id,
       };
-      const updated = await updateApplication(editingApplication.id, dbUpdateData);
+      let updated: DBApplication;
+      try {
+        // First attempt: save exact UI status (for DBs that already accept new values)
+        const exactPayload = { ...dbUpdateData, status: editingApplication.status as DBApplication['status'] } as Partial<DBApplication>;
+        updated = await updateApplication(editingApplication.id, exactPayload);
+      } catch (err: unknown) {
+        const code = (err as { code?: string })?.code;
+        if (code === '23514') {
+          // Constraint prevents new values; fallback to mapped legacy value
+          updated = await updateApplication(editingApplication.id, dbUpdateData);
+        } else {
+          throw err;
+        }
+      }
 
       setApplications(prev => prev.map(app => 
         app.id === editingApplication.id 
@@ -321,12 +347,16 @@ Application ID: {{applicationId}}`;
     switch (status) {
       case 'active': case 'matched': case 'funded':
         return 'bg-green-100 text-green-800';
-      case 'inactive': case 'declined': case 'rejected':
+      case 'inactive': case 'declined': case 'rejected': case 'deal-lost-with-offers': case 'deal-lost-no-offers':
         return 'bg-red-100 text-red-800';
-      case 'pending': case 'under-review': case 'sent':
+      case 'pending': case 'under-review': case 'sent': case 'ready-to-submit': case 'sent-to-lenders':
         return 'bg-yellow-100 text-yellow-800';
-      case 'submitted': case 'responded':
+      case 'submitted': case 'responded': case 'under-negotiation':
         return 'bg-blue-100 text-blue-800';
+      case 'contract-out':
+        return 'bg-purple-100 text-purple-800';
+      case 'contract-in':
+        return 'bg-indigo-100 text-indigo-800';
       default:
         return 'bg-gray-100 text-gray-800';
     }
@@ -2033,11 +2063,16 @@ Application ID: {{applicationId}}`;
                                 className="w-full px-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-purple-500 focus:border-purple-500 bg-white shadow-sm transition-all duration-200"
                               >
                                 <option value="draft">Draft</option>
-                                <option value="submitted">Submitted</option>
-                                <option value="under-review">Under Review</option>
+                                <option value="ready-to-submit">Ready to Submit</option>
+                                <option value="sent-to-lenders">Sent to Lenders</option>
+                                <option value="under-negotiation">Under Negotiation</option>
+                                <option value="contract-out">Contract Out</option>
+                                <option value="contract-in">Contract In</option>
                                 <option value="approved">Approved</option>
                                 <option value="funded">Funded</option>
                                 <option value="declined">Declined</option>
+                                <option value="deal-lost-with-offers">Deal Lost with Offers</option>
+                                <option value="deal-lost-no-offers">Deal Lost w/ No Offers</option>
                               </select>
                             </div>
                           </div>
@@ -2080,12 +2115,10 @@ Application ID: {{applicationId}}`;
                               <label className="block text-sm font-semibold text-gray-700 mb-2">Credit Score</label>
                               <input
                                 type="number"
-                                value={editingApplication.credit_score}
-                                onChange={(e) => setEditingApplication(prev => (prev ? { ...prev, credit_score: Number(e.target.value) } : prev))}
+                                value={editingApplication.credit_score ?? ''}
+                                onChange={(e) => setEditingApplication(prev => (prev ? { ...prev, credit_score: e.target.value === '' ? (null as unknown as number) : Number(e.target.value) } : prev))}
                                 className="w-full px-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-orange-500 focus:border-orange-500 bg-white shadow-sm transition-all duration-200"
-                                min="300"
-                                max="850"
-                                placeholder="650"
+                                placeholder="650 (optional)"
                               />
                             </div>
                             <div>
