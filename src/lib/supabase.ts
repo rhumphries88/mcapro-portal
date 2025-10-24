@@ -1298,60 +1298,60 @@ export const updateApplicationDocumentMonthlyRevenue = async (
 
 // Qualification logic
 export const qualifyLenders = (lenders: Lender[], application: Application): (Lender & { qualified: boolean; matchScore: number })[] => {
-  // Helper: clamp value to range
+  // Helpers
   const clamp = (val: number, min: number, max: number) => Math.min(max, Math.max(min, val));
+  const rndJitter = (range = 5) => (Math.random() * range * 2) - range; // ±range
 
-  // Prepare application industry words (case-insensitive)
+  // Prepare application industry words (case-insensitive, exact words only)
   const appIndustryWords = (application.industry || '')
     .toLowerCase()
     .split(/[^a-z0-9]+/i)
     .filter(Boolean);
 
   const isIndustryMatch = (l: Lender) => {
-    if (l.industries.some(i => i.trim().toLowerCase() === 'all industries')) return true;
+    if ((l.industries || []).some(i => (i || '').trim().toLowerCase() === 'all industries')) return true;
     if (appIndustryWords.length === 0) return false;
-    // Compare exact words
-    for (const entry of l.industries) {
+    for (const entry of (l.industries || [])) {
       const lenderWords = (entry || '')
         .toLowerCase()
         .split(/[^a-z0-9]+/i)
         .filter(Boolean);
-      const hasAny = appIndustryWords.some(w => lenderWords.includes(w));
-      if (hasAny) return true;
+      if (appIndustryWords.some(w => lenderWords.includes(w))) return true; // exact word match only
     }
     return false;
   };
 
-  // Keep only active lenders first
+  // Rule 1: Active lenders only
   const active = (lenders || []).filter(l => l.status === 'active');
 
-  // Evaluate qualification and score
+  // Evaluate qualification per rules
   const qualified = active
-    .map(l => {
-      const inCreditRange = application.credit_score >= l.min_credit_score && application.credit_score <= l.max_credit_score;
+    .map((l) => {
+      // Rule 2: Industry match
       const industryOk = isIndustryMatch(l);
 
-      const qualified = inCreditRange && industryOk;
+      // Rule 3: Average Revenue Matching
+      const lenderMinRev = (l as Partial<Lender>).min_monthly_revenue as unknown as number | null | undefined;
+      const appMonthly = (application as Partial<Application>).monthly_revenue as unknown as number | null | undefined;
+      const revenueOk = lenderMinRev == null || (Number(appMonthly) || 0) >= Number(lenderMinRev);
 
-      // Scoring
-      const denom = Math.max(1, (l.max_credit_score - l.min_credit_score));
-      const creditRaw = ((application.credit_score - l.min_credit_score) / denom) * 50;
-      const creditScore = clamp(creditRaw, 0, 50);
-      let score = creditScore + (industryOk ? 50 : 0);
-      // Random jitter ±1–5
-      const jitter = (Math.random() * 4) + 1; // 1..5
-      score += Math.random() < 0.5 ? -jitter : jitter;
-      score = clamp(score, 0, 100);
+      const passes = industryOk && revenueOk;
 
-      return { ...l, qualified, matchScore: Math.round(score) };
+      // Rule 4: Scoring
+      let score = 0;
+      if (industryOk) score += 50; // base for industry
+      if (revenueOk && lenderMinRev != null) score += 20; // bonus for meeting revenue requirement
+      score += rndJitter(5); // ±5 jitter
+      score = clamp(Math.round(score), 0, 100);
+
+      return { ...l, qualified: passes, matchScore: score };
     })
-    // Only include lenders that passed both filters
     .filter(l => l.qualified);
 
-  // Ranking: sort descending by matchScore; break ties with tiny jitter
+  // Rule 5: Ranking by score desc; tie-break with small jitter
   qualified.sort((a, b) => {
     if (b.matchScore !== a.matchScore) return b.matchScore - a.matchScore;
-    return Math.random() - 0.5;
+    return rndJitter(0.5);
   });
 
   return qualified;

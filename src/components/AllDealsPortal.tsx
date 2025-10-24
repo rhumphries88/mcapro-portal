@@ -645,6 +645,7 @@ const AllDealsPortal: React.FC<AllDealsPortalProps> = ({ onEditDeal, onViewQuali
 
   const statusCounts = {
     all: deals.length,
+    draft: deals.filter(d => d.status === 'draft').length,
     readyToSubmit: deals.filter(d => d.status === 'ready-to-submit').length,
     sentToLenders: deals.filter(d => d.status === 'sent-to-lenders').length,
     underNegotiation: deals.filter(d => d.status === 'under-negotiation').length,
@@ -652,7 +653,9 @@ const AllDealsPortal: React.FC<AllDealsPortalProps> = ({ onEditDeal, onViewQuali
     contractIn: deals.filter(d => d.status === 'contract-in').length,
     approved: deals.filter(d => d.status === 'approved').length,
     funded: deals.filter(d => d.status === 'funded').length,
-    declined: deals.filter(d => d.status === 'declined' || d.status === 'deal-lost-with-offers' || d.status === 'deal-lost-no-offers').length,
+    declined: deals.filter(d => d.status === 'declined').length,
+    dealLostWithOffers: deals.filter(d => d.status === 'deal-lost-with-offers').length,
+    dealLostNoOffers: deals.filter(d => d.status === 'deal-lost-no-offers').length,
   };
 
   // Unified files list for Documents + MTD (for single upload/list UI)
@@ -1099,6 +1102,7 @@ const AllDealsPortal: React.FC<AllDealsPortalProps> = ({ onEditDeal, onViewQuali
               className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent"
             >
               <option value="all">All Status ({statusCounts.all})</option>
+              <option value="draft">Draft ({statusCounts.draft})</option>
               <option value="ready-to-submit">Ready to Submit ({statusCounts.readyToSubmit})</option>
               <option value="sent-to-lenders">Sent to Lenders ({statusCounts.sentToLenders})</option>
               <option value="under-negotiation">Under Negotiation ({statusCounts.underNegotiation})</option>
@@ -1107,6 +1111,8 @@ const AllDealsPortal: React.FC<AllDealsPortalProps> = ({ onEditDeal, onViewQuali
               <option value="approved">Approved ({statusCounts.approved})</option>
               <option value="funded">Funded ({statusCounts.funded})</option>
               <option value="declined">Declined ({statusCounts.declined})</option>
+              <option value="deal-lost-with-offers">Deal Lost with Offers ({statusCounts.dealLostWithOffers})</option>
+              <option value="deal-lost-no-offers">Deal Lost w/ No Offers ({statusCounts.dealLostNoOffers})</option>
             </select>
           </div>
 
