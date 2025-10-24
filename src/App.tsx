@@ -516,6 +516,7 @@ function DashboardLayout() {
           initialStep={launchParams?.initialStep}
           initialApplicationId={launchParams?.initialApplicationId}
           lockedLenderIds={launchParams?.lockedLenderIds}
+          onBackToDeals={() => setCurrentPortal('deals')}
         />
       )}
       {currentPortal === 'deals' && (

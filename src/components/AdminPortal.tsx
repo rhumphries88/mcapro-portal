@@ -82,6 +82,7 @@ Application ID: {{applicationId}}`;
   const [selectedDealUser, setSelectedDealUser] = useState<DBUser | null>(null);
   const [showUserApplications, setShowUserApplications] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+  const [statusFilter, setStatusFilter] = useState<string>('all');
 
   const [lenderFormData, setLenderFormData] = useState({
     name: '',
@@ -162,6 +163,44 @@ Application ID: {{applicationId}}`;
     };
     loadData();
   }, []);
+
+  // Filter + Search (match AllDealsPortal behavior)
+  const filteredApplications: (DBApplication & { matchedLenders: number })[] = applications.filter((app) => {
+    const q = (searchQuery || '').trim().toLowerCase();
+    const matchesStatus = statusFilter === 'all' || (app.status as string) === statusFilter;
+    if (!q) return matchesStatus;
+
+    const haystack = [
+      app.business_name || '',
+      app.industry || '',
+      app.owner_name || '',
+      app.email || '',
+      app.phone || '',
+      app.address || '',
+      app.id || '',
+    ]
+      .join(' ')
+      .toLowerCase();
+
+    const tokens = q.split(/\s+/).filter(Boolean);
+    const matchesSearch = tokens.every((t) => haystack.includes(t));
+    return matchesSearch && matchesStatus;
+  });
+
+  const statusCounts = {
+    all: applications.length,
+    draft: applications.filter((d) => d.status === 'draft').length,
+    readyToSubmit: applications.filter((d) => d.status === 'ready-to-submit').length,
+    sentToLenders: applications.filter((d) => d.status === 'sent-to-lenders').length,
+    underNegotiation: applications.filter((d) => d.status === 'under-negotiation').length,
+    contractOut: applications.filter((d) => d.status === 'contract-out').length,
+    contractIn: applications.filter((d) => d.status === 'contract-in').length,
+    approved: applications.filter((d) => d.status === 'approved').length,
+    funded: applications.filter((d) => d.status === 'funded').length,
+    declined: applications.filter((d) => d.status === 'declined').length,
+    dealLostWithOffers: applications.filter((d) => d.status === 'deal-lost-with-offers').length,
+    dealLostNoOffers: applications.filter((d) => d.status === 'deal-lost-no-offers').length,
+  };
 
   // Load Deal Users (members) when Deal Users tab is activated
   React.useEffect(() => {
@@ -686,17 +725,33 @@ Application ID: {{applicationId}}`;
               <p className="text-gray-600 mt-1">Monitor and manage all merchant cash advance applications</p>
             </div>
             <div className="flex items-center gap-3">
-              <div className="flex items-center gap-2 text-sm text-gray-500">
-                <div className="w-2 h-2 bg-emerald-500 rounded-full"></div>
-                <span>{applications.length} Total Applications</span>
+              <div className="relative">
+                <svg className="w-4 h-4 absolute left-3 top-2.5 text-gray-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+                <input
+                  type="text"
+                  placeholder="Search by business, contact, phone, email, ID..."
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  className="pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-transparent text-sm"
+                />
               </div>
-              <select className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500 text-sm bg-white">
-                <option>All Statuses</option>
-                <option>Submitted</option>
-                <option>Under Review</option>
-                <option>Matched</option>
-                <option>Funded</option>
-                <option>Declined</option>
+              <select
+                value={statusFilter}
+                onChange={(e) => setStatusFilter(e.target.value)}
+                className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500 text-sm bg-white"
+              >
+                <option value="all">All Status ({statusCounts.all})</option>
+                <option value="draft">Draft ({statusCounts.draft})</option>
+                <option value="ready-to-submit">Ready to Submit ({statusCounts.readyToSubmit})</option>
+                <option value="sent-to-lenders">Sent to Lenders ({statusCounts.sentToLenders})</option>
+                <option value="under-negotiation">Under Negotiation ({statusCounts.underNegotiation})</option>
+                <option value="contract-out">Contract Out ({statusCounts.contractOut})</option>
+                <option value="contract-in">Contract In ({statusCounts.contractIn})</option>
+                <option value="approved">Approved ({statusCounts.approved})</option>
+                <option value="funded">Funded ({statusCounts.funded})</option>
+                <option value="declined">Declined ({statusCounts.declined})</option>
+                <option value="deal-lost-with-offers">Deal Lost with Offers ({statusCounts.dealLostWithOffers})</option>
+                <option value="deal-lost-no-offers">Deal Lost w/ No Offers ({statusCounts.dealLostNoOffers})</option>
               </select>
             </div>
           </div>
@@ -755,7 +810,7 @@ Application ID: {{applicationId}}`;
                       </td>
                     </tr>
                   )}
-                  {!loading && applications.length === 0 && (
+                  {!loading && filteredApplications.length === 0 && (
                     <tr>
                       <td colSpan={6} className="px-8 py-16 text-center">
                         <div className="flex flex-col items-center">
@@ -768,7 +823,7 @@ Application ID: {{applicationId}}`;
                       </td>
                     </tr>
                   )}
-                  {!loading && applications.map((app) => (
+                  {!loading && filteredApplications.map((app: DBApplication & { matchedLenders: number }) => (
                     <tr key={app.id} className="hover:bg-gradient-to-r hover:from-emerald-50/40 hover:to-green-50/40 transition-all duration-200">
                       <td className="px-8 py-6">
                         <div className="flex items-center space-x-4">

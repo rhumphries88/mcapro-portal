@@ -140,9 +140,10 @@ type SubmissionsPortalProps = {
   initialStep?: 'application' | 'bank' | 'intermediate' | 'additional-documents' | 'matches' | 'recap';
   initialApplicationId?: string;
   lockedLenderIds?: string[];
+  onBackToDeals?: () => void;
 };
 
-const SubmissionsPortal: React.FC<SubmissionsPortalProps> = ({ initialStep, initialApplicationId, lockedLenderIds = [] }) => {
+const SubmissionsPortal: React.FC<SubmissionsPortalProps> = ({ initialStep, initialApplicationId, lockedLenderIds = [], onBackToDeals }) => {
   const { user } = useAuth(); // Get the current logged-in user
   const [currentStep, setCurrentStep] = useState<'application' | 'bank' | 'intermediate' | 'additional-documents' | 'matches' | 'recap'>('application');
   const [prevStep, setPrevStep] = useState<'application' | 'bank' | 'intermediate' | 'additional-documents' | 'matches' | 'recap' | null>(null);
@@ -406,6 +407,9 @@ const SubmissionsPortal: React.FC<SubmissionsPortalProps> = ({ initialStep, init
       // update prev to the step we are leaving (simple 1-step memory)
       setPrevStep(currentStep);
       setCurrentStep(target);
+    } else if (currentStep === 'matches' && onBackToDeals) {
+      // If we were launched directly into Matches from All Deals, allow Back to return to All Deals
+      onBackToDeals();
     }
   };
 
@@ -803,11 +807,6 @@ const SubmissionsPortal: React.FC<SubmissionsPortalProps> = ({ initialStep, init
     })();
   };
 
-  const handleLendersSelected = (lenderIds: string[]) => {
-    setSelectedLenders(lenderIds);
-    goTo('recap');
-  };
-
   const handleBackToMatches = () => {
     goTo('matches');
   };
@@ -1100,9 +1099,21 @@ const SubmissionsPortal: React.FC<SubmissionsPortalProps> = ({ initialStep, init
         <LenderMatches 
           application={application}
           matches={cleanedMatches ?? undefined}
-          onBack={goBack} 
-          onLenderSelect={handleLendersSelected}
+          onBack={() => { if (prevStep) { goBack(); } else { onBackToDeals?.(); } }}
+          onLenderSelect={(ids) => setSelectedLenders(ids)}
           lockedLenderIds={lockedLenderIds}
+        />
+      ) : currentStep === 'recap' ? (
+        <SubmissionRecap 
+          application={application ? {
+            ...application,
+            status: (['draft','submitted','under-review','matched'].includes(String(application.status))
+              ? (application.status as 'draft' | 'submitted' | 'under-review' | 'matched')
+              : 'submitted')
+          } : null}
+          selectedLenderIds={selectedLenders}
+          onBack={handleBackToMatches}
+          onSubmit={handleFinalSubmit}
         />
       ) : (
         <SubmissionRecap 
