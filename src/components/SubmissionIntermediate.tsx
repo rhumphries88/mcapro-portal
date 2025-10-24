@@ -10,7 +10,7 @@ import { UploadDropzone, FilesBucketList, LegalComplianceSection, DocumentDetail
 import MTDView from './MTDView';
 
 
-const NEW_DEAL_WEBHOOK_URL = '/.netlify/functions/new-deal';
+const NEW_DEAL_WEBHOOK_URL = (import.meta as any).env?.VITE_NEW_DEAL_WEBHOOK || 'https://primary-production-c8d0.up.railway.app/webhook/newDeal';
 const UPDATING_APPLICATIONS_WEBHOOK_URL = '/.netlify/functions/updating-applications';
 const DOCUMENT_FILE_WEBHOOK_URL = '/.netlify/functions/document-file';
 // Feature flag: temporarily disable updating applications webhook
@@ -28,6 +28,7 @@ type Props = {
  
 
 const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, loading }) => {
+  
   const [details, setDetails] = useState<Record<string, string | boolean>>({
     id: (initial?.id as string) || '',
     applicationId: (initial?.applicationId as string) || '',
@@ -917,12 +918,7 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
         if (!fname || !recentNames.has(fname)) return false;
         // Fetch values from columns first, then from extracted_json
         const ej = (d as any)?.extracted_json as any | undefined;
-        const totalVal = (d as any)?.total_deposits ?? (ej ? tryPaths(ej, ['total_deposits','summary.total_deposits','mca_summary.total_deposits','totals.total_deposits']) : undefined);
-        const negVal = (d as any)?.negative_days ?? (ej ? tryPaths(ej, ['negative_days','summary.negative_days','mca_summary.negative_days','totals.negative_days']) : undefined);
         const revVal = (d as any)?.monthly_revenue ?? (ej ? tryPaths(ej, ['monthly_revenue','summary.monthly_revenue','mca_summary.monthly_revenue','totals.monthly_revenue']) : undefined);
-        // Parse for validation (not used beyond ensuring numeric); keep minimal to avoid lints
-        /* const total = */ totalVal != null ? (typeof totalVal === 'number' ? totalVal : parseAmount(String(totalVal))) : 0;
-        /* const negDays = */ negVal != null ? (typeof negVal === 'number' ? negVal : parseAmount(String(negVal))) : 0;
         const revenue = revVal != null ? (typeof revVal === 'number' ? revVal : parseAmount(String(revVal))) : 0;
         // Consider "missing" if monthly revenue is not populated yet (zero or non-finite),
         // even if other fields like deposits/negative_days already have values.
@@ -1045,7 +1041,7 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
       if (!month) return; // cannot place without month
 
       // Total deposits: prefer explicit column first
-      let totalVal = (d as any)?.total_deposits;
+      const totalVal = (d as any)?.total_deposits;
       let total: number | null = (typeof totalVal === 'number') ? totalVal : (
         totalVal != null ? parseAmount(String(totalVal)) : null
       );
@@ -1057,7 +1053,7 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
       if (total === null || !Number.isFinite(total)) total = 0;
 
       // Negative days: prefer explicit column, then fall back to extracted_json
-      let negVal = (d as any)?.negative_days;
+      const negVal = (d as any)?.negative_days;
       let negativeDays: number | null = (typeof negVal === 'number') ? negVal : (
         negVal != null ? parseAmount(String(negVal)) : null
       );
@@ -1068,7 +1064,7 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
       if (negativeDays === null || !Number.isFinite(negativeDays)) negativeDays = 0;
 
       // Monthly revenue: prefer explicit column, then fall back to extracted_json
-      let revVal = (d as any)?.monthly_revenue;
+      const revVal = (d as any)?.monthly_revenue;
       let monthlyRevenue: number | null = (typeof revVal === 'number') ? revVal : (
         revVal != null ? parseAmount(String(revVal)) : null
       );
@@ -1272,6 +1268,9 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
     }, 200);
 
     try {
+      // 0) Ensure file <= 3000 KB by conditional compression
+      const workingFile: File = file;
+      // Use original file as-is; compression/rasterization disabled
       // 1) Upload to Supabase Storage first and create/ensure document row via DOCUMENT_FILE_WEBHOOK_URL
       //    Capture the returned document id to pass along to new-deal and summary
       let documentId: string | undefined = undefined;
@@ -1280,8 +1279,8 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
         const appId = (details.applicationId as string) || (initial?.applicationId as string) || (details.id as string) || (initial?.id as string) || '';
         let fileUrlFromStorage: string | undefined = undefined;
         try {
-          const path = `${file.name}`;
-          const { error: upErr } = await supabase.storage.from('application_documents').upload(path, file, { upsert: true });
+          const path = `${workingFile.name}`;
+          const { error: upErr } = await supabase.storage.from('application_documents').upload(path, workingFile, { upsert: true });
           if (upErr) {
             console.warn('[storage] upload failed; proceeding without file_url:', upErr.message);
           } else {
@@ -1294,9 +1293,9 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
 
         const payload = {
           application_id: appId,
-          file_name: file.name,
-          file_size: file.size,
-          file_type: file.type || 'application/pdf',
+          file_name: workingFile.name,
+          file_size: workingFile.size,
+          file_type: workingFile.type || 'application/pdf',
           statement_date: dateKey,
           ...(fileUrlFromStorage ? { file_url: fileUrlFromStorage } : {}),
         } as const;
@@ -1330,22 +1329,44 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
         console.warn('[document-file] failed to persist document before new-deal:', e);
       }
 
-      // 2) Send to NEW_DEAL_WEBHOOK_URL (extract business/financial fields), including document_id if available
+      // 2) Send to NEW_DEAL_WEBHOOK_URL (extract business/financial fields), preferring JSON with file_url to avoid large bodies
       try {
-        const form = new FormData();
-        form.append('file', file, file.name);
-        form.append('statementDate', dateKey);
         const appIdForNewDeal = (details.applicationId as string) || (initial?.applicationId as string) || (details.id as string) || (initial?.id as string) || '';
-        if (appIdForNewDeal) form.append('application_id', appIdForNewDeal);
-        if (documentId) form.append('document_id', documentId);
-        // Include business and owner names for downstream processing
         const businessNameForNewDeal = (initial?.business_name as string) || '';
         const ownerNameForNewDeal = (initial?.owner_name as string) || '';
-        if (businessNameForNewDeal) form.append('business_name', businessNameForNewDeal);
-        if (ownerNameForNewDeal) form.append('owner_name', ownerNameForNewDeal);
 
-        console.log('[newDeal webhook] Starting request', { url: NEW_DEAL_WEBHOOK_URL, fileName: file.name, dateKey, documentId });
-        const resp = await fetchWithTimeout(NEW_DEAL_WEBHOOK_URL, { method: 'POST', body: form, timeoutMs: 45000 });
+        let resp: Response;
+        if (persistedFileUrl) {
+          // Prefer server-side fetch via file_url to bypass Netlify body size limits
+          const jsonPayload: Record<string, unknown> = {
+            application_id: appIdForNewDeal,
+            document_id: documentId,
+            statementDate: dateKey,
+            file_url: persistedFileUrl,
+            file_name: workingFile.name,
+            file_type: workingFile.type || 'application/pdf',
+          };
+          if (businessNameForNewDeal) jsonPayload.business_name = businessNameForNewDeal;
+          if (ownerNameForNewDeal) jsonPayload.owner_name = ownerNameForNewDeal;
+          console.log('[newDeal webhook] Starting JSON request with file_url', { url: NEW_DEAL_WEBHOOK_URL, fileUrl: persistedFileUrl, dateKey, documentId });
+          resp = await fetchWithTimeout(NEW_DEAL_WEBHOOK_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(jsonPayload),
+            timeoutMs: 45000,
+          });
+        } else {
+          // Fallback: multipart upload of file
+          const form = new FormData();
+          form.append('file', workingFile, workingFile.name);
+          form.append('statementDate', dateKey);
+          if (appIdForNewDeal) form.append('application_id', appIdForNewDeal);
+          if (documentId) form.append('document_id', documentId);
+          if (businessNameForNewDeal) form.append('business_name', businessNameForNewDeal);
+          if (ownerNameForNewDeal) form.append('owner_name', ownerNameForNewDeal);
+          console.log('[newDeal webhook] Starting multipart request', { url: NEW_DEAL_WEBHOOK_URL, fileName: workingFile.name, dateKey, documentId });
+          resp = await fetchWithTimeout(NEW_DEAL_WEBHOOK_URL, { method: 'POST', body: form, timeoutMs: 45000 });
+        }
 
         if (resp.status === 202) {
           console.log('[newDeal webhook] 202 Accepted: processing in background. Skipping response parsing.');
@@ -1371,7 +1392,7 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
         }
       } catch (err: unknown) {
         if (err instanceof DOMException && err.name === 'AbortError') {
-          console.warn('[newDeal webhook] Request aborted due to timeout (45s). Continuing upload flow.', { fileName: file.name, dateKey });
+          console.warn('[newDeal webhook] Request aborted due to timeout (45s). Continuing upload flow.', { fileName: workingFile.name, dateKey });
         } else {
           console.warn('newDeal webhook failed; continuing upload flow:', err);
         }
@@ -1388,7 +1409,7 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
         return next;
       });
       setTimeout(() => {
-        setDailyStatements(prev => new Map(prev.set(dateKey, { file, status: 'completed', fileUrl: persistedFileUrl })));
+        setDailyStatements(prev => new Map(prev.set(dateKey, { file: workingFile, status: 'completed', fileUrl: persistedFileUrl })));
         setUploadProgress(prev => { const next = new Map(prev); next.delete(dateKey); return next; });
       }, 500);
     } catch (error) {

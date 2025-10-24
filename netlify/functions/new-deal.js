@@ -40,11 +40,46 @@ export async function handler(event) {
       let parsed;
       try { parsed = JSON.parse(raw); } catch { parsed = null; }
       if (!parsed || typeof parsed !== "object") return jsonResponse(400, { error: "Invalid JSON" });
-      if (!supabase) return jsonResponse(500, { error: "Supabase not configured" });
-
       const application_id = parsed.application_id || parsed.applicationId || null;
-      const files = Array.isArray(parsed.files) ? parsed.files : [];
       if (!application_id) return jsonResponse(400, { error: "application_id required" });
+
+      // Path A: JSON with single file_url -> fetch server-side and forward as multipart (preferred for large files)
+      if (typeof parsed.file_url === 'string' && parsed.file_url) {
+        try {
+          const fileUrl = String(parsed.file_url);
+          const fileName = parsed.file_name || fileUrl.split('/').pop() || 'document.pdf';
+          const fileType = parsed.file_type || 'application/pdf';
+          const document_id = parsed.document_id || parsed.documentId || null;
+          const statementDate = parsed.statementDate || parsed.statement_date || null;
+
+          const controller = new AbortController();
+          const dltimer = setTimeout(() => controller.abort(), 20000);
+          const dl = await fetch(fileUrl, { signal: controller.signal });
+          clearTimeout(dltimer);
+          if (!dl.ok) return jsonResponse(400, { error: 'Failed to fetch file_url', status: dl.status });
+          const bytes = new Uint8Array(await dl.arrayBuffer());
+
+          const form = new FormData();
+          form.append('application_id', String(application_id));
+          if (statementDate) form.append('statementDate', String(statementDate));
+          if (document_id) form.append('document_id', String(document_id));
+          form.append('file', new Blob([bytes], { type: fileType }), fileName);
+
+          const upController = new AbortController();
+          const upTimer = setTimeout(() => upController.abort(), 20000);
+          const uResp = await fetch(url, { method: 'POST', headers: { ...(auth ? { Authorization: auth } : {}) }, body: form, signal: upController.signal });
+          clearTimeout(upTimer);
+          const txt = await uResp.text();
+          let parsedUp = null; try { parsedUp = txt ? JSON.parse(txt) : null; } catch {}
+          return jsonResponse(uResp.ok ? 200 : 502, { forwarded: true, status: uResp.status, body: (txt || '').slice(0, 5000), json: parsedUp });
+        } catch (e) {
+          return jsonResponse(502, { forwarded: false, error: String(e?.message || e) });
+        }
+      }
+
+      // Path B: JSON with batch base64 files (existing behavior)
+      if (!supabase) return jsonResponse(500, { error: "Supabase not configured" });
+      const files = Array.isArray(parsed.files) ? parsed.files : [];
       if (files.length === 0) return jsonResponse(400, { error: "files[] required" });
 
       const bucket = "application_documents";
@@ -60,12 +95,10 @@ export async function handler(event) {
         }
         try {
           const bytes = Buffer.from(String(b64), "base64");
-          // Upload to storage, upsert true so re-submits replace
           const { error: upErr } = await supabase.storage.from(bucket).upload(file_name, bytes, { contentType: file_type, upsert: true });
           if (upErr) throw new Error(upErr.message || "upload failed");
           const { data: pub } = supabase.storage.from(bucket).getPublicUrl(file_name);
           const file_url = pub?.publicUrl || null;
-          // Insert DB row
           const insertPayload = {
             application_id,
             file_name,
@@ -84,36 +117,25 @@ export async function handler(event) {
           forwardFiles.push({ file_name, file_type, bytes, document_id });
           results.push({ file_name, file_url, status: 'uploaded', document_id });
         } catch (e) {
-          // Create failed row
-          try {
-            await supabase.from('application_documents').insert({ application_id, file_name: f.file_name || f.name, file_size: 0, file_type: f.file_type || f.type || 'application/pdf', upload_status: 'failed' });
-          } catch {}
+          try { await supabase.from('application_documents').insert({ application_id, file_name: f.file_name || f.name, file_size: 0, file_type: f.file_type || f.type || 'application/pdf', upload_status: 'failed' }); } catch {}
           results.push({ file_name: f.file_name || f.name, status: 'failed', error: String(e?.message || e) });
         }
       }
 
-      // Single upstream call with ALL files as multipart to trigger only one workflow execution
       let upstream = { ok: false };
       try {
         if (forwardFiles.length > 0) {
           const form = new FormData();
           form.append('application_id', String(application_id));
-          // Attach file blobs as file, file_1, file_2 ... (n8n recognizes suffixed binary fields)
           forwardFiles.forEach((ff, idx) => {
             const field = idx === 0 ? 'file' : `file_${idx}`;
             form.append(field, new Blob([ff.bytes], { type: ff.file_type }), ff.file_name);
           });
-          // Manifest to help downstream identify file order/names and document_id
           const manifest = forwardFiles.map(f => ({ file_name: f.file_name, file_type: f.file_type, document_id: f.document_id }));
           form.append('file_manifest', JSON.stringify(manifest));
-          // Top-level document_id (if single) and document_ids (if multiple)
           const ids = forwardFiles.map(f => f.document_id).filter(Boolean);
-          if (ids.length === 1) {
-            form.append('document_id', String(ids[0]));
-          }
-          if (ids.length > 0) {
-            form.append('document_ids', JSON.stringify(ids));
-          }
+          if (ids.length === 1) form.append('document_id', String(ids[0]));
+          if (ids.length > 0) form.append('document_ids', JSON.stringify(ids));
 
           const controller = new AbortController();
           const timer = setTimeout(() => controller.abort(), 20000);

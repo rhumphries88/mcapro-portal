@@ -6,12 +6,15 @@
   "scripts": {
     "dev": "vite",
     "dev:vite": "vite",
-    "dev:functions": "netlify functions:serve --port 9999 --functions netlify/functions",
+    "dev:functions": "npx -y netlify-cli@^17.0.0 functions:serve --port 9999 --functions netlify/functions",
     "dev:all": "concurrently \"npm:dev:vite\" \"npm:dev:functions\"",
     "build": "vite build",
     "lint": "eslint .",
     "preview": "vite preview",
-    "server": "node emailServer.js"
+    "server": "node emailServer.js",
+    "netlify:version": "npx -y netlify-cli@^17.0.0 --version",
+    "deploy:prod": "npx -y netlify-cli@^17.0.0 deploy --prod --skip-functions-cache --timeout=600 --dir=dist",
+    "deploy": "npm run build && npm run deploy:prod"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.56.0",
@@ -33,6 +36,7 @@
     "mailparser": "^3.7.4",
     "node-fetch": "^3.3.2",
     "nodemailer": "^6.9.14",
+    "pdf-lib": "^1.17.1",
     "pdf-parse": "^1.1.1",
     "pdfjs-dist": "^4.10.38",
     "react": "^18.3.1",
