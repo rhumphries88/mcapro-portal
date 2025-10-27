@@ -1115,6 +1115,7 @@ const SubmissionsPortal: React.FC<SubmissionsPortalProps> = ({ initialStep, init
               : 'submitted')
           } : null}
           selectedLenderIds={selectedLenders}
+          matches={cleanedMatches ?? undefined}
           onBack={handleBackToMatches}
           onSubmit={handleFinalSubmit}
         />

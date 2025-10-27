@@ -2092,23 +2092,14 @@ Application ID: {{applicationId}}`;
                           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                             <div>
                               <label className="block text-sm font-semibold text-gray-700 mb-2">Industry *</label>
-                              <select
+                              <input
+                                type="text"
                                 value={editingApplication.industry || ''}
                                 onChange={(e) => setEditingApplication(prev => prev ? { ...prev, industry: e.target.value } : null)}
                                 className="w-full px-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-purple-500 focus:border-purple-500 bg-white shadow-sm transition-all duration-200"
-                              >
-                                <option value="">Select Industry</option>
-                                <option value="Retail">Retail</option>
-                                <option value="Restaurant">Restaurant</option>
-                                <option value="Healthcare">Healthcare</option>
-                                <option value="Construction">Construction</option>
-                                <option value="Professional Services">Professional Services</option>
-                                <option value="Transportation">Transportation</option>
-                                <option value="Manufacturing">Manufacturing</option>
-                                <option value="Technology">Technology</option>
-                                <option value="Real Estate">Real Estate</option>
-                                <option value="Other">Other</option>
-                              </select>
+                                style={{ caretColor: 'black' }}
+                                placeholder="Enter industry (e.g., Retail, Healthcare, Construction)"
+                              />
                             </div>
                             <div>
                               <label className="block text-sm font-semibold text-gray-700 mb-2">Application Status</label>

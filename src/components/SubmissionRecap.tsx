@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { ArrowLeft, Send, Settings, CheckCircle, FileText, Loader, Eye, EyeOff, Server, Hash, AtSign, KeyRound, ShieldCheck } from 'lucide-react';
 import { getLenders, createLenderSubmissions, Lender as DBLender, getApplicationDocuments, type ApplicationDocument, qualifyLenders, type Application as DBApplication, ApplicationMTD, getApplicationMTDByApplicationId, getApplicationFormByApplicationId, type ApplicationFormRow, getApplicationAdditionalByApplicationId, type ApplicationAdditionalRow } from '../lib/supabase';
+import type { CleanedMatch } from '../lib/parseLenderMatches';
 
 interface Application {
   id: string;
@@ -43,6 +44,7 @@ type EmailSettings = {
 interface SubmissionRecapProps {
   application: Application | null;
   selectedLenderIds: string[];
+  matches?: CleanedMatch[];
   onBack: () => void;
   onSubmit: () => void;
 }
@@ -50,6 +52,7 @@ interface SubmissionRecapProps {
 const SubmissionRecap: React.FC<SubmissionRecapProps> = ({ 
   application, 
   selectedLenderIds, 
+  matches,
   onBack, 
   onSubmit 
 }) => {
@@ -165,7 +168,18 @@ const SubmissionRecap: React.FC<SubmissionRecapProps> = ({
             updated_at: new Date().toISOString(),
           };
           const qualified = qualifyLenders(dbLenders, dbApplication);
-          setLenders(qualified);
+          // If we have matches data, use the actual match scores from LenderMatches
+          if (Array.isArray(matches) && matches.length > 0) {
+            const byId = new Map(qualified.map(l => [l.id, l] as const));
+            const orderedWithScores: (DBLender & { match_score?: number; matchScore?: number })[] = [];
+            for (const m of matches) {
+              const found = byId.get(m.lender_id);
+              if (found) orderedWithScores.push({ ...found, match_score: m.match_score });
+            }
+            setLenders(orderedWithScores);
+          } else {
+            setLenders(qualified);
+          }
         } else {
           setLenders(dbLenders);
         }
@@ -174,7 +188,7 @@ const SubmissionRecap: React.FC<SubmissionRecapProps> = ({
       }
     };
     loadLenders();
-  }, [application, emailSettings.fromEmail]);
+  }, [application, emailSettings.fromEmail, matches]);
 
   // Load application documents from Supabase for this application
   React.useEffect(() => {
@@ -1141,7 +1155,17 @@ const SubmissionRecap: React.FC<SubmissionRecapProps> = ({
                 </div>
                 <div className="flex items-center gap-4">
                   <div className="text-right">
-                    <div className="text-xl font-bold text-emerald-600">95%</div>
+                    <div className="text-xl font-bold text-emerald-600">
+                      {(() => {
+                        const score = lender.match_score;
+                        if (typeof score === 'number') {
+                          const pct = score <= 1 ? Math.round(score * 100) : Math.round(score);
+                          return `${pct}%`;
+                        }
+                        const q = lender.matchScore;
+                        return typeof q === 'number' ? `${Math.round(q)}%` : '95%';
+                      })()}
+                    </div>
                     <div className="text-sm text-gray-500">Match Score</div>
                   </div>
                   <button
