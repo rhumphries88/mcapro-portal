@@ -49,7 +49,8 @@ interface ModalState {
   mtd_selected?: FunderRow[] | null;
 }
 
-const MTD_WEBHOOK_URL = '/.netlify/functions/mtd-webhook';
+const _env = (import.meta as unknown as { env?: { VITE_MTD_WEBHOOK?: string } }).env;
+const MTD_WEBHOOK_URL = _env?.VITE_MTD_WEBHOOK ?? 'https://primary-production-c8d0.up.railway.app/webhook/mtd';
 
 const MTDView: React.FC<MTDViewProps> = ({ applicationId, businessName, ownerName, onChooseFiles }) => {
   // Local helper to render dates in a long, human-friendly form (e.g., 24 September 2025)
@@ -635,35 +636,21 @@ const MTDView: React.FC<MTDViewProps> = ({ applicationId, businessName, ownerNam
           }
         }
 
-        // Read file as base64
-        const base64 = await new Promise<string>((resolve, reject) => {
-          const reader = new FileReader();
-          reader.onload = () => {
-            const result = String(reader.result || '');
-            resolve(result.split(',')[1] || '');
-          };
-          reader.onerror = reject;
-          reader.readAsDataURL(file);
-        });
-
-        const payload = {
-          fileName: file.name,
-          fileSize: file.size,
-          fileType: file.type,
-          fileData: base64,
-          applicationId: applicationId || '',
-          businessName: businessName || '',
-          ownerName: ownerName || '',
-          uploadType: 'mtd',
-          // Pass through our Supabase row id so webhook can forward it as document_id
-          documentId: mtdRowId || '',
-          timestamp: new Date().toISOString(),
-        };
+        // Build multipart/form-data with raw binary file and metadata
+        const form = new FormData();
+        form.append('file', file, file.name);
+        form.append('statementDate', new Date().toISOString().slice(0, 10));
+        if (applicationId) form.append('application_id', applicationId);
+        if (mtdRowId) form.append('document_id', mtdRowId);
+        if (businessName) form.append('business_name', businessName);
+        if (ownerName) form.append('owner_name', ownerName);
+        form.append('uploadType', 'mtd');
+        if (publicUrl) form.append('file_url', publicUrl);
+        form.append('timestamp', new Date().toISOString());
 
         const response = await fetch(MTD_WEBHOOK_URL, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload),
+          body: form,
         });
 
         if (!response.ok) {

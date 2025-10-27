@@ -137,12 +137,25 @@ const LenderMatches: React.FC<LenderMatchesProps> = ({ application, matches, onL
   }, [application, matches, lockedLenderIds]);
 
   const handleLenderToggle = (lenderId: string) => {
-    if (lockedSet.has(lenderId)) return; // prevent toggling locked lenders
-    setSelectedLenderIds(prev => 
-      prev.includes(lenderId)
+    console.log('[LenderMatches] Lender toggle clicked:', {
+      lenderId,
+      isLocked: lockedSet.has(lenderId),
+      currentSelections: selectedLenderIds
+    });
+    
+    if (lockedSet.has(lenderId)) {
+      console.log('[LenderMatches] Lender is locked, ignoring toggle');
+      return; // prevent toggling locked lenders
+    }
+    
+    setSelectedLenderIds(prev => {
+      const newSelections = prev.includes(lenderId)
         ? prev.filter(id => id !== lenderId)
-        : [...prev, lenderId]
-    );
+        : [...prev, lenderId];
+      
+      console.log('[LenderMatches] Updated selections:', newSelections);
+      return newSelections;
+    });
   };
 
   // Only allow submission of newly selected lenders (exclude already submitted/locked ones)
@@ -152,9 +165,24 @@ const LenderMatches: React.FC<LenderMatchesProps> = ({ application, matches, onL
   );
 
   const handleContinue = () => {
-    if (newSelectedLenderIds.length === 0 || isSubmitting) return;
+    console.log('[LenderMatches] handleContinue called', {
+      selectedLenderIds,
+      newSelectedLenderIds,
+      lockedLenderIds,
+      isSubmitting
+    });
+    
+    if (newSelectedLenderIds.length === 0 || isSubmitting) {
+      console.log('[LenderMatches] Continue blocked:', {
+        noNewSelections: newSelectedLenderIds.length === 0,
+        isSubmitting
+      });
+      return;
+    }
+    
     setIsSubmitting(true);
     try {
+      console.log('[LenderMatches] Calling onLenderSelect with:', newSelectedLenderIds);
       onLenderSelect(newSelectedLenderIds);
     } finally {
       // In many flows navigation happens immediately; this is a safeguard

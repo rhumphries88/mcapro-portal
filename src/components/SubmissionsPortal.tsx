@@ -1100,7 +1100,10 @@ const SubmissionsPortal: React.FC<SubmissionsPortalProps> = ({ initialStep, init
           application={application}
           matches={cleanedMatches ?? undefined}
           onBack={() => { if (prevStep) { goBack(); } else { onBackToDeals?.(); } }}
-          onLenderSelect={(ids) => setSelectedLenders(ids)}
+          onLenderSelect={(ids) => {
+            setSelectedLenders(ids);
+            setCurrentStep('recap');
+          }}
           lockedLenderIds={lockedLenderIds}
         />
       ) : currentStep === 'recap' ? (
