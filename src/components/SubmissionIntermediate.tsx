@@ -19,7 +19,7 @@ const DISABLE_UPDATING_APPLICATIONS = false;
 
 type Props = {
   onContinue: (details: Record<string, string | boolean>) => void;
-  onBack?: () => void;
+  onBackToDeals?: () => void;
   // Optional prefill hooks if we want to seed values from applicationD
   initial?: Partial<Record<string, string | boolean>>;
   loading?: boolean;
@@ -27,7 +27,7 @@ type Props = {
 
  
 
-const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, loading }) => {
+const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBackToDeals, initial, loading }) => {
   
   const [details, setDetails] = useState<Record<string, string | boolean>>({
     id: (initial?.id as string) || '',
@@ -3685,13 +3685,16 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBack, initial, 
               {activeTab !== 'mtd' && (
               <div className="flex items-center justify-between pt-8 mt-8 border-t border-gray-100">
                 <div className="flex items-center gap-4">
-                  {onBack && (
+                  {onBackToDeals && (
                     <button
                       type="button"
-                      onClick={onBack}
-                      className="inline-flex items-center gap-2 px-6 py-3 rounded-xl border-2 border-gray-200 text-gray-700 font-semibold hover:border-gray-300 hover:bg-gray-50 hover:shadow-md transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-gray-500/20"
+                      onClick={onBackToDeals}
+                      className="inline-flex items-center gap-2 px-6 py-3 rounded-xl border-2 border-purple-200 text-purple-700 font-semibold hover:border-purple-300 hover:bg-purple-50 hover:shadow-md transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-purple-500/20"
                     >
-                      Back
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 19l-7-7m0 0l7-7m-7 7h18" />
+                      </svg>
+                      Back to All Deals
                     </button>
                   )}
                   <button

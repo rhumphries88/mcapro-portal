@@ -1086,7 +1086,7 @@ const SubmissionsPortal: React.FC<SubmissionsPortalProps> = ({ initialStep, init
             hasOpenJudgments: Boolean(intermediatePrefill?.hasOpenJudgments) || false,
           }}
           loading={intermediateLoading}
-          onBack={goBack}
+          onBackToDeals={onBackToDeals}
           onContinue={handleIntermediateContinue}
         />
       ) : currentStep === 'additional-documents' ? (
