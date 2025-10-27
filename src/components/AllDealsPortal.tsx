@@ -560,9 +560,19 @@ const AllDealsPortal: React.FC<AllDealsPortalProps> = ({ onEditDeal, onViewQuali
       case 'pending':
         return 'bg-gray-100 text-gray-800';
       case 'declined':
+      case 'rejected':
         return 'bg-red-100 text-red-800';
       default:
         return 'bg-gray-100 text-gray-800';
+    }
+  };
+
+  const getLenderStatusText = (status: string) => {
+    switch (status) {
+      case 'rejected':
+        return 'declined';
+      default:
+        return status;
     }
   };
 
@@ -1617,8 +1627,8 @@ const AllDealsPortal: React.FC<AllDealsPortalProps> = ({ onEditDeal, onViewQuali
                 </div>
               </div>
 
-              {/* Application Status for Members */}
-              {user && user.role !== 'admin' && user.role !== 'Admin' && (
+              {/* Application Status for All Users */}
+              {user && (
                 <div className="mb-6 bg-gradient-to-br from-blue-50 to-indigo-50/50 rounded-2xl p-6 border border-blue-200/50">
                   <div className="flex items-center gap-3 mb-4">
                     <div className="w-8 h-8 rounded-lg bg-blue-100 flex items-center justify-center">
@@ -1857,7 +1867,10 @@ const AllDealsPortal: React.FC<AllDealsPortalProps> = ({ onEditDeal, onViewQuali
                               if (!selectedDeal || !newNote.trim() || savingNote) return;
                               setSavingNote(true);
                               try {
-                                const saved = await addLenderNote(selectedDeal.id, newNote.trim());
+                                const userName = user?.name || user?.email || 'Unknown User';
+                                // Temporary workaround: make user_name unique by adding timestamp
+                                const uniqueUserName = `${userName}_${Date.now()}`;
+                                const saved = await addLenderNote(selectedDeal.id, newNote.trim(), uniqueUserName);
                                 setLenderNotes(prev => [saved, ...prev]);
                                 setNewNote('');
                                 setShowAddNoteForm(false);
@@ -1921,7 +1934,17 @@ const AllDealsPortal: React.FC<AllDealsPortalProps> = ({ onEditDeal, onViewQuali
                             const suffix = `${daysAgo} day${daysAgo === 1 ? '' : 's'} ago`;
                             return (
                               <div className="flex items-center justify-between text-xs text-gray-500 mb-2">
-                                <span className="font-medium">{formatted}</span>
+                                <div className="flex items-center gap-2">
+                                  <span className="font-medium">{formatted}</span>
+                                  {n.user_name && (
+                                    <>
+                                      <span className="text-gray-400">•</span>
+                                      <span className="text-blue-600 font-semibold">
+                                        {n.user_name.includes('_') ? n.user_name.split('_')[0] : n.user_name}
+                                      </span>
+                                    </>
+                                  )}
+                                </div>
                                 <span className="text-gray-600">{suffix}</span>
                               </div>
                             );
@@ -2030,14 +2053,52 @@ const AllDealsPortal: React.FC<AllDealsPortalProps> = ({ onEditDeal, onViewQuali
                   ) : (
                     <div className="space-y-4">
                       {selectedDeal.lenderSubmissions.map((submission) => (
-                        <div key={submission.id} className="bg-white rounded-xl border border-gray-200 shadow-sm p-4">
-                          <div className="flex items-center justify-between">
+                        <div key={submission.id} className="bg-white rounded-xl border border-gray-200 shadow-sm p-6">
+                          <div className="flex items-center justify-between mb-4">
                             <div>
                               <div className="font-semibold text-gray-900">{submission.lender.name}</div>
                               <div className="text-sm text-gray-500">Updated {new Date(submission.updated_at || submission.created_at).toLocaleDateString()}</div>
                             </div>
-                            <span className={`px-3 py-1 rounded-full text-xs font-semibold ${getLenderStatusColor(submission.status)}`}>{submission.status}</span>
+                            <span className={`px-3 py-1 rounded-full text-xs font-semibold ${getLenderStatusColor(submission.status)}`}>{getLenderStatusText(submission.status)}</span>
                           </div>
+                          
+                          {/* Submission Details */}
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
+                            {submission.offered_amount && (
+                              <div className="bg-green-50 rounded-lg p-3">
+                                <div className="text-xs font-medium text-green-700 uppercase tracking-wide">Offered Amount</div>
+                                <div className="text-lg font-bold text-green-900">${Number(submission.offered_amount).toLocaleString()}</div>
+                              </div>
+                            )}
+                            
+                            {submission.factor_rate && (
+                              <div className="bg-blue-50 rounded-lg p-3">
+                                <div className="text-xs font-medium text-blue-700 uppercase tracking-wide">Factor Rate</div>
+                                <div className="text-lg font-bold text-blue-900">{submission.factor_rate}</div>
+                              </div>
+                            )}
+                            
+                            {submission.terms && (
+                              <div className="bg-purple-50 rounded-lg p-3">
+                                <div className="text-xs font-medium text-purple-700 uppercase tracking-wide">Terms</div>
+                                <div className="text-sm font-semibold text-purple-900">{submission.terms}</div>
+                              </div>
+                            )}
+                          </div>
+                          
+                          {submission.response && (
+                            <div className="mt-4 bg-gray-50 rounded-lg p-3">
+                              <div className="text-xs font-medium text-gray-700 uppercase tracking-wide mb-2">Response</div>
+                              <div className="text-sm text-gray-900">{submission.response}</div>
+                            </div>
+                          )}
+                          
+                          {submission.notes && (
+                            <div className="mt-4 bg-yellow-50 rounded-lg p-3">
+                              <div className="text-xs font-medium text-yellow-700 uppercase tracking-wide mb-2">Notes</div>
+                              <div className="text-sm text-yellow-900">{submission.notes}</div>
+                            </div>
+                          )}
                         </div>
                       ))}
                     </div>

@@ -758,6 +758,7 @@ export interface LenderNote {
   application_id: string
   notes: string
   created_at: string
+  user_name?: string
 }
 
 // Application document records (PDF uploads and parsed results)
@@ -986,8 +987,8 @@ export const getLenderNotes = async (applicationId: string): Promise<LenderNote[
   return (data || []) as LenderNote[]
 }
 
-export const addLenderNote = async (applicationId: string, notes: string): Promise<LenderNote> => {
-  const payload = { application_id: applicationId, notes }
+export const addLenderNote = async (applicationId: string, notes: string, userName?: string): Promise<LenderNote> => {
+  const payload = { application_id: applicationId, notes, user_name: userName }
   const { data, error } = await supabase
     .from('lenders_notes')
     .insert([payload])
