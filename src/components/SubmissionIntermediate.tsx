@@ -1090,7 +1090,13 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBackToDeals, in
       const mr = Number(r.monthly_revenue) || 0;
       return (td !== 0) || (nd !== 0) || (mr !== 0);
     });
-    filtered.sort((a, b) => Date.parse(a.month + '-01') - Date.parse(b.month + '-01'));
+    filtered.sort((a, b) => {
+      const [ay, am] = String(a.month).split('-').map(n => Number(n));
+      const [by, bm] = String(b.month).split('-').map(n => Number(n));
+      const aUTC = Date.UTC(Number.isFinite(ay) ? ay : 1970, Number.isFinite(am) ? (am - 1) : 0, 1);
+      const bUTC = Date.UTC(Number.isFinite(by) ? by : 1970, Number.isFinite(bm) ? (bm - 1) : 0, 1);
+      return aUTC - bUTC;
+    });
     return filtered;
   }, [dbDocs]);
 
@@ -2950,13 +2956,24 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBackToDeals, in
                             <tbody className="bg-white divide-y divide-slate-100">
                               {[...financialOverviewFromDocs]
                                 .sort((a: any, b: any) => {
-                                  const am = typeof a.month === 'string' && /\d{4}-\d{2}/.test(a.month) ? Date.parse(a.month + '-01') : Number.POSITIVE_INFINITY;
-                                  const bm = typeof b.month === 'string' && /\d{4}-\d{2}/.test(b.month) ? Date.parse(b.month + '-01') : Number.POSITIVE_INFINITY;
-                                  return am - bm;
+                                  if (typeof a.month === 'string' && /\d{4}-\d{2}/.test(a.month) && typeof b.month === 'string' && /\d{4}-\d{2}/.test(b.month)) {
+                                    const [ay, am] = a.month.split('-').map((n: string) => Number(n));
+                                    const [by, bm] = b.month.split('-').map((n: string) => Number(n));
+                                    const aUTC = Date.UTC(Number.isFinite(ay) ? ay : 1970, Number.isFinite(am) ? (am - 1) : 0, 1);
+                                    const bUTC = Date.UTC(Number.isFinite(by) ? by : 1970, Number.isFinite(bm) ? (bm - 1) : 0, 1);
+                                    return aUTC - bUTC;
+                                  }
+                                  return 0;
                                 })
                                 .map((row: any, idx: number) => {
                                   const label = typeof row.month === 'string' && /\d{4}-\d{2}/.test(row.month)
-                                    ? new Date(row.month + '-01').toLocaleDateString('en-US', { month: 'short', year: 'numeric' })
+                                    ? (() => {
+                                        const parts = String(row.month).split('-');
+                                        const y = Number(parts[0]);
+                                        const m = Number(parts[1]);
+                                        const d = new Date(Date.UTC(Number.isFinite(y) ? y : 1970, Number.isFinite(m) ? (m - 1) : 0, 1));
+                                        return d.toLocaleDateString('en-US', { month: 'short', year: 'numeric', timeZone: 'UTC' });
+                                      })()
                                     : (row.month || `Period ${idx + 1}`);
                                   const negativeDays = Number(row.negative_days) || 0;
                                   const deposits = Number(row.total_deposits) || 0;

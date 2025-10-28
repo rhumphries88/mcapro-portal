@@ -894,12 +894,50 @@ export const getApplicationSummaryByApplicationId = async (
 }
 
 export const deleteApplication = async (id: string) => {
-  const { error } = await supabase
+  const childTables = [
+    'lender_submissions',
+    'lenders_notes',
+    'application_documents',
+    'application_mtd',
+    'application_additional',
+    'application_form',
+    'application_access',
+    // Optional tables removed to avoid 404s in environments where they don't exist:
+    // 'application_financials',
+    // 'application_summary',
+  ] as const
+
+  for (const table of childTables) {
+    const { error } = await supabase
+      .from(table as string)
+      .delete()
+      .eq('application_id', id)
+
+    if (error) {
+      const msg = (typeof error === 'object' && error && 'message' in error && typeof (error as { message?: unknown }).message === 'string')
+        ? (error as { message?: string }).message || ''
+        : ''
+      const code = (typeof error === 'object' && error && 'code' in error && typeof (error as { code?: unknown }).code === 'string')
+        ? (error as { code?: string }).code || ''
+        : ''
+      const isTableMissing = code === 'PGRST205' || msg.includes('Could not find the table')
+      const isColumnMissing = msg.includes('column') && msg.includes('does not exist')
+      if (!isTableMissing && !isColumnMissing) {
+        throw error
+      }
+    }
+  }
+
+  const { data: deletedRows, error } = await supabase
     .from('applications')
     .delete()
     .eq('id', id)
+    .select('id')
 
   if (error) throw error
+  if (!deletedRows || (Array.isArray(deletedRows) && deletedRows.length === 0)) {
+    throw new Error('Application not found or not deleted (0 rows affected)')
+  }
 }
 // Lender functions
 export const getLenders = async () => {
