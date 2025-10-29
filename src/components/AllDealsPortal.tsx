@@ -1,5 +1,5 @@
 import React, { useRef, useState, useCallback } from 'react';
-import { Search, Eye, Download, DollarSign, Building2, Star, CheckCircle, XCircle, Clock, AlertTriangle, FileText, MoreVertical, Users } from 'lucide-react';
+import { Search, Eye, Download, DollarSign, Building2, Star, CheckCircle, XCircle, Clock, AlertTriangle, FileText, MoreVertical, Users, ChevronDown } from 'lucide-react';
 import { supabase, getAllApplications, getApplicationDocuments, getApplicationMTDByApplicationId, getUsersByRole, getApplicationAccessMapByApp, setApplicationAccess, deleteApplicationDocument, resolveAndDeleteApplicationMTD, insertApplicationMTD, updateApplication, getLenderSubmissions, getApplicationsForMember, getLenderNotes, addLenderNote, updateLenderNote, deleteLenderNote, getApplicationAdditionalByApplicationId, type ApplicationAdditionalRow, Application as DBApplication, LenderSubmission as DBLenderSubmission, LenderNote as DBLenderNote, User as DBUser } from '../lib/supabase';
 import { useAuth } from '../App';
 
@@ -107,6 +107,20 @@ const AllDealsPortal: React.FC<AllDealsPortalProps> = ({ onEditDeal, onViewQuali
   const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
   const [editNoteText, setEditNoteText] = useState('');
   const [deletingNoteId, setDeletingNoteId] = useState<string | null>(null);
+  
+  // Scroll notification states
+  const [showScrollNotification, setShowScrollNotification] = useState(false);
+  const scrollContainerRef = useRef<HTMLDivElement | null>(null);
+
+  // Handle scroll to bottom when notification is clicked
+  const handleScrollToBottom = () => {
+    if (scrollContainerRef.current) {
+      scrollContainerRef.current.scrollTo({
+        top: scrollContainerRef.current.scrollHeight,
+        behavior: 'smooth'
+      });
+    }
+  };
 
   React.useEffect(() => {
     if (selectedDeal) {
@@ -364,6 +378,7 @@ const AllDealsPortal: React.FC<AllDealsPortalProps> = ({ onEditDeal, onViewQuali
       .subscribe();
     return () => { supabase.removeChannel(channel); };
   }, [showDocs, selectedDeal?.id, reloadDocs]);
+
 
   // Tab state for View Details modal
   const [activeTab, setActiveTab] = useState<'information' | 'notes'>('information');
@@ -676,6 +691,36 @@ const AllDealsPortal: React.FC<AllDealsPortalProps> = ({ onEditDeal, onViewQuali
     return [...docs, ...mtds, ...adds];
   }, [documents, mtdDocuments, additionalDocuments]);
 
+  // Scroll detection for notification
+  React.useEffect(() => {
+    const checkScrollable = () => {
+      if (scrollContainerRef.current) {
+        const { scrollTop, scrollHeight, clientHeight } = scrollContainerRef.current;
+        const canScrollDown = scrollHeight > clientHeight;
+        const isAtBottom = scrollTop + clientHeight >= scrollHeight - 50; // 50px threshold for better UX
+        
+        // Show notification if there's content to scroll and user is not at bottom
+        setShowScrollNotification(canScrollDown && !isAtBottom);
+      }
+    };
+
+    const handleScroll = () => {
+      checkScrollable();
+    };
+
+    if (showDocs && scrollContainerRef.current) {
+      const container = scrollContainerRef.current;
+      container.addEventListener('scroll', handleScroll);
+      
+      // Initial check after content loads
+      setTimeout(checkScrollable, 100);
+      
+      return () => {
+        container.removeEventListener('scroll', handleScroll);
+      };
+    }
+  }, [showDocs, unifiedFiles.length, docsLoading]);
+
   const handleEditDeal = (deal: Deal) => {
     const lockedIds = Array.from(new Set(
       (deal.lenderSubmissions || [])
@@ -801,7 +846,10 @@ const AllDealsPortal: React.FC<AllDealsPortalProps> = ({ onEditDeal, onViewQuali
             </div>
 
             {/* Enhanced Modal Body */}
-            <div className="p-8 overflow-y-auto max-h-[calc(95vh-200px)]">
+            <div 
+              ref={scrollContainerRef}
+              className="p-8 overflow-y-auto max-h-[calc(95vh-200px)] relative"
+            >
               <div className="text-gray-600 mb-6 text-center">
                 <div className="text-sm font-medium">Manage application documents and bank statements</div>
                 <div className="text-xs text-gray-500 mt-1">Upload, view, and delete documents for this application</div>
@@ -960,6 +1008,19 @@ const AllDealsPortal: React.FC<AllDealsPortalProps> = ({ onEditDeal, onViewQuali
                   )}
                 </div>
               </>
+            )}
+
+            {/* Scroll Notification - Fixed to modal bottom */}
+            {showScrollNotification && (
+              <div className="fixed bottom-20 left-1/2 transform -translate-x-1/2 z-50">
+                <button
+                  onClick={handleScrollToBottom}
+                  className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-full shadow-lg flex items-center gap-2 animate-bounce transition-colors duration-200 cursor-pointer"
+                >
+                  <span className="text-sm font-medium">More files below</span>
+                  <ChevronDown className="w-4 h-4" />
+                </button>
+              </div>
             )}
             </div>
 
