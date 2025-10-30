@@ -112,6 +112,9 @@ const SubmissionRecap: React.FC<SubmissionRecapProps> = ({
   // Feature flag: temporarily hide Email Configuration card from UI
   const SHOW_EMAIL_CONFIG = false;
 
+  // Notes to include when composing an Outlook email
+  const [notes, setNotes] = useState<string>('');
+
   const applyPreset = (preset: 'gmail_tls' | 'gmail_ssl' | 'outlook_tls') => {
     if (preset === 'gmail_tls') {
       setEmailSettings(prev => ({ ...prev, smtpHost: 'smtp.gmail.com', smtpPort: '587' }));
@@ -665,6 +668,8 @@ const SubmissionRecap: React.FC<SubmissionRecapProps> = ({
       console.warn('Failed to send SMTP settings to webhook:', err);
     }
   };
+
+  
 
   const handleFinalSubmit = async () => {
     // Proceed even if from email is not specified
@@ -1405,6 +1410,24 @@ const SubmissionRecap: React.FC<SubmissionRecapProps> = ({
           </div>
         </div>
       )}
+
+      {/* Notes Section for Outlook compose */}
+      <div className="bg-white rounded-2xl shadow-lg ring-1 ring-gray-100 p-6 mb-6">
+        <div className="flex items-start justify-between mb-3">
+          <h4 className="text-lg font-bold text-gray-900">Notes for Lender Email</h4>
+          <span className="text-xs text-gray-500">Optional</span>
+        </div>
+        <textarea
+          value={notes}
+          onChange={(e) => setNotes(e.target.value)}
+          rows={4}
+          className="w-full rounded-xl border-2 border-gray-200 focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 p-3 text-sm text-gray-800"
+          placeholder="Enter any notes or special instructions you want to include in your Outlook email…"
+        />
+        <div className="mt-3 flex items-center justify-end">
+          <div className="text-xs text-gray-500">{notes.length} characters</div>
+        </div>
+      </div>
 
       {/* Action Buttons */}
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
