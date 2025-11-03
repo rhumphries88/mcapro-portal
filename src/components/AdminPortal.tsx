@@ -845,11 +845,11 @@ Application ID: {{applicationId}}`;
                         </div>
                       </td>
                       <td className="px-8 py-6">
-                        <div className="text-xl font-bold text-gray-900">${app.requested_amount.toLocaleString()}</div>
+                        <div className="text-xl font-bold text-gray-900">${(app.requested_amount ?? 0).toLocaleString()}</div>
                         <div className="text-sm text-gray-500">{app.industry}</div>
                       </td>
                       <td className="px-8 py-6">
-                        <div className="text-sm font-medium text-gray-900">${app.monthly_revenue.toLocaleString()}/mo</div>
+                        <div className="text-sm font-medium text-gray-900">${(app.monthly_revenue ?? 0).toLocaleString()}/mo</div>
                         <div className="text-xs text-gray-500 mt-1">Credit: {app.credit_score} • {app.years_in_business}y</div>
                       </td>
                       <td className="px-8 py-6">
@@ -1021,7 +1021,7 @@ Application ID: {{applicationId}}`;
                             </div>
                           </td>
                           <td className="px-8 py-6">
-                            <div className="text-xl font-bold text-gray-900">${app.requested_amount.toLocaleString()}</div>
+                            <div className="text-xl font-bold text-gray-900">${(app.requested_amount ?? 0).toLocaleString()}</div>
                             <div className="text-sm text-gray-500">Requested</div>
                           </td>
                           <td className="px-8 py-6">
@@ -1299,7 +1299,7 @@ Application ID: {{applicationId}}`;
                   <div className="bg-purple-50 p-3 rounded-lg">
                     <div className="text-sm text-purple-600 font-medium">Amount Range</div>
                     <div className="text-sm font-bold text-purple-900">
-                      ${lender.min_amount.toLocaleString()} - ${lender.max_amount.toLocaleString()}
+                      ${(lender.min_amount ?? 0).toLocaleString()} - ${(lender.max_amount ?? 0).toLocaleString()}
                     </div>
                   </div>
                   <div className="bg-orange-50 p-3 rounded-lg">
@@ -1321,7 +1321,7 @@ Application ID: {{applicationId}}`;
                     </div>
                     <div>
                       <span className="text-gray-500">Min Monthly Revenue:</span>
-                      <span className="ml-1 font-medium">${lender.min_monthly_revenue.toLocaleString()}</span>
+                      <span className="ml-1 font-medium">${(lender.min_monthly_revenue ?? 0).toLocaleString()}</span>
                     </div>
                     <div>
                       <span className="text-gray-500">Approval Time:</span>
@@ -1762,7 +1762,7 @@ Application ID: {{applicationId}}`;
                     <div className="flex items-center justify-between">
                       <div>
                         <p className="text-sm font-medium text-emerald-700">Requested Amount</p>
-                        <p className="text-2xl font-bold text-emerald-900">${selectedApplication.requested_amount.toLocaleString()}</p>
+                        <p className="text-2xl font-bold text-emerald-900">${(selectedApplication.requested_amount ?? 0).toLocaleString()}</p>
                       </div>
                       <div className="w-12 h-12 bg-emerald-500 rounded-xl flex items-center justify-center">
                         <span className="text-white font-bold">$</span>
@@ -1773,7 +1773,7 @@ Application ID: {{applicationId}}`;
                     <div className="flex items-center justify-between">
                       <div>
                         <p className="text-sm font-medium text-blue-700">Monthly Revenue</p>
-                        <p className="text-2xl font-bold text-blue-900">${selectedApplication.monthly_revenue.toLocaleString()}</p>
+                        <p className="text-2xl font-bold text-blue-900">${(selectedApplication.monthly_revenue ?? 0).toLocaleString()}</p>
                       </div>
                       <div className="w-12 h-12 bg-blue-500 rounded-xl flex items-center justify-center">
                         <Star className="w-6 h-6 text-white" />
@@ -1883,15 +1883,15 @@ Application ID: {{applicationId}}`;
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                     <div className="bg-white rounded-lg p-4 border border-purple-100">
                       <label className="block text-sm font-semibold text-purple-600 mb-2">Annual Revenue</label>
-                      <p className="text-2xl font-bold text-gray-900">${selectedApplication.annual_revenue.toLocaleString()}</p>
+                      <p className="text-2xl font-bold text-gray-900">${(selectedApplication.annual_revenue ?? 0).toLocaleString()}</p>
                     </div>
                     <div className="bg-white rounded-lg p-4 border border-purple-100">
                       <label className="block text-sm font-semibold text-purple-600 mb-2">Monthly Deposits</label>
-                      <p className="text-2xl font-bold text-gray-900">${selectedApplication.monthly_deposits.toLocaleString()}</p>
+                      <p className="text-2xl font-bold text-gray-900">${(selectedApplication.monthly_deposits ?? 0).toLocaleString()}</p>
                     </div>
                     <div className="bg-white rounded-lg p-4 border border-purple-100">
                       <label className="block text-sm font-semibold text-purple-600 mb-2">Existing Debt</label>
-                      <p className="text-2xl font-bold text-gray-900">${selectedApplication.existing_debt.toLocaleString()}</p>
+                      <p className="text-2xl font-bold text-gray-900">${(selectedApplication.existing_debt ?? 0).toLocaleString()}</p>
                     </div>
                   </div>
                 </div>
@@ -2492,7 +2492,7 @@ Application ID: {{applicationId}}`;
                       <div>
                         <h4 className="font-medium text-gray-900">{lender.name}</h4>
                         <p className="text-sm text-gray-500">
-                          ${lender.min_amount.toLocaleString()} - ${lender.max_amount.toLocaleString()}
+                          ${(lender.min_amount ?? 0).toLocaleString()} - ${(lender.max_amount ?? 0).toLocaleString()}
                         </p>
                       </div>
                       <Plus className="w-5 h-5 text-green-600" />
