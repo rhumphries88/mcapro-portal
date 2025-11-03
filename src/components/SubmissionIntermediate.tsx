@@ -3,7 +3,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Upload, FileText, CheckCircle, RefreshCw, Trash2, RotateCcw, TrendingUp } from 'lucide-react';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
-import { getApplicationDocuments, deleteApplicationDocument, deleteApplicationDocumentByAppAndDate, updateApplicationDocumentMonthlyRevenue, type ApplicationDocument, supabase, getApplicationMTDByApplicationId, type ApplicationMTD } from '../lib/supabase';
+import { getApplicationDocuments, deleteApplicationDocument, deleteApplicationDocumentByAppAndDate, updateApplicationDocumentMonthlyRevenue, updateApplicationFunderSelectedMonthly, type ApplicationDocument, supabase, getApplicationMTDByApplicationId, type ApplicationMTD } from '../lib/supabase';
 
 import { fmtCurrency2, parseAmount, getUniqueDateKey, fetchWithTimeout, formatFullDate, formatDateHuman, slugify } from './SubmissionIntermediate.helpers';
 import { UploadDropzone, FilesBucketList, LegalComplianceSection, DocumentDetailsControls, TransactionSummarySection } from './SubmissionIntermediate.Views';
@@ -481,10 +481,17 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBackToDeals, in
         // Risk assessment (only if we have transaction data)
         if (totalFunders > 0 || mtdSumPdf > 0) {
           summaryData.push(['RISK ASSESSMENT', '']);
-          summaryData.push(['Total Amount of Funders', fmtCurrency2(totalFunders)]);
+          summaryData.push(['Total Amount of Funders (Selected)', fmtCurrency2(totalFunders)]);
           if (mtdSumPdf > 0) {
             summaryData.push(['Funder MTD Totals', fmtCurrency2(mtdSumPdf)]);
           }
+          // Add Total of Positions line (count, not amount)
+          const selectedCount = mcaItems.reduce((count: number, _: any, index: number) => {
+            return selectedMcaItems.has(index) ? count + 1 : count;
+          }, 0);
+          const mtdCountPdf = (mtdRows || []).filter(r => typeof (r as any)?.total_mtd === 'number').length;
+          const totalPositionsCount = selectedCount + mtdCountPdf;
+          summaryData.push(['Total of Positions', String(totalPositionsCount)]);
           summaryData.push(['Calculation Multiplier', `× ${multiplier}`]);
           summaryData.push(['SUBTOTAL', fmtCurrency2(subtotal)]);
           if (ratio > 0) summaryData.push(['Ratio (Total ÷ Revenue)', ratio.toFixed(2)]);
@@ -1156,6 +1163,75 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBackToDeals, in
   // Initialize all items as selected when the component loads or when mcaItems changes
   // Do not auto-select MCA items by default
 
+  // Load previously selected Bank Statement Analysis items from applications.funder_selected_monthly
+  useEffect(() => {
+    const appId = (details.applicationId as string) || (initial?.applicationId as string) || (details.id as string) || (initial?.id as string) || '';
+    if (!appId) return;
+
+    const loadSelectedItems = async () => {
+      try {
+        const { data, error } = await supabase
+          .from('applications')
+          .select('funder_selected_monthly')
+          .eq('id', appId)
+          .single();
+
+        if (error) {
+          console.warn('[Load selections] Could not load saved selections:', error);
+          return;
+        }
+
+        if (data?.funder_selected_monthly && Array.isArray(data.funder_selected_monthly)) {
+          const savedSelections = data.funder_selected_monthly as any[];
+          const selectedIndices = new Set(savedSelections.map((item: any) => item.index));
+          setSelectedMcaItems(selectedIndices);
+          console.log('[Load selections] Restored', selectedIndices.size, 'selected Bank Statement Analysis items');
+        }
+      } catch (error) {
+        console.error('[Load selections] Failed to load saved selections:', error);
+      }
+    };
+
+    loadSelectedItems();
+  }, [details.applicationId, details.id, initial?.applicationId, initial?.id, mcaItems.length]);
+
+  // Auto-save selected Bank Statement Analysis items to applications.funder_selected_monthly
+  useEffect(() => {
+    const appId = (details.applicationId as string) || (initial?.applicationId as string) || (details.id as string) || (initial?.id as string) || '';
+    if (!appId || mcaItems.length === 0) return;
+
+    // Prepare the selected items data to save
+    const selectedItems = mcaItems
+      .map((item: any, index: number) => ({ ...item, index }))
+      .filter((item: any) => selectedMcaItems.has(item.index))
+      .map((item: any) => ({
+        index: item.index,
+        period: item.period,
+        funder: item.funder,
+        frequency: item.freq,
+        amount: Number(item.displayAmount),
+        amount_raw: item.amountVal,
+        amount_num: item.amountNum,
+        is_weekly: item.isWeekly,
+        notes: item.notes,
+        selected_at: new Date().toISOString()
+      }));
+
+    // Auto-save to database
+    const saveSelectedItems = async () => {
+      try {
+        await updateApplicationFunderSelectedMonthly(appId, selectedItems);
+        console.log('[Auto-save] Successfully saved selected Bank Statement Analysis items:', selectedItems.length);
+      } catch (error) {
+        console.error('[Auto-save] Failed to save selected Bank Statement Analysis items:', error);
+      }
+    };
+
+    // Debounce the save operation to avoid too many database calls
+    const timeoutId = setTimeout(saveSelectedItems, 500);
+    return () => clearTimeout(timeoutId);
+  }, [selectedMcaItems, mcaItems, details.applicationId, details.id, initial?.applicationId, initial?.id]);
+
   // Derive MCA summary rows from application_documents.mca_summary (fallback to extracted_json.mca_summary)
   const mcaSummaryRows = React.useMemo(() => {
     try {
@@ -1753,31 +1829,30 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBackToDeals, in
           total_negative_days: financialOverviewFromDocs.reduce((sum: number, r: any) => sum + (Number(r.negative_days) || 0), 0),
         },
         
-        // Add MCA summary data with holdback percentage
+        // Add MCA summary data with holdback percentage and selected items
         mca_summary: (() => {
           try {
-            // Calculate total funders amount
-            const total = (mcaSummaryRows || []).reduce((sum: number, row: any) => {
-              const raw = row && row.__mca_raw;
-              const arr = Array.isArray(raw) ? raw : (!Array.isArray(raw) && raw && typeof raw === 'object' ? (Object.values(raw).flat().filter(Boolean) as any[]) : []);
-              const items: any[] = (Array.isArray(arr) ? arr : []).filter((it: any) => it && typeof it === 'object');
+            // Calculate total funders amount from SELECTED items only (matching UI)
+            const selectedFundersTotal = mcaItems.reduce((sum: number, it: any, index: number) => {
+              // Only include this item if it's selected
+              if (!selectedMcaItems.has(index)) return sum;
               
-              let rowTotal = 0;
-              for (const it of items) {
-                // No longer filtering by month
-                const freq = String(it?.dailyweekly ?? it?.debit_frequency ?? '');
-                const amountVal = it?.amount;
-                const amountNum = (typeof amountVal === 'number') ? amountVal : parseAmount(String(amountVal ?? ''));
-                const isWeekly = /weekly/i.test(freq);
-                const displayAmount = isWeekly ? (Number(amountNum) / 5) : Number(amountNum);
-                rowTotal += Number.isFinite(displayAmount) ? Number(displayAmount) : 0;
-              }
-              return sum + rowTotal;
+              const val = Number(it?.displayAmount);
+              return sum + (Number.isFinite(val) ? val : 0);
             }, 0);
+
+            // Get Funder MTD totals from application_mtd.total_mtd
+            const mtdTotals = (mtdRows || []).reduce((s, r) => s + (Number((r as any)?.total_mtd) || 0), 0);
+            const mtdCount = (mtdRows || []).filter(r => typeof (r as any)?.total_mtd === 'number').length;
             
-            // Calculate multiplier, subtotal and holdback percentage
+            // Total of Positions = Count of selected Bank Statement Analysis + Count of Funder MTD items
+            const totalOfPositionsCount = selectedMcaItems.size + mtdCount;
+            // Also keep the amount calculation for other purposes
+            const totalOfPositionsAmount = selectedFundersTotal + mtdTotals;
+            
+            // Calculate multiplier, subtotal and holdback percentage using Total of Positions Amount
             const multiplier = 20;
-            const subtotal = total * multiplier;
+            const subtotal = totalOfPositionsAmount * multiplier;
             
             // Calculate average revenue from financial overview
             const totalDocsForRevenue = Array.isArray(financialOverviewFromDocs) ? financialOverviewFromDocs.length : 1;
@@ -1802,22 +1877,65 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBackToDeals, in
               }
               return roundedInt / factor;
             })();
+
+            // Include selected Bank Statement Analysis items details
+            const selectedBankStatementItems = mcaItems
+              .map((item: any, index: number) => ({ ...item, index }))
+              .filter((item: any) => selectedMcaItems.has(item.index))
+              .map((item: any) => ({
+                period: item.period,
+                funder: item.funder,
+                frequency: item.freq,
+                amount: Number(item.displayAmount),
+                is_weekly: item.isWeekly,
+                notes: item.notes
+              }));
+
+            // Include Funder MTD details
+            const funderMtdDetails = (mtdRows || []).map((row: any) => ({
+              file_name: row.file_name,
+              total_mtd: Number(row.total_mtd) || 0,
+              mtd_selected: row.mtd_selected || []
+            }));
             
             return {
-              total_funders: Number(total.toFixed(2)),
+              // Selected items totals
+              selected_funders_total: Number(selectedFundersTotal.toFixed(2)),
+              selected_funders_count: selectedMcaItems.size,
+              funder_mtd_totals: Number(mtdTotals.toFixed(2)),
+              funder_mtd_count: mtdCount,
+              total_of_positions_count: totalOfPositionsCount,
+              total_of_positions_amount: Number(totalOfPositionsAmount.toFixed(2)),
+              
+              // Selected items details
+              selected_bank_statement_items: selectedBankStatementItems,
+              funder_mtd_details: funderMtdDetails,
+              
+              // Calculation results
               multiplier: multiplier,
               subtotal: Number(subtotal.toFixed(2)),
               ratio: Number(ratio.toFixed(2)),
-              holdback_percentage: holdbackPct
+              holdback_percentage: holdbackPct,
+              
+              // Legacy fields for backward compatibility
+              total_funders: Number(selectedFundersTotal.toFixed(2))
             };
           } catch (e) {
             console.error('[updatingApplications] Error calculating MCA summary:', e);
             return {
-              total_funders: 0.00,
+              selected_funders_total: 0.00,
+              selected_funders_count: 0,
+              funder_mtd_totals: 0.00,
+              funder_mtd_count: 0,
+              total_of_positions_count: 0,
+              total_of_positions_amount: 0.00,
+              selected_bank_statement_items: [],
+              funder_mtd_details: [],
               multiplier: 20,
               subtotal: 0.00,
               ratio: 0.00,
-              holdback_percentage: 0.0
+              holdback_percentage: 0.0,
+              total_funders: 0.00
             };
           }
         })()
@@ -3520,10 +3638,28 @@ const SubmissionIntermediate: React.FC<Props> = ({ onContinue, onBackToDeals, in
                                           <div className="flex justify-between items-center py-3 border-b border-slate-200">
                                             <div className="flex-1">
                                               <div className="text-sm font-bold text-slate-900 uppercase tracking-wide">FUNDER MTD TOTALS</div>
+                                              <div className="text-xs text-slate-500 mt-1">Saved totals from analysis (application_mtd.total_mtd)</div>
                                             </div>
                                             <div className="text-right min-w-[120px]">
                                               <div className="font-mono text-lg font-black text-slate-900 tabular-nums">
                                                 {fmtCurrency2(mtdSum)}
+                                              </div>
+                                            </div>
+                                          </div>
+                                        )}
+
+                                        {/* Total of Positions - Count of selected items from Bank Statement Analysis + Funder MTD */}
+                                        {(selectedMcaItems.size > 0 || mtdCount > 0) && (
+                                          <div className="flex justify-between items-center py-3 border-b-2 border-slate-300 bg-slate-50 -mx-6 px-6">
+                                            <div className="flex-1">
+                                              <div className="text-sm font-bold text-slate-900 uppercase tracking-wide">TOTAL OF POSITIONS</div>
+                                              <div className="text-xs text-slate-500 mt-1">
+                                                Selected Bank Statement Analysis + Funder MTD Totals
+                                              </div>
+                                            </div>
+                                            <div className="text-right min-w-[120px]">
+                                              <div className="font-mono text-xl font-black text-slate-900 tabular-nums">
+                                                {selectedMcaItems.size + mtdCount}
                                               </div>
                                             </div>
                                           </div>

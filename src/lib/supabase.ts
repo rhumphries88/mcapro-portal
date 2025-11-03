@@ -694,6 +694,7 @@ export interface Application {
   dateBirth?: string
   date_of_birth?: string
   address: string
+  restricted_state?: string
   ein: string
   business_type: string
   industry: string
@@ -733,7 +734,9 @@ export interface Lender {
   approval_time: string
   frequency?: 'Daily' | 'Weekly' | 'Monthly' | 'By-Weekly'
   negative_days?: number | null
-  positions?: number | null
+  min_positions?: number | null
+  max_positions?: number | null
+  restricted_state?: string | null
   features: string[]
   created_at: string
   updated_at: string
@@ -831,6 +834,22 @@ export const updateApplication = async (id: string, updates: Partial<Application
     .eq('id', id)
   if (error) throw error
   return await getApplicationById(id)
+}
+
+// Update funder_selected_monthly (jsonb of selected Bank Statement Analysis items)
+export const updateApplicationFunderSelectedMonthly = async (
+  id: string,
+  funder_selected_monthly: unknown
+) => {
+  const { data, error } = await supabase
+    .from('applications')
+    .update({ funder_selected_monthly })
+    .eq('id', id)
+    .select()
+    .single()
+  
+  if (error) throw error
+  return data
 }
 
 // Update total_amount (sum of selected Transactions rows) for a specific MTD record

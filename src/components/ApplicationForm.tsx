@@ -20,6 +20,7 @@ interface Application {
     phone: string;
     dateOfBirth?: string;
     address: string;
+    restrictedState?: string;
   };
 
   businessInfo: {
@@ -199,6 +200,7 @@ const ApplicationForm: React.FC<ApplicationFormProps> = ({ onSubmit, initialStep
     phone: '',
     dateOfBirth: '',
     address: '',
+    restrictedState: '',
     ein: '',
     businessType: '',
     industry: '',
@@ -224,6 +226,7 @@ const ApplicationForm: React.FC<ApplicationFormProps> = ({ onSubmit, initialStep
       phone: reviewInitial.contactInfo?.phone ?? prev.phone,
       dateOfBirth: (reviewInitial)?.contactInfo?.dateOfBirth ?? prev.dateOfBirth,
       address: reviewInitial.contactInfo?.address ?? prev.address,
+      restrictedState: reviewInitial.contactInfo?.restrictedState ?? prev.restrictedState,
       ein: reviewInitial.businessInfo?.ein ?? prev.ein,
       businessType: reviewInitial.businessInfo?.businessType ?? prev.businessType,
       industry: reviewInitial.industry ?? prev.industry,
@@ -245,6 +248,7 @@ const ApplicationForm: React.FC<ApplicationFormProps> = ({ onSubmit, initialStep
     if (reviewInitial.contactInfo?.phone) provided.push('phone');
     if ((reviewInitial)?.contactInfo?.dateOfBirth) provided.push('dateOfBirth');
     if (reviewInitial.contactInfo?.address) provided.push('address');
+    if (reviewInitial.contactInfo?.restrictedState) provided.push('restrictedState');
     if (reviewInitial.businessInfo?.ein) provided.push('ein');
     if (reviewInitial.businessInfo?.businessType) provided.push('businessType');
     if (reviewInitial.industry) provided.push('industry');
@@ -301,6 +305,7 @@ const ApplicationForm: React.FC<ApplicationFormProps> = ({ onSubmit, initialStep
         phone: true,
         dateOfBirth: true,
         address: true,
+        restrictedState: true,
         ein: true,
         annualRevenue: true,
         averageMonthlyRevenue: true,
@@ -332,6 +337,7 @@ const ApplicationForm: React.FC<ApplicationFormProps> = ({ onSubmit, initialStep
       'phone',
       'dateOfBirth',
       'address',
+      'restrictedState',
       'annualRevenue',
       'creditScore',
       'requestedAmount',
@@ -551,6 +557,8 @@ const ApplicationForm: React.FC<ApplicationFormProps> = ({ onSubmit, initialStep
               // Map Date of Birth into new dateOfBirth field
               mergeField('dateOfBirth', ['Date of Birth', 'date_of_birth', 'dob', 'birthdate', 'birth_date']);
               mergeField('address', ['Business Address', 'business_address', 'businessAddress', 'address', 'Address', 'location']);
+              // Map Restricted State to Restricted State field
+              mergeField('restrictedState', ['Restricted State', 'restricted_state', 'restrictedState', 'State']);
               mergeField('ein', ['EIN', 'ein', 'tax_id', 'taxId', 'employer_identification_number']);
               // Preserve exact values from webhook; dropdown will include non-predefined values dynamically
               mergeField('businessType', ['Business Type', 'business_type', 'businessType', 'company_type', 'entity_type']);
@@ -632,6 +640,7 @@ const ApplicationForm: React.FC<ApplicationFormProps> = ({ onSubmit, initialStep
                     phone: getValue(['SSN','ssn','social_security','social_security_number']) || '',
                     dateOfBirth: getValue(['Date of Birth','date_of_birth','dob','birthdate','birth_date']) || '',
                     address: getValue(['Business Address','business_address','businessAddress','address','Address','location']) || '',
+                    restrictedState: getValue(['Restricted State', 'restricted_state', 'restrictedState', 'State']) || '',
                   },
                   businessInfo: {
                     ein: getValue(['EIN','ein','tax_id','taxId','employer_identification_number']) || '',
@@ -718,6 +727,7 @@ const ApplicationForm: React.FC<ApplicationFormProps> = ({ onSubmit, initialStep
               email: mergedSnapshot.email,
               phone: mergedSnapshot.phone,
               address: mergedSnapshot.address,
+              restrictedState: mergedSnapshot.restrictedState,
             },
             businessInfo: {
               ein: mergedSnapshot.ein,
@@ -926,6 +936,7 @@ const ApplicationForm: React.FC<ApplicationFormProps> = ({ onSubmit, initialStep
               phone: formData.phone,
               dateOfBirth: formData.dateOfBirth,
               address: formData.address,
+              restrictedState: formData.restrictedState,
             },
             businessInfo: {
               ein: formData.ein,
@@ -1068,7 +1079,8 @@ const ApplicationForm: React.FC<ApplicationFormProps> = ({ onSubmit, initialStep
             email: savedApplication.email,
             phone: savedApplication.phone || '',
             dateOfBirth: (savedApplication).dateBirth || '',
-            address: savedApplication.address || ''
+            address: savedApplication.address || '',
+            restrictedState: savedApplication.restricted_state || ''
           },
           businessInfo: {
             ein: savedApplication.ein || '',
@@ -1222,7 +1234,7 @@ const ApplicationForm: React.FC<ApplicationFormProps> = ({ onSubmit, initialStep
                     setApplicationDocument(null);
                     setExtractedData(null);
                     setFormData({
-                      businessName: '', ownerName: '', email: '', phone: '', dateOfBirth: '', address: '', ein: '',
+                      businessName: '', ownerName: '', email: '', phone: '', dateOfBirth: '', address: '', restrictedState: '', ein: '',
                       businessType: '', industry: '', yearsInBusiness: '', numberOfEmployees: '',
                       annualRevenue: '', averageMonthlyRevenue: '', averageMonthlyDeposits: '', existingDebt: '', creditScore: '', requestedAmount: '',
                       documents: []
@@ -1536,6 +1548,27 @@ const ApplicationForm: React.FC<ApplicationFormProps> = ({ onSubmit, initialStep
                 }`}
               />
               {populatedFields.has('address') && (
+                <div className="mt-2 flex items-center gap-2 text-emerald-700 text-xs font-medium">
+                  <div className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse"></div>
+                  <span>Extracted from documents</span>
+                </div>
+              )}
+            </div>
+            {/* Right column: Restricted State aligned with Business Address */}
+            <div className="relative">
+              <label className="block text-sm font-bold text-gray-800 mb-2" htmlFor="restrictedState">Restricted State</label>
+              <input
+                type="text"
+                id="restrictedState"
+                value={formData.restrictedState}
+                onChange={(e) => setFormData({ ...formData, restrictedState: e.target.value })}
+                className={`w-full rounded-xl border-2 px-4 py-3 text-gray-900 font-medium transition-all duration-200 focus:outline-none ${
+                  populatedFields.has('restrictedState')
+                    ? 'border-emerald-300 bg-gradient-to-r from-emerald-50 to-green-50 ring-2 ring-emerald-200/50 shadow-sm focus:border-emerald-400 focus:ring-emerald-300/50'
+                    : 'border-gray-200 bg-white hover:border-gray-300 focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 shadow-sm hover:shadow-sm'
+                }`}
+              />
+              {populatedFields.has('restrictedState') && (
                 <div className="mt-2 flex items-center gap-2 text-emerald-700 text-xs font-medium">
                   <div className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse"></div>
                   <span>Extracted from documents</span>

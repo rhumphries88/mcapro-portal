@@ -922,6 +922,7 @@ const SubmissionRecap: React.FC<SubmissionRecapProps> = ({
           subject: per.subject,
           body: perHtmlBody,
           bodyHtml: perHtmlBody,
+          notes: notes || '',
           attachments: attachmentsForWebhook,
           smtpSettingsId: savedSmtpId || smtpSettingsId || null,
           context: {
@@ -932,6 +933,7 @@ const SubmissionRecap: React.FC<SubmissionRecapProps> = ({
             creditScore: application?.creditScore,
             selectedLenderCount: 1,
             lenderName: lender.name,
+            notes: notes || '',
           },
           sentAt: new Date().toISOString(),
         };
@@ -953,6 +955,7 @@ const SubmissionRecap: React.FC<SubmissionRecapProps> = ({
             lendersDetailed,
             subject: preview.subject,
             body: previewHtml,
+            notes: notes || '',
             attachments: attachmentsUrl,
           }),
         });

@@ -18,6 +18,7 @@ type AppDataLike = {
     email?: string;
     phone?: string;
     address?: string;
+    restrictedState?: string;
   };
   businessInfo?: {
     ein?: string;
@@ -61,6 +62,7 @@ const BankStatement: React.FC<BankStatementProps> = ({ onContinue, application, 
         phone: app.contactInfo?.phone ?? '',
         dateBirth: app.contactInfo?.dateOfBirth ?? '',
         address: app.contactInfo?.address ?? '',
+        restricted_state: app.contactInfo?.restrictedState ?? '',
         ein: app.businessInfo?.ein ?? '',
         business_type: app.businessInfo?.businessType ?? '',
         industry: app.industry,

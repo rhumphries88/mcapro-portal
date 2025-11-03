@@ -356,7 +356,7 @@ const LenderMatches: React.FC<LenderMatchesProps> = ({ application, matches, onL
                       <div className="text-sm font-semibold text-blue-700">Amount Range</div>
                     </div>
                     <div className="text-lg font-bold text-blue-900">
-                      ${lender.min_amount.toLocaleString()} - ${lender.max_amount.toLocaleString()}
+                      ${(lender.min_amount ?? 0).toLocaleString()} - ${(lender.max_amount ?? 0).toLocaleString()}
                     </div>
                   </div>
                   <div className="bg-gradient-to-br from-green-50 to-green-100/50 border border-green-200 p-4 rounded-xl">

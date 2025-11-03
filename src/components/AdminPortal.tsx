@@ -105,7 +105,9 @@ Application ID: {{applicationId}}`;
     features: string[];
     category: 'Daily' | 'Weekly' | 'Monthly' | 'By-Weekly';
     negativeDays: number | null;
-    positions: number | null;
+    minPositions: number | null;
+    maxPositions: number | null;
+    restrictedState: string;
   }>({
     name: '',
     contactEmail: '',
@@ -126,7 +128,9 @@ Application ID: {{applicationId}}`;
     features: [] as string[],
     category: 'Monthly',
     negativeDays: null,
-    positions: null
+    minPositions: null,
+    maxPositions: null,
+    restrictedState: ''
   });
   const [ccEmailInput, setCcEmailInput] = useState('');
 
@@ -439,21 +443,21 @@ Application ID: {{applicationId}}`;
   const handleEditLender = (lender: DBLender) => {
     setLenderFormData({
       name: lender.name,
-      contactEmail: lender.contact_email,
+      contactEmail: lender.contact_email || '',
       ccEmails: (lender.cc_emails as unknown as string[]) || [],
       phone: lender.phone || '',
-      status: lender.status,
-      rating: lender.rating,
-      minAmount: lender.min_amount,
-      maxAmount: lender.max_amount,
-      minCreditScore: lender.min_credit_score,
-      maxCreditScore: lender.max_credit_score,
-      minTimeInBusiness: lender.min_time_in_business,
-      minMonthlyRevenue: lender.min_monthly_revenue,
-      industries: lender.industries,
-      factorRate: lender.factor_rate,
-      paybackTerm: lender.payback_term,
-      approvalTime: lender.approval_time,
+      status: (lender.status as 'active' | 'inactive' | 'pending') || 'active',
+      rating: (lender.rating ?? 0),
+      minAmount: (lender.min_amount ?? 0),
+      maxAmount: (lender.max_amount ?? 0),
+      minCreditScore: (lender.min_credit_score ?? 0),
+      maxCreditScore: (lender.max_credit_score ?? 0),
+      minTimeInBusiness: (lender.min_time_in_business ?? 0),
+      minMonthlyRevenue: (lender.min_monthly_revenue ?? 0),
+      industries: lender.industries || [],
+      factorRate: lender.factor_rate || '',
+      paybackTerm: lender.payback_term || '',
+      approvalTime: lender.approval_time || '',
       features: lender.features,
       category: ((val: unknown) => {
         const allowed = ['Daily','Weekly','Monthly','By-Weekly'] as const;
@@ -463,10 +467,15 @@ Application ID: {{applicationId}}`;
         const v = (lender as unknown as { negative_days?: number | null })?.negative_days ?? null;
         return v != null && v < 0 ? null : v;
       })(),
-      positions: (() => {
-        const v = (lender as unknown as { positions?: number | null })?.positions ?? null;
+      minPositions: (() => {
+        const v = (lender as unknown as { min_positions?: number | null })?.min_positions ?? null;
         return v != null && v < 0 ? null : v;
       })(),
+      maxPositions: (() => {
+        const v = (lender as unknown as { max_positions?: number | null })?.max_positions ?? null;
+        return v != null && v < 0 ? null : v;
+      })(),
+      restrictedState: (lender as unknown as { restricted_state?: string | null })?.restricted_state ?? '',
     });
     setEditingLender(lender);
     setShowLenderForm(true);
@@ -500,7 +509,9 @@ Application ID: {{applicationId}}`;
       features: [],
       category: 'Monthly',
       negativeDays: null,
-      positions: null
+      minPositions: null,
+      maxPositions: null,
+      restrictedState: ''
     });
     setEditingLender(null);
     setShowLenderForm(true);
@@ -562,7 +573,9 @@ Application ID: {{applicationId}}`;
           approval_time: lenderFormData.approvalTime,
           frequency: lenderFormData.category,
           negative_days: clampInt(lenderFormData.negativeDays),
-          positions: clampInt(lenderFormData.positions),
+          min_positions: clampInt(lenderFormData.minPositions),
+          max_positions: clampInt(lenderFormData.maxPositions),
+          restricted_state: lenderFormData.restrictedState.trim() === '' ? null : lenderFormData.restrictedState.trim(),
           features: lenderFormData.features
         };
 
@@ -1568,6 +1581,16 @@ Application ID: {{applicationId}}`;
                         className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500"
                       />
                     </div>
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-2">Restricted State</label>
+                      <input
+                        type="text"
+                        value={lenderFormData.restrictedState}
+                        onChange={(e) => setLenderFormData(prev => ({ ...prev, restrictedState: e.target.value }))}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500"
+                        placeholder="e.g., CA, NY (comma-separated)"
+                      />
+                    </div>
                   </div>
                 </div>
 
@@ -1602,7 +1625,7 @@ Application ID: {{applicationId}}`;
 
                   {/* Neg Days & Positions (moved here under Funding Range) */}
                   <div className="mb-6">
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                       <div>
                         <label className="block text-sm font-medium text-gray-700 mb-2">Number of Neg days</label>
                         <input
@@ -1619,18 +1642,33 @@ Application ID: {{applicationId}}`;
                         />
                       </div>
                       <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-2">Number of positions</label>
+                        <label className="block text-sm font-medium text-gray-700 mb-2">Minimum position count</label>
                         <input
                           type="number"
                           min={0}
                           step={1}
-                          value={lenderFormData.positions ?? ''}
+                          value={lenderFormData.minPositions ?? ''}
                           onChange={(e) => {
                             const val = e.target.value;
-                            setLenderFormData(prev => ({ ...prev, positions: val === '' ? null : parseInt(val) }));
+                            setLenderFormData(prev => ({ ...prev, minPositions: val === '' ? null : parseInt(val) }));
                           }}
                           className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500"
-                          placeholder="e.g., 2"
+                          placeholder="e.g., 1"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-2">Maximum position count</label>
+                        <input
+                          type="number"
+                          min={0}
+                          step={1}
+                          value={lenderFormData.maxPositions ?? ''}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            setLenderFormData(prev => ({ ...prev, maxPositions: val === '' ? null : parseInt(val) }));
+                          }}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500"
+                          placeholder="e.g., 5"
                         />
                       </div>
                     </div>
