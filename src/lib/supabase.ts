@@ -731,6 +731,9 @@ export interface Lender {
   factor_rate: string
   payback_term: string
   approval_time: string
+  frequency?: 'Daily' | 'Weekly' | 'Monthly' | 'By-Weekly'
+  negative_days?: number | null
+  positions?: number | null
   features: string[]
   created_at: string
   updated_at: string

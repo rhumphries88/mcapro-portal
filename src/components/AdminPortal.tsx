@@ -83,8 +83,30 @@ Application ID: {{applicationId}}`;
   const [showUserApplications, setShowUserApplications] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('all');
+  const [confirmDeleteLenderId, setConfirmDeleteLenderId] = useState<string | null>(null);
 
-  const [lenderFormData, setLenderFormData] = useState({
+  const [lenderFormData, setLenderFormData] = useState<{
+    name: string;
+    contactEmail: string;
+    ccEmails: string[];
+    phone: string;
+    status: 'active' | 'inactive' | 'pending';
+    rating: number;
+    minAmount: number;
+    maxAmount: number;
+    minCreditScore: number;
+    maxCreditScore: number;
+    minTimeInBusiness: number;
+    minMonthlyRevenue: number;
+    industries: string[];
+    factorRate: string;
+    paybackTerm: string;
+    approvalTime: string;
+    features: string[];
+    category: 'Daily' | 'Weekly' | 'Monthly' | 'By-Weekly';
+    negativeDays: number | null;
+    positions: number | null;
+  }>({
     name: '',
     contactEmail: '',
     ccEmails: [] as string[],
@@ -101,7 +123,10 @@ Application ID: {{applicationId}}`;
     factorRate: '1.1 - 1.4',
     paybackTerm: '3-18 months',
     approvalTime: '24 hours',
-    features: [] as string[]
+    features: [] as string[],
+    category: 'Monthly',
+    negativeDays: null,
+    positions: null
   });
   const [ccEmailInput, setCcEmailInput] = useState('');
 
@@ -401,17 +426,14 @@ Application ID: {{applicationId}}`;
     }
   };
 
-  const handleDeleteLender = (lenderId: string) => {
-    const deleteLenderAsync = async () => {
-      try {
-        await deleteLender(lenderId);
-        setLenders(prev => prev.filter(l => l.id !== lenderId));
-      } catch (error) {
-        console.error('Error deleting lender:', error);
-        alert('Error deleting lender. Please try again.');
-      }
-    };
-    deleteLenderAsync();
+  const handleDeleteLender = async (lenderId: string) => {
+    try {
+      await deleteLender(lenderId);
+      setLenders(prev => prev.filter(l => l.id !== lenderId));
+    } catch (error) {
+      console.error('Error deleting lender:', error);
+      alert('Error deleting lender. Please try again.');
+    }
   };
 
   const handleEditLender = (lender: DBLender) => {
@@ -432,7 +454,19 @@ Application ID: {{applicationId}}`;
       factorRate: lender.factor_rate,
       paybackTerm: lender.payback_term,
       approvalTime: lender.approval_time,
-      features: lender.features
+      features: lender.features,
+      category: ((val: unknown) => {
+        const allowed = ['Daily','Weekly','Monthly','By-Weekly'] as const;
+        return (allowed as readonly string[]).includes((val as string)) ? (val as 'Daily'|'Weekly'|'Monthly'|'By-Weekly') : 'Monthly';
+      })((lender as unknown as { frequency?: string })?.frequency),
+      negativeDays: (() => {
+        const v = (lender as unknown as { negative_days?: number | null })?.negative_days ?? null;
+        return v != null && v < 0 ? null : v;
+      })(),
+      positions: (() => {
+        const v = (lender as unknown as { positions?: number | null })?.positions ?? null;
+        return v != null && v < 0 ? null : v;
+      })(),
     });
     setEditingLender(lender);
     setShowLenderForm(true);
@@ -463,7 +497,10 @@ Application ID: {{applicationId}}`;
       factorRate: '1.1 - 1.4',
       paybackTerm: '3-18 months',
       approvalTime: '24 hours',
-      features: []
+      features: [],
+      category: 'Monthly',
+      negativeDays: null,
+      positions: null
     });
     setEditingLender(null);
     setShowLenderForm(true);
@@ -503,6 +540,7 @@ Application ID: {{applicationId}}`;
     const saveLenderAsync = async () => {
       try {
         const ccPart = (lenderFormData.ccEmails || []).length ? { cc_emails: lenderFormData.ccEmails } : {};
+        const clampInt = (v: number | null) => (v == null || Number.isNaN(v) ? null : Math.max(0, Math.floor(v)));
         const lenderData = {
           name: lenderFormData.name,
           contact_email: lenderFormData.contactEmail,
@@ -522,6 +560,9 @@ Application ID: {{applicationId}}`;
           factor_rate: lenderFormData.factorRate,
           payback_term: lenderFormData.paybackTerm,
           approval_time: lenderFormData.approvalTime,
+          frequency: lenderFormData.category,
+          negative_days: clampInt(lenderFormData.negativeDays),
+          positions: clampInt(lenderFormData.positions),
           features: lenderFormData.features
         };
 
@@ -1346,7 +1387,7 @@ Application ID: {{applicationId}}`;
                     Edit
                   </button>
                   <button
-                    onClick={() => handleDeleteLender(lender.id)}
+                    onClick={() => setConfirmDeleteLenderId(lender.id)}
                     className="px-4 py-2 text-red-600 border border-red-300 rounded-lg hover:bg-red-50 transition-colors flex items-center"
                   >
                     <Trash2 className="w-4 h-4 mr-1" />
@@ -1559,6 +1600,42 @@ Application ID: {{applicationId}}`;
                     </div>
                   </div>
 
+                  {/* Neg Days & Positions (moved here under Funding Range) */}
+                  <div className="mb-6">
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-2">Number of Neg days</label>
+                        <input
+                          type="number"
+                          min={0}
+                          step={1}
+                          value={lenderFormData.negativeDays ?? ''}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            setLenderFormData(prev => ({ ...prev, negativeDays: val === '' ? null : parseInt(val) }));
+                          }}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500"
+                          placeholder="e.g., 3"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-2">Number of positions</label>
+                        <input
+                          type="number"
+                          min={0}
+                          step={1}
+                          value={lenderFormData.positions ?? ''}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            setLenderFormData(prev => ({ ...prev, positions: val === '' ? null : parseInt(val) }));
+                          }}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500"
+                          placeholder="e.g., 2"
+                        />
+                      </div>
+                    </div>
+                  </div>
+
                   {/* Credit Score Range */}
                   <div className="mb-6">
                     <h5 className="font-medium text-gray-700 mb-3">Credit Score Requirements</h5>
@@ -1618,7 +1695,7 @@ Application ID: {{applicationId}}`;
                   {/* Terms */}
                   <div className="mb-6">
                     <h5 className="font-medium text-gray-700 mb-3">Terms & Processing</h5>
-                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
                       <div>
                         <label className="block text-sm font-medium text-gray-700 mb-2">Factor Rate</label>
                         <input
@@ -1648,6 +1725,19 @@ Application ID: {{applicationId}}`;
                           className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500"
                           placeholder="24 hours"
                         />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-2">Frequency</label>
+                        <select
+                          value={lenderFormData.category}
+                          onChange={(e) => setLenderFormData(prev => ({ ...prev, category: e.target.value as 'Daily' | 'Weekly' | 'Monthly' | 'By-Weekly' }))}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500 bg-white"
+                        >
+                          <option value="Daily">Daily</option>
+                          <option value="Weekly">Weekly</option>
+                          <option value="Monthly">Monthly</option>
+                          <option value="By-Weekly">By-Weekly</option>
+                        </select>
                       </div>
                     </div>
                   </div>
@@ -2699,6 +2789,43 @@ Application ID: {{applicationId}}`;
       )}
 
       {/* Toast Notification */}
+      {confirmDeleteLenderId && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/40" onClick={() => setConfirmDeleteLenderId(null)}></div>
+          <div role="dialog" aria-modal="true" className="relative bg-white rounded-2xl shadow-2xl border border-gray-200 w-full max-w-md overflow-hidden">
+            <div className="p-6">
+              <div className="flex items-start">
+                <div className="flex-shrink-0 mr-3">
+                  <div className="w-10 h-10 rounded-xl bg-red-50 flex items-center justify-center">
+                    <XCircle className="w-5 h-5 text-red-500" />
+                  </div>
+                </div>
+                <div className="flex-1">
+                  <h3 className="text-lg font-semibold text-gray-900">Confirm Delete</h3>
+                  <p className="mt-1 text-sm text-gray-600">Delete lender: <span className="font-medium text-gray-900">{(lenders.find(l => l.id === confirmDeleteLenderId)?.name) || 'this lender'}</span>?</p>
+                </div>
+              </div>
+              <div className="mt-6 flex justify-end gap-3">
+                <button
+                  type="button"
+                  onClick={() => setConfirmDeleteLenderId(null)}
+                  className="px-4 py-2 rounded-xl border border-gray-300 text-gray-700 hover:bg-gray-50 text-sm font-medium"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={async () => { await handleDeleteLender(confirmDeleteLenderId as string); setConfirmDeleteLenderId(null); }}
+                  className="px-4 py-2 rounded-xl bg-red-600 text-white hover:bg-red-700 text-sm font-semibold shadow"
+                >
+                  Delete
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {showToast && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
           <div className={`${toastVariant === 'error' ? 'bg-red-600 border-red-700' : 'bg-green-600 border-green-700'} text-white px-6 py-4 rounded-xl shadow-2xl border max-w-md w-full`}> 
