@@ -711,6 +711,9 @@ export interface Application {
   created_at: string
   updated_at: string
   user_id?: string
+  // Optional fields used by matching
+  total_positions?: number | null
+  current_position_count?: number | null
 }
 
 export interface Lender {
@@ -1388,24 +1391,61 @@ export const qualifyLenders = (lenders: Lender[], application: Application): (Le
   // Evaluate qualification per rules
   const qualified = active
     .map((l) => {
-      // Rule 2: Industry match
+      // Rule 2: Restricted State Matching (hard filter)
+      const lenderRestricted = (l.restricted_state || '').trim();
+      const appRestricted = (application.restricted_state || '').trim();
+      const restrictedOk = !lenderRestricted || !appRestricted || lenderRestricted.toLowerCase() !== appRestricted.toLowerCase();
+
+      if (!restrictedOk) {
+        return { ...l, qualified: false, matchScore: 0 };
+      }
+
+      // Rule 3: Industry Matching (exact word match or "All Industries")
       const industryOk = isIndustryMatch(l);
 
-      // Rule 3: Average Revenue Matching
-      const lenderMinRev = (l as Partial<Lender>).min_monthly_revenue as unknown as number | null | undefined;
-      const appMonthly = (application as Partial<Application>).monthly_revenue as unknown as number | null | undefined;
+      if (!industryOk) {
+        return { ...l, qualified: false, matchScore: 0 };
+      }
+
+      // Rule 4: Min/Max Positions Matching
+      const appTotalPositionsRaw = (application.total_positions ?? application.current_position_count) as number | null | undefined;
+      const appTotalPositions = (typeof appTotalPositionsRaw === 'number' && Number.isFinite(appTotalPositionsRaw)) ? appTotalPositionsRaw : null;
+      const minPositions = (l.min_positions ?? null) as number | null;
+      const maxPositions = (l.max_positions ?? null) as number | null;
+
+      // If only max_positions exists (and no min_positions) → disqualified
+      if (minPositions == null && maxPositions != null) {
+        return { ...l, qualified: false, matchScore: 0 };
+      }
+
+      let positionsOk = true;
+      if (minPositions != null) {
+        positionsOk = positionsOk && ((appTotalPositions ?? -Infinity) >= minPositions);
+      }
+      if (maxPositions != null) {
+        positionsOk = positionsOk && ((appTotalPositions ?? Infinity) <= maxPositions);
+      }
+
+      if (!positionsOk) {
+        return { ...l, qualified: false, matchScore: 0 };
+      }
+
+      // Rule 5: Monthly Revenue Matching
+      const lenderMinRev = (l as Partial<Lender>).min_monthly_revenue as number | null | undefined;
+      const appMonthly = application.monthly_revenue as number | null | undefined;
       const revenueOk = lenderMinRev == null || (Number(appMonthly) || 0) >= Number(lenderMinRev);
 
-      const passes = industryOk && revenueOk;
+      if (!revenueOk) {
+        return { ...l, qualified: false, matchScore: 0 };
+      }
 
-      // Rule 4: Scoring
-      let score = 0;
-      if (industryOk) score += 50; // base for industry
-      if (revenueOk && lenderMinRev != null) score += 20; // bonus for meeting revenue requirement
+      // Rule 6: Scoring
+      let score = 50; // base score
+      if (revenueOk) score += 20; // bonus for meeting revenue requirement
       score += rndJitter(5); // ±5 jitter
       score = clamp(Math.round(score), 0, 100);
 
-      return { ...l, qualified: passes, matchScore: score };
+      return { ...l, qualified: true, matchScore: score };
     })
     .filter(l => l.qualified);
 

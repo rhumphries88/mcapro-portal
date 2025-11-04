@@ -93,9 +93,9 @@ const LenderMatches: React.FC<LenderMatchesProps> = ({ application, matches, onL
       const cacheFresh = __lendersCache && (now - __lendersCacheTs) < __LENDERS_CACHE_MS;
 
       const qualifyAndSet = (list: DBLender[]) => {
-        const qualifiedLenders = qualifyLenders(list || [], dbApplication);
+        // If webhook provided ranked matches, trust and render exactly those IDs in order
         if (Array.isArray(matches) && matches.length > 0) {
-          const byId = new Map(qualifiedLenders.map(l => [l.id, l] as const));
+          const byId = new Map(list.map(l => [l.id, l] as const));
           const ordered: (DBLender & { match_score?: number; matchScore?: number })[] = [];
           for (const m of matches) {
             const found = byId.get(m.lender_id);
@@ -103,6 +103,8 @@ const LenderMatches: React.FC<LenderMatchesProps> = ({ application, matches, onL
           }
           setLenders(ordered);
         } else {
+          // Fallback: compute locally using qualification logic
+          const qualifiedLenders = qualifyLenders(list || [], dbApplication);
           setLenders(qualifiedLenders);
         }
         // Preselect locked lenders
