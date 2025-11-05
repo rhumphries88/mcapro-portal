@@ -103,7 +103,7 @@ Application ID: {{applicationId}}`;
     paybackTerm: string;
     approvalTime: string;
     features: string[];
-    category: 'Daily' | 'Weekly' | 'Monthly' | 'By-Weekly';
+    category: 'Daily' | 'Weekly' | 'Monthly' | 'Bi-Weekly';
     negativeDays: number | null;
     minPositions: number | null;
     maxPositions: number | null;
@@ -460,8 +460,8 @@ Application ID: {{applicationId}}`;
       approvalTime: lender.approval_time || '',
       features: lender.features,
       category: ((val: unknown) => {
-        const allowed = ['Daily','Weekly','Monthly','By-Weekly'] as const;
-        return (allowed as readonly string[]).includes((val as string)) ? (val as 'Daily'|'Weekly'|'Monthly'|'By-Weekly') : 'Monthly';
+        const allowed = ['Daily','Weekly','Monthly','Bi-Weekly'] as const;
+        return (allowed as readonly string[]).includes((val as string)) ? (val as 'Daily'|'Weekly'|'Monthly'|'Bi-Weekly') : 'Monthly';
       })((lender as unknown as { frequency?: string })?.frequency),
       negativeDays: (() => {
         const v = (lender as unknown as { negative_days?: number | null })?.negative_days ?? null;
@@ -552,13 +552,18 @@ Application ID: {{applicationId}}`;
       try {
         const ccPart = (lenderFormData.ccEmails || []).length ? { cc_emails: lenderFormData.ccEmails } : {};
         const clampInt = (v: number | null) => (v == null || Number.isNaN(v) ? null : Math.max(0, Math.floor(v)));
+        const clampRating = (v: number) => {
+          const n = Number(v);
+          if (!Number.isFinite(n)) return 1;
+          return Math.min(5, Math.max(1, n));
+        };
         const lenderData = {
           name: lenderFormData.name,
           contact_email: lenderFormData.contactEmail,
           ...ccPart,
           phone: lenderFormData.phone,
           status: lenderFormData.status,
-          rating: lenderFormData.rating,
+          rating: clampRating(lenderFormData.rating),
           total_applications: 0,
           approval_rate: 0,
           min_amount: lenderFormData.minAmount,
@@ -1768,13 +1773,13 @@ Application ID: {{applicationId}}`;
                         <label className="block text-sm font-medium text-gray-700 mb-2">Frequency</label>
                         <select
                           value={lenderFormData.category}
-                          onChange={(e) => setLenderFormData(prev => ({ ...prev, category: e.target.value as 'Daily' | 'Weekly' | 'Monthly' | 'By-Weekly' }))}
+                          onChange={(e) => setLenderFormData(prev => ({ ...prev, category: e.target.value as 'Daily' | 'Weekly' | 'Monthly' | 'Bi-Weekly' }))}
                           className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500 bg-white"
                         >
                           <option value="Daily">Daily</option>
                           <option value="Weekly">Weekly</option>
                           <option value="Monthly">Monthly</option>
-                          <option value="By-Weekly">By-Weekly</option>
+                          <option value="Bi-Weekly">Bi-Weekly</option>
                         </select>
                       </div>
                     </div>
