@@ -557,6 +557,17 @@ Application ID: {{applicationId}}`;
           if (!Number.isFinite(n)) return 1;
           return Math.min(5, Math.max(1, n));
         };
+        // Ensure credit scores satisfy DB constraints (e.g., 300-850 and max >= min)
+        const clampCreditScore = (v: number) => {
+          const n = Math.floor(Number(v));
+          if (!Number.isFinite(n)) return 300;
+          return Math.min(850, Math.max(300, n));
+        };
+        const minCS = clampCreditScore(lenderFormData.minCreditScore);
+        let maxCS = clampCreditScore(lenderFormData.maxCreditScore);
+        if (maxCS < minCS) {
+          maxCS = minCS;
+        }
         const lenderData = {
           name: lenderFormData.name,
           contact_email: lenderFormData.contactEmail,
@@ -568,8 +579,8 @@ Application ID: {{applicationId}}`;
           approval_rate: 0,
           min_amount: lenderFormData.minAmount,
           max_amount: lenderFormData.maxAmount,
-          min_credit_score: lenderFormData.minCreditScore,
-          max_credit_score: lenderFormData.maxCreditScore,
+          min_credit_score: minCS,
+          max_credit_score: maxCS,
           min_time_in_business: lenderFormData.minTimeInBusiness,
           min_monthly_revenue: lenderFormData.minMonthlyRevenue,
           industries: lenderFormData.industries,

@@ -374,12 +374,16 @@ const SubmissionRecap: React.FC<SubmissionRecapProps> = ({
         .app-id { font-family: 'Courier New', monospace; background: #f3f4f6; padding: 8px 12px; border-radius: 6px; font-size: 14px; }
     </style>
 </head>
-<body>
+    <body>
     <div class="container">
-        <div class="header">
-            <h1>Merchant Cash Advance Application</h1>
-            <p>Professional Business Funding Request</p>
-        </div>
+        <table width="100%" role="presentation" cellspacing="0" cellpadding="0" border="0">
+            <tr>
+                <td align="center" style="background:#10b981; background-image:linear-gradient(135deg, #10b981 0%, #059669 100%); padding:30px;">
+                    <h1 style="margin:0; font-size:28px; font-weight:700; color:#ffffff;">Merchant Cash Advance Application</h1>
+                    <p style="margin:10px 0 0; font-size:16px; color:#ffffff; opacity:0.9;">Professional Business Funding Request</p>
+                </td>
+            </tr>
+        </table>
         
         <div class="content">
             <p style="font-size: 16px; margin-bottom: 30px;">Dear <strong>{{lenderName}} Team</strong>,</p>
@@ -459,11 +463,9 @@ const SubmissionRecap: React.FC<SubmissionRecapProps> = ({
             <p style="margin: 0;"><strong>{{ownerName}}</strong><br>
             {{businessName}}<br>
             {{email}} | {{phone}}</p>
-        </div>
-        
         <div class="footer">
-            <p><strong>This application was submitted through MCAPortal Pro</strong></p>
-            <p>Application ID: <span class="app-id">{{applicationId}}</span></p>
+          <p><strong>This application was submitted through MCAPortal Pro</strong></p>
+          <p>Application ID: <span class="app-id">{{applicationId}}</span></p>
         </div>
     </div>
 </body>
@@ -473,6 +475,20 @@ const SubmissionRecap: React.FC<SubmissionRecapProps> = ({
     const hasKeySections = (tpl: string | null) =>
       !!tpl && tpl.includes('<div class="contact-info">') && tpl.includes('<div class="documents">') && tpl.includes('criteria-list');
     let template = hasKeySections(savedTemplate) ? (savedTemplate as string) : defaultTemplate;
+
+    // Normalize header for Outlook even if using a saved template:
+    // Replace a classic <div class="header">...</div> block with a table-based header with inline styles.
+    template = template.replace(
+      /<div\s+class=["']header["'][^>]*>[\s\S]*?<\/div>/i,
+      `<table width="100%" role="presentation" cellspacing="0" cellpadding="0" border="0">
+        <tr>
+          <td align="center" style="background:#10b981; background-image:linear-gradient(135deg, #10b981 0%, #059669 100%); padding:30px;">
+            <h1 style="margin:0; font-size:28px; font-weight:700; color:#ffffff;">Merchant Cash Advance Application</h1>
+            <p style="margin:10px 0 0; font-size:16px; color:#ffffff; opacity:0.9;">Professional Business Funding Request</p>
+          </td>
+        </tr>
+      </table>`
+    );
 
     // Build dynamic documents list combining application_documents (appDocs), application_additional (additionalDocs), MTD (mtdDocs), and inline application documents (application.documents)
     const dbDocs = (Array.isArray(appDocs) ? appDocs : []).filter(d => !isExcluded(keyForAppDoc(d)));
@@ -518,6 +534,9 @@ const SubmissionRecap: React.FC<SubmissionRecapProps> = ({
         `$1${zipCtaHtml}`
       );
     }
+
+    // Intentionally do NOT embed notes into email HTML body.
+    // Notes are sent separately via webhook (`notes` and `context.notes`) and rendered in Outlook template.
 
     // Replace template variables with actual data
     // Remove signature contact line (email | phone), but keep owner and business lines
